@@ -56,7 +56,7 @@ function Globe() {
       const dx = e.clientX - lastX.current
       lastX.current = e.clientX
       const st = useStore.getState()
-      st.setParam('spin', st.params.spin + dx * 0.003) // 拖曳改變自轉速度
+      st.input('spin', st.params.spin + dx * 0.003) // 拖曳改變自轉速度（可被錄製）
     }
     const onUp = () => { dragging.current = false }
     window.addEventListener('pointermove', onMove)
@@ -72,6 +72,9 @@ function Globe() {
     if (grp.current) {
       grp.current.rotation.y += Math.min(0.05, dt) * (0.05 + p.spin * 1.5)
       grp.current.rotation.z = (p.tilt - 0.5) * 0.6
+      const target = 0.55 + p.globeScale * 1.15 // 球體大小
+      const cur = grp.current.scale.x
+      grp.current.scale.setScalar(cur + (target - cur) * 0.12)
     }
     if (atmo.current) {
       atmo.current.material.opacity = 0.05 + p.atmosphere * 0.35
@@ -129,13 +132,15 @@ function Stars({ count = 700 }) {
 
 function Lights() {
   const dir = useRef()
+  const amb = useRef()
   useFrame(() => {
     const p = useStore.getState().params
-    if (dir.current) dir.current.intensity = 0.4 + p.worldLight * 1.9
+    if (dir.current) dir.current.intensity = 0.3 + p.worldLight * 1.9 // 背景亮度
+    if (amb.current) amb.current.intensity = 0.08 + p.worldLight * 0.6
   })
   return (
     <>
-      <ambientLight intensity={0.25} />
+      <ambientLight ref={amb} intensity={0.25} />
       <directionalLight ref={dir} position={[5, 3, 5]} intensity={1.2} />
     </>
   )

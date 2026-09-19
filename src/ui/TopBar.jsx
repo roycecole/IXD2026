@@ -1,5 +1,5 @@
 import { useStore } from '../store/useStore.js'
-import { SCENES, currentSceneIndex } from '../timeline/scenes.js'
+import { SCENES } from '../timeline/scenes.js'
 
 function fmt(t) {
   const m = Math.floor(t / 60), s = Math.floor(t % 60)
@@ -7,30 +7,40 @@ function fmt(t) {
 }
 
 export default function TopBar({ onConnect }) {
-  const timeline = useStore((s) => s.timeline)
-  const play = useStore((s) => s.play)
-  const pause = useStore((s) => s.pause)
-  const reset = useStore((s) => s.reset)
-  const setTime = useStore((s) => s.setTime)
+  const rec = useStore((s) => s.rec)
   const midi = useStore((s) => s.midi)
-  const cur = currentSceneIndex(timeline.time)
+  const startRecording = useStore((s) => s.startRecording)
+  const stopRecording = useStore((s) => s.stopRecording)
+  const startPlayback = useStore((s) => s.startPlayback)
+  const stopPlayback = useStore((s) => s.stopPlayback)
+  const clearRec = useStore((s) => s.clearRec)
+  const applyScene = useStore((s) => s.applyScene)
+
+  const recording = rec.mode === 'recording'
+  const playing = rec.mode === 'playing'
+  const hasRec = rec.count > 0
 
   return (
     <header className="topbar">
       <span className="title">資料導演台 <span className="dim">IXD2026</span></span>
 
       <div className="transport">
-        <button onClick={() => (timeline.playing ? pause() : play())}>
-          {timeline.playing ? '❚❚ 暫停' : '▶ 播放'}
+        <button className={'rec' + (recording ? ' on' : '')}
+                onClick={() => (recording ? stopRecording() : startRecording())}>
+          {recording ? '■ 停止錄製' : '● 錄製'}
         </button>
-        <button onClick={reset}>↺ 歸零</button>
-        <span className="time">{fmt(timeline.time)} / {fmt(timeline.duration)}</span>
+        <button onClick={() => (playing ? stopPlayback() : startPlayback())}
+                disabled={recording || !hasRec}>
+          {playing ? '❚❚ 停止' : '▶ 播放'}
+        </button>
+        <button onClick={clearRec} disabled={recording || !hasRec}>⟲ 清除</button>
+        <span className="time">{fmt(rec.playhead)} / {fmt(rec.duration)}</span>
       </div>
 
       <div className="scenes">
+        <span className="dim" style={{ fontSize: 11, alignSelf: 'center' }}>場景</span>
         {SCENES.map((sc, i) => (
-          <button key={i} className={'scene' + (i === cur ? ' active' : '')}
-                  title={sc.label} onClick={() => setTime(sc.t)}>{i}</button>
+          <button key={i} className="scene" title={sc.label} onClick={() => applyScene(sc.params)}>{i}</button>
         ))}
       </div>
 

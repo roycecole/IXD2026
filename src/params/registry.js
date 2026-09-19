@@ -4,6 +4,7 @@
 export const GROUPS = [
   { id: 'GLOBE', label: 'GLOBE', params: [
     { id: 'spin',       label: '自轉速度', value: 0.30 },
+    { id: 'globeScale', label: '球體大小', value: 0.50 },
     { id: 'tilt',       label: '地軸傾角', value: 0.40 },
     { id: 'atmosphere', label: '大氣輝光', value: 0.55 },
   ]},
@@ -41,10 +42,11 @@ export const PARAMS = {}
 GROUPS.forEach((g) => g.params.forEach((p) => { PARAMS[p.id] = { ...p, group: g.id } }))
 export const PARAM_ORDER = Object.keys(PARAMS)
 
-// 預設建議綁定（nanoKONTROL2：推桿 CC0-7、旋鈕 CC16-23）。可經 MIDI Learn 重綁。
-export const DEFAULT_BINDINGS = (() => {
-  const ccs = [0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23]
-  const b = {}
-  PARAM_ORDER.slice(0, ccs.length).forEach((pid, i) => { b[ccs[i]] = pid })
-  return b
-})()
+// 預設建議綁定（nanoKONTROL2 出廠：推桿 CC0-7、旋鈕 CC16-23）。可經 MIDI Learn 重綁。
+// 8 個「旋鈕」→ 視覺效果（本次重點）；8 個「推桿」→ 資料混音層。
+export const DEFAULT_BINDINGS = {
+  // 推桿 fader CC0-7 → 資料混音
+  0: 'tempGain', 1: 'rain', 2: 'wind', 3: 'level', 4: 'inflow', 5: 'pointDensity', 6: 'heat', 7: 'glow',
+  // 旋鈕 knob CC16-23 → 視覺效果
+  16: 'spin', 17: 'globeScale', 18: 'zoom', 19: 'worldLight', 20: 'stars', 21: 'atmosphere', 22: 'pointGlow', 23: 'tilt',
+}

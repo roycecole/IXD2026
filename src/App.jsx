@@ -5,7 +5,6 @@ import TopBar from './ui/TopBar.jsx'
 import Monitor from './ui/Monitor.jsx'
 import { useMIDI } from './hooks/useMIDI.js'
 import { useStore } from './store/useStore.js'
-import { sceneAt } from './timeline/scenes.js'
 
 export default function App() {
   const { connect } = useMIDI()
@@ -19,14 +18,8 @@ export default function App() {
       const dt = Math.min(0.05, (now - last.current) / 1000)
       last.current = now
       const st = useStore.getState()
-      if (st.timeline.playing) {
-        const speed = 4 // 4x：10 分鐘劇情約 2.5 分鐘走完，方便展示（可再調）
-        let t = st.timeline.time + dt * speed
-        const dur = st.timeline.duration
-        if (t >= dur) { t = dur; st.pause() }
-        st.setTime(t)
-        st.applyParams(sceneAt(t))
-      }
+      if (st.rec.mode === 'recording') st.advanceRec(dt)
+      else if (st.rec.mode === 'playing') st.tickPlayback(dt)
       raf.current = requestAnimationFrame(loop)
     }
     raf.current = requestAnimationFrame(loop)

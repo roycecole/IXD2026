@@ -10,7 +10,7 @@ function Param({ pid }) {
   const value = useStore((s) => s.params[pid])
   const bindings = useStore((s) => s.bindings)
   const learn = useStore((s) => s.learn)
-  const setParam = useStore((s) => s.setParam)
+  const input = useStore((s) => s.input)
   const startLearn = useStore((s) => s.startLearn)
   const unbindParam = useStore((s) => s.unbindParam)
 
@@ -25,7 +25,7 @@ function Param({ pid }) {
       <span className={'plabel' + (learning ? ' learning' : '')} onClick={onLabel}
             title="點=Learn 綁定，shift+點=解綁">{meta.label}</span>
       <input type="range" min="0" max="1" step="0.001" value={value}
-             onChange={(e) => setParam(pid, parseFloat(e.target.value))} />
+             onChange={(e) => input(pid, parseFloat(e.target.value))} />
       <span className="pval">{value.toFixed(2)}</span>
       <span className={'cc' + (learning ? ' learning' : '')}>
         {learning ? '學習' : cc == null ? '—' : 'CC' + cc}
