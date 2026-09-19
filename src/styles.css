@@ -110,10 +110,15 @@ input[type="range"] { accent-color: var(--accent); width: 100%; height: 16px; }
 .mline.dim { color: var(--dim); }
 
 /* ---- 分隔線（可拖曳改變寬 / 高）---- */
-.splitter { flex: 0 0 auto; background: transparent; z-index: 5; }
-.splitter.x { width: 6px; cursor: col-resize; }
-.splitter.y { height: 6px; cursor: row-resize; }
+.splitter { flex: 0 0 auto; background: transparent; z-index: 5; position: relative; }
+.splitter.x { width: 8px; cursor: col-resize; }
+.splitter.y { height: 8px; cursor: row-resize; }
 .splitter:hover { background: var(--accent); opacity: .5; }
+/* 可見握把，提示可拖曳改變寬 / 高 */
+.splitter::after { content: ''; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: var(--line2); border-radius: 2px; }
+.splitter.x::after { width: 2px; height: 30px; }
+.splitter.y::after { height: 2px; width: 30px; }
+.splitter:hover::after { background: var(--accent); }
 
 /* ---- 頂部工具（分享 / 錄影 / LOG）---- */
 .tools { display: flex; align-items: center; gap: 6px; }
@@ -214,3 +219,19 @@ input[type="range"] { accent-color: var(--accent); width: 100%; height: 16px; }
 .modal-about a { color: var(--accent); display: inline-block; margin-top: 4px; }
 .modal-start { width: 100%; margin-top: 16px; padding: 10px; background: var(--accent); color: #062018; border-color: var(--accent); font-weight: 500; }
 .modal-start:hover { filter: brightness(1.06); background: var(--accent); }
+
+/* ---- 參數 HUD（轉旋鈕時浮現）---- */
+.hud {
+  position: absolute; top: 14px; left: 50%; transform: translateX(-50%); z-index: 8;
+  font-family: var(--mono); font-size: 14px; color: var(--accent);
+  background: rgba(5, 16, 28, 0.62); padding: 5px 15px; border-radius: 20px;
+  border: 1px solid var(--line2); opacity: 0; pointer-events: none; white-space: nowrap;
+}
+.canvas-loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 14px; }
+
+/* ---- 今日海況（真實開放資料）---- */
+.gov-card { background: var(--panel2); border: 1px solid var(--line2); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; }
+.gov-title { font-size: 12px; color: var(--accent); }
+.gov-metrics { font-size: 12px; color: var(--muted); margin: 4px 0 8px; font-family: var(--mono); }
+.gov-apply { width: 100%; font-size: 12px; border-color: var(--accent); color: var(--accent); background: #0f2a22; }
+.gov-apply:hover { background: #133b30; }

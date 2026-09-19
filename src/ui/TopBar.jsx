@@ -72,8 +72,6 @@ export default function TopBar({ onConnect, onInfo, onVK, vkOn }) {
 
   return (
     <header className="topbar">
-      <span className="title">資料導演台 <span className="dim">IXD2026</span></span>
-
       <div className="transport">
         <button className={'rec' + (recording ? ' on' : '')}
                 onClick={() => (recording ? stopRecording() : startRecording())} disabled={playing}>

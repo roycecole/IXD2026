@@ -15,6 +15,9 @@ const WR = R * 0.985  // 水體貼壁半徑
 const _v = new THREE.Vector3()
 const YAXIS = new THREE.Vector3(0, 1, 0)
 const bioNodes = []   // 生物節點（供 BioNetwork 科技連線）
+const _cl = new THREE.Vector3()
+const poke = { dir: new THREE.Vector3(0, 0, 1), str: 0, target: 0, vel: 0 } // 果凍壓凹（球殼柔軟壓回）
+const REDUCED = (() => { try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches } catch (e) { return false } })()
 
 // ---- 手感 / 感測 ----
 let spinImpulse = 0                    // 拖曳釋放後的慣性自轉（指數衰減）
@@ -60,6 +63,7 @@ const VIS = {
   particles: 90,                     // 發光粒子
   shootingStars: 3,                  // 背景流星
 }
+if (REDUCED) Object.assign(VIS, { surfLinesX: 16, jelly: 7, fish: 18, trash: 8, particles: 26, shootingStars: 0 })
 
 // ---- 平滑環境值 ----
 const env = { seaLevel: 0.55, current: 0.45, clarity: 0.6, jelly: 0.5, fish: 0.55, swim: 0.5, trash: 0.25, glow: 0.6 }
@@ -420,11 +424,17 @@ function LineCreatures() {
   })), [])
   const guests = useMemo(() => Array.from({ length: 5 }, () => ({ active: false, type: null, born: 0, dir: 1, x: 0, y: 0, z: 0, heading: 0, alpha: 0, size: 1, ph: 0 })), [])
   const lastSpawns = useRef({ whale: 0, dolphin: 0, turtle: 0 })
+  const lastClaps = useRef(0)
 
   useFrame((state, dt) => {
     const t = state.clock.elapsedTime
     bBegin(batch)
     bioNodes.length = 0
+    if ((micState.claps || 0) > lastClaps.current) { // 拍手 → 召喚海豚 + 亮星
+      lastClaps.current = micState.claps
+      useStore.getState().spawnDolphin()
+      burstQueue.push({ x: (Math.random() - 0.5) * 2, y: seaY() - 0.2, z: (Math.random() - 0.5) * 2 })
+    }
     // 水母
     const jellyActive = Math.round(effJelly() * VIS.jelly)
     jellies.forEach((j, i) => {
@@ -527,7 +537,7 @@ function Ocean() {
   const wt = useRef()
   useFrame((_, dt) => {
     const p = useStore.getState().params
-    if (g.current) g.current.rotation.y += Math.min(0.05, dt) * (0.04 + (p.spin ?? 0.3) * 1.4 + spinImpulse)
+    if (g.current) g.current.rotation.y += Math.min(0.05, dt) * ((REDUCED ? 0 : 0.04) + (p.spin ?? 0.3) * 1.4 + spinImpulse)
     spinImpulse *= Math.exp(-dt * 1.8)                 // 放手後慣性衰減
     // 陀螺儀：欠阻尼彈簧 → 水面追平衡時會過衝晃動（像真的水）
     gyro.vx += (gyro.tx - gyro.x) * 26 * dt
@@ -604,8 +614,8 @@ function StarBursts() {
 function GlassShell() {
   const mat = useMemo(() => new THREE.ShaderMaterial({
     transparent: true, depthWrite: false,
-    uniforms: { uColor: { value: new THREE.Color('#bfe4ff') }, uOpacity: { value: 0.3 } },
-    vertexShader: 'varying vec3 vN; varying vec3 vV; void main(){ vec4 mv=modelViewMatrix*vec4(position,1.0); vN=normalize(normalMatrix*normal); vV=normalize(-mv.xyz); gl_Position=projectionMatrix*mv; }',
+    uniforms: { uColor: { value: new THREE.Color('#bfe4ff') }, uOpacity: { value: 0.3 }, uPoke: { value: new THREE.Vector3(0, 0, 1) }, uPokeStr: { value: 0 } },
+    vertexShader: 'uniform vec3 uPoke; uniform float uPokeStr; varying vec3 vN; varying vec3 vV; void main(){ vec3 nrm=normalize(position); float infl=smoothstep(0.3,1.0,dot(nrm,uPoke)); vec3 pos=position-nrm*infl*uPokeStr; vec4 mv=modelViewMatrix*vec4(pos,1.0); vN=normalize(normalMatrix*normal); vV=normalize(-mv.xyz); gl_Position=projectionMatrix*mv; }',
     fragmentShader: 'varying vec3 vN; varying vec3 vV; uniform vec3 uColor; uniform float uOpacity; void main(){ float f=pow(1.0-max(dot(vN,vV),0.0),3.0); gl_FragColor=vec4(uColor, f*uOpacity); }',
   }), [])
   const arcs = useMemo(() => {
@@ -679,11 +689,17 @@ function GlassShell() {
       mat.uniforms.uColor.value.lerp(cols.base, 0.06)
       mat.uniforms.uOpacity.value = 0.16 + env.glow * 0.24
     }
+    mat.uniforms.uPoke.value.copy(poke.dir)
+    mat.uniforms.uPokeStr.value = poke.str
   })
   return (
     <group>
       <mesh onPointerDown={(e) => {
         ensureMotion() // 首次手勢：請求陀螺儀/加速度權限（iOS）
+        if ((e.button ?? (e.nativeEvent || e).button) === 1) { // 滑鼠中鍵：亮星 + 召喚海豚
+          if (e.point) burstQueue.push({ x: e.point.x, y: e.point.y, z: e.point.z })
+          chime(); useStore.getState().spawnDolphin(); return
+        }
         const ne = e.nativeEvent || e
         const id = e.pointerId ?? ne.pointerId
         ptrs.current.set(id, {
@@ -717,11 +733,11 @@ function GlassShell() {
 function AtmosphereGlow() {
   const mat = useMemo(() => new THREE.ShaderMaterial({
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.BackSide,
-    uniforms: { uColor: { value: new THREE.Color('#4db8ff') } },
-    vertexShader: 'varying vec3 vN; varying vec3 vV; void main(){ vec4 mv=modelViewMatrix*vec4(position,1.0); vN=normalize(normalMatrix*normal); vV=normalize(-mv.xyz); gl_Position=projectionMatrix*mv; }',
+    uniforms: { uColor: { value: new THREE.Color('#4db8ff') }, uPoke: { value: new THREE.Vector3(0, 0, 1) }, uPokeStr: { value: 0 } },
+    vertexShader: 'uniform vec3 uPoke; uniform float uPokeStr; varying vec3 vN; varying vec3 vV; void main(){ vec3 nrm=normalize(position); float infl=smoothstep(0.3,1.0,dot(nrm,uPoke)); vec3 pos=position-nrm*infl*uPokeStr; vec4 mv=modelViewMatrix*vec4(pos,1.0); vN=normalize(normalMatrix*normal); vV=normalize(-mv.xyz); gl_Position=projectionMatrix*mv; }',
     fragmentShader: 'varying vec3 vN; varying vec3 vV; uniform vec3 uColor; void main(){ float f=pow(1.0-abs(dot(vN,vV)),3.5); gl_FragColor=vec4(uColor, f*0.45); }',
   }), [])
-  useFrame(() => { mat.uniforms.uColor.value.setHSL(0.56, 0.8, 0.26 + env.glow * 0.16) })
+  useFrame(() => { mat.uniforms.uColor.value.setHSL(0.56, 0.8, 0.26 + env.glow * 0.16); mat.uniforms.uPoke.value.copy(poke.dir); mat.uniforms.uPokeStr.value = poke.str })
   return <mesh scale={1.12}><sphereGeometry args={[SHELL, 48, 48]} /><primitive object={mat} attach="material" /></mesh>
 }
 
@@ -848,6 +864,36 @@ function FogDriver() {
   return null
 }
 
+// 果凍壓凹：背景點擊拖曳，離球體越近壓越深，放開欠阻尼回彈（寫入 poke，球殼/大氣頂點內凹）
+function JellyController() {
+  const { camera, raycaster, pointer, gl } = useThree()
+  const pressing = useRef(false)
+  useEffect(() => {
+    const el = gl.domElement
+    const down = () => { pressing.current = true }
+    const up = () => { pressing.current = false }
+    el.addEventListener('pointerdown', down)
+    window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', up)
+    return () => { el.removeEventListener('pointerdown', down); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up) }
+  }, [gl])
+  useFrame((_, dt) => {
+    if (pressing.current) {
+      raycaster.setFromCamera(pointer, camera)
+      const r = raycaster.ray
+      const tt = Math.max(0, -r.direction.dot(r.origin))       // 射線離球心最近點
+      _cl.copy(r.origin).addScaledVector(r.direction, tt)
+      const d = _cl.length()
+      poke.target = Math.max(0, Math.min(1, 1.15 - d / (SHELL * 1.1))) * 0.34
+      if (poke.target > 0.001) poke.dir.copy(_cl).normalize()
+    } else poke.target = 0
+    poke.vel += (poke.target - poke.str) * 55 * dt              // 欠阻尼彈簧 → 回彈晃動
+    poke.vel *= Math.exp(-dt * 6)
+    poke.str += poke.vel * dt
+  })
+  return null
+}
+
 function CameraRig() {
   const { camera } = useThree()
   const tmp = useMemo(() => new THREE.Vector3(), [])
@@ -870,6 +916,7 @@ export default function Scene3D() {
       <AtmosphereGlow />
       <SpaceNetwork />
       <StarBursts />
+      <JellyController />
       <CameraRig />
     </Canvas>
   )

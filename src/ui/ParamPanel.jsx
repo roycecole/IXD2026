@@ -36,6 +36,8 @@ function Param({ pid }) {
 
 export default function ParamPanel() {
   const midi = useStore((s) => s.midi)
+  const gov = useStore((s) => s.gov)
+  const applyGov = useStore((s) => s.applyGov)
   const learn = useStore((s) => s.learn)
   const startSeqLearn = useStore((s) => s.startSeqLearn)
   const cancelLearn = useStore((s) => s.cancelLearn)
@@ -52,6 +54,14 @@ export default function ParamPanel() {
         <span className="ctrl-name">{midi.connected ? (midi.inputs[0] || 'MIDI') : '未連線'}</span>
       </div>
       {midi.error && <p className="hint" style={{ color: '#ff7a7a' }}>MIDI：{midi.error}</p>}
+
+      {gov && (
+        <div className="gov-card">
+          <div className="gov-title">今日海況 <span className="dim">· {gov.sourceShort}</span></div>
+          <div className="gov-metrics">{gov.metrics.weather} · {gov.metrics.airTemp}°C · 風 {gov.metrics.windSpeed} m/s · 水庫 {gov.metrics.reservoirPct}%</div>
+          <button className="gov-apply" onClick={applyGov}>套用今日真實的海</button>
+        </div>
+      )}
 
       <div className="actions">
         <button onClick={spawnWhale}>鯨魚</button>

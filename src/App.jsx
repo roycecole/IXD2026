@@ -1,5 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
-import Scene3D from './scene/Scene3D.jsx'
+import { useEffect, useRef, useState, Suspense, lazy } from 'react'
 import ParamPanel from './ui/ParamPanel.jsx'
 import TopBar from './ui/TopBar.jsx'
 import Monitor from './ui/Monitor.jsx'
@@ -7,11 +6,17 @@ import Splitter from './ui/Splitter.jsx'
 import Footer from './ui/Footer.jsx'
 import InfoModal from './ui/InfoModal.jsx'
 import VirtualController from './ui/VirtualController.jsx'
+import ParamHUD from './ui/ParamHUD.jsx'
 import { useMIDI } from './hooks/useMIDI.js'
 import { useStore } from './store/useStore.js'
 import { decodeParams } from './lib/share.js'
+import { loadOceanData } from './lib/govdata.js'
 import { LS, loadLS, saveLS } from './lib/persist.js'
 import { audioUpdate } from './audio/engine.js'
+import { activity } from './store/activity.js'
+import { SCENES } from './timeline/scenes.js'
+
+const Scene3D = lazy(() => import('./scene/Scene3D.jsx')) // code-split：three 分塊延後載入，shell 先 paint
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
 
@@ -71,18 +76,38 @@ export default function App() {
     } catch (e) {}
   }, [])
 
+  // 真實海況：載入 ocean.json；首次到訪（無分享參數）以「今天真實的海」開場
+  useEffect(() => {
+    loadOceanData().then((d) => {
+      if (!d) return
+      const st = useStore.getState()
+      st.setGov(d)
+      const firstVisit = (() => { try { return !localStorage.getItem('ixd2026.seen') } catch (e) { return false } })()
+      const hasShare = (() => { try { return !!new URLSearchParams(location.search).get('s') } catch (e) { return false } })()
+      if (firstVisit && !hasShare) st.applyGov()
+    })
+  }, [])
+
   // 保存視窗尺寸
   useEffect(() => { saveLS(LS.sizes, { panelW, monitorH, canvasVh }) }, [panelW, monitorH, canvasVh])
 
-  // 主迴圈：推進錄製/播放 + 定期把參數 / log 寫進 storage
+  // 主迴圈：推進錄製/播放 + 定期把參數 / log 寫進 storage + 閒置吸引模式
+  const attract = useRef({ on: false, at: 0, idx: 0 })
   useEffect(() => {
     let n = 0
+    const IDLE = 30000, STEP = 11000
     const loop = (now) => {
       const dt = Math.min(0.05, (now - last.current) / 1000)
       last.current = now
       const st = useStore.getState()
       if (st.rec.mode === 'recording') st.advanceRec(dt)
       else if (st.rec.mode === 'playing') st.tickPlayback(dt)
+      // Attract Mode：閒置 30s → 每 11s 巡演一組場景，任何輸入立即退場
+      const a = attract.current
+      if (now - activity.last > IDLE && st.rec.mode === 'idle') {
+        if (!a.on) { a.on = true; a.at = now - STEP; a.idx = 0 }
+        if (now - a.at > STEP) { a.at = now; st.applyScene(SCENES[a.idx % SCENES.length].params); a.idx++ }
+      } else if (a.on) a.on = false
       n++
       if (n % 6 === 0) audioUpdate()   // 背景音引擎（未開啟時為 no-op）
       if (n % 90 === 0) st.persistParams()
@@ -93,12 +118,17 @@ export default function App() {
     return () => cancelAnimationFrame(raf.current)
   }, [])
 
+  const onWheel = (e) => { const st = useStore.getState(); st.input('zoom', (st.params.zoom ?? 0.5) - e.deltaY * 0.0008) }
+
   return (
     <div className={'app' + (stage ? ' stagemode' : '')} style={{ '--panel-w': panelW + 'px', '--monitor-h': monitorH + 'px', '--canvas-vh': canvasVh }}>
       {stage && <button className="stage-exit" onClick={() => setStage(false)} title="離開演出模式（或按 H）">✕</button>}
       <TopBar onConnect={connect} onInfo={() => setShowInfo(true)} onVK={() => setShowVK((v) => !v)} vkOn={showVK} />
       <main className="stage">
-        <div className="canvas-wrap" onDoubleClick={() => setStage((s) => !s)} title="雙擊進入/離開演出模式（或按 H）"><Scene3D /></div>
+        <div className="canvas-wrap" onDoubleClick={() => setStage((s) => !s)} onWheel={onWheel} title="雙擊演出模式 · 滾輪縮放">
+          <Suspense fallback={<div className="canvas-loading">載入海洋…</div>}><Scene3D /></Suspense>
+          <ParamHUD />
+        </div>
         <Splitter axis="x" onDelta={(dx) => setPanelW((w) => clamp(w - dx, 260, 640))} />
         <div className="sheet-handle" onPointerDown={sheetDrag} title="拖曳調整面板高度"><span /></div>
         <ParamPanel />

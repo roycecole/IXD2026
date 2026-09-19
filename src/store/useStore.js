@@ -2,6 +2,10 @@ import { create } from 'zustand'
 import { PARAMS, PARAM_ORDER, DEFAULT_BINDINGS, ACTION_BINDINGS } from '../params/registry.js'
 import { LS, SS, loadLS, saveLS, removeLS, loadSS, saveSS } from '../lib/persist.js'
 import { noteQueue } from '../audio/bus.js'
+import { setHud } from './hud.js'
+import { touch } from './activity.js'
+
+const haptic = (ms) => { try { navigator.vibrate && navigator.vibrate(ms) } catch (e) {} }
 
 const clamp01 = (v) => Math.max(0, Math.min(1, v))
 const perfNow = () => { try { return performance.now() / 1000 } catch (e) { return 0 } }
@@ -33,6 +37,7 @@ export const useStore = create((set, get) => ({
   log: [],
   rec: { mode: 'idle', playhead: 0, duration: (savedRec && savedRec.duration) || 0, playIndex: 0, count: recBuffer.length },
   spawns: { whale: 0, dolphin: 0, turtle: 0 },   // 按鈕觸發計數（場景讀取後生成訪客）
+  gov: null,                                     // 真實海況資料快照（public/data/ocean.json）
 
   // ---- 參數 ----
   setParam: (pid, v) => set((s) => ({ params: { ...s.params, [pid]: clamp01(v) } })),
@@ -51,6 +56,7 @@ export const useStore = create((set, get) => ({
       t.caught = true
     }
     st.setParam(pid, v)
+    setHud(pid, clamp01(v)); touch()   // 參數 HUD + 活動時間戳
     if (st.rec.mode === 'recording') recBuffer.push({ t: st.rec.playhead, pid, value: clamp01(v) })
   },
 
@@ -66,6 +72,7 @@ export const useStore = create((set, get) => ({
 
   handleCC: (cc, value01) => {
     const st = get()
+    touch()
     const ln = st.learn
     if (ln.active && ln.target != null) {                    // 單一參數 Learn
       const b = { ...st.bindings }
@@ -123,6 +130,7 @@ export const useStore = create((set, get) => ({
   // 打擊墊 → 資料事件（velocity = 強度）+ 音訊觸發
   handleNote: (note, vel01) => {
     const st = get()
+    touch()
     noteQueue.push({ note, vel: vel01 })
     if (noteQueue.length > 32) noteQueue.shift()
     st.pushLog('in', `Note ${note} vel ${Math.round(vel01 * 127)} → 事件`)
@@ -194,15 +202,19 @@ export const useStore = create((set, get) => ({
   },
 
   // ---- 海洋動作（按鈕觸發）----
-  spawnWhale: () => { set((s) => ({ spawns: { ...s.spawns, whale: s.spawns.whale + 1 } })); get().pushLog('out', '鯨魚出現') },
-  spawnDolphin: () => { set((s) => ({ spawns: { ...s.spawns, dolphin: s.spawns.dolphin + 1 } })); get().pushLog('out', '海豚出現') },
-  spawnTurtle: () => { set((s) => ({ spawns: { ...s.spawns, turtle: s.spawns.turtle + 1 } })); get().pushLog('out', '海龜出現') },
-  clearTrash: () => { get().setParam('trashCount', 0); get().pushLog('out', '清除垃圾') },
+  spawnWhale: () => { touch(); haptic(18); set((s) => ({ spawns: { ...s.spawns, whale: s.spawns.whale + 1 } })); get().pushLog('out', '鯨魚出現') },
+  spawnDolphin: () => { touch(); haptic(14); set((s) => ({ spawns: { ...s.spawns, dolphin: s.spawns.dolphin + 1 } })); get().pushLog('out', '海豚出現') },
+  spawnTurtle: () => { touch(); haptic(14); set((s) => ({ spawns: { ...s.spawns, turtle: s.spawns.turtle + 1 } })); get().pushLog('out', '海龜出現') },
+  clearTrash: () => { touch(); haptic(10); get().setParam('trashCount', 0); get().pushLog('out', '清除垃圾') },
 
   // ---- 走帶鍵（實體 transport）----
   transportPlay: () => { const m = get().rec.mode; if (m === 'playing') get().stopPlayback(); else if (m === 'idle') get().startPlayback() },
   transportStop: () => { const m = get().rec.mode; if (m === 'recording') get().stopRecording(); else if (m === 'playing') get().stopPlayback() },
   transportRecord: () => { const m = get().rec.mode; if (m === 'recording') get().stopRecording(); else if (m === 'idle') get().startRecording() },
+
+  // ---- 真實海況（政府開放資料）----
+  setGov: (d) => set({ gov: d }),
+  applyGov: () => { const g = get().gov; if (g && g.params) { get().applyParams(g.params); get().pushLog('out', `套用今日海況（${g.sourceShort || '真實資料'}）`) } },
 }))
 
 // LED 回饋用：目前「播放中且待接管（soft-takeover 尚未咬合）」的 CC 清單

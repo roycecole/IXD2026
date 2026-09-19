@@ -1,0 +1,32 @@
+{
+  "source": "中央氣象署 CWA 自動氣象站 + 臺北翡翠水庫管理局（政府開放資料 OGDL v1）",
+  "sourceShort": "CWA · 翡翠水庫",
+  "fetchedAt": "2026-09-19T23:00:00+08:00",
+  "station": "花蓮",
+  "metrics": {
+    "airTemp": 25.8,
+    "humidity": 86,
+    "windSpeed": 4.8,
+    "windDir": 240,
+    "precip": 0,
+    "pressure": 1014,
+    "weather": "晴",
+    "reservoirPct": 77.3,
+    "waveHeightEst": 0.58
+  },
+  "params": {
+    "seaLevel": 0.69,
+    "current": 0.34,
+    "flowX": 0.15,
+    "flowY": 0.30,
+    "clarity": 0.74,
+    "glow": 0.60,
+    "jellyCount": 0.63,
+    "fishCount": 0.72,
+    "trashCount": 0.15,
+    "swimSpeed": 0.54,
+    "spin": 0.28,
+    "zoom": 0.5
+  },
+  "mapping": "水庫蓄水%→海水高度 · 風速→洋流 · 風向→洋流方向 · 晴雨→海水清澈 · 氣溫→水母 · 清澈→魚群 · 降雨→垃圾"
+}

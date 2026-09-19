@@ -1,8 +1,9 @@
 // 麥克風 = 風：對手機吹氣 → 浪變大。
 // 只做即時 RMS 音量偵測（AnalyserNode），不錄音、不儲存、不上傳。
-export const micState = { on: false, level: 0 }
+export const micState = { on: false, level: 0, claps: 0 }
 
 let stream = null, ctx = null, analyser = null, timer = null, data = null
+let prevRaw = 0, lastClap = 0
 
 export async function micToggle() {
   if (micState.on) {
@@ -28,6 +29,10 @@ export async function micToggle() {
       let sum = 0
       for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v }
       const rms = Math.sqrt(sum / data.length)
+      // 拍手 = 短促突波（與持續吹氣區分）：瞬間跳升且夠大
+      let now2 = 0; try { now2 = performance.now() } catch (e) {}
+      if (rms - prevRaw > 0.13 && rms > 0.2 && now2 - lastClap > 350) { lastClap = now2; micState.claps++ }
+      prevRaw = rms
       const target = Math.max(0, Math.min(1, (rms - 0.06) * 3.2)) // 門檻略過環境音
       // 快起慢落：吹氣立刻起浪，停止後緩緩平息
       micState.level += (target - micState.level) * (target > micState.level ? 0.5 : 0.06)
