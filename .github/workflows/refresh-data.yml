@@ -17,6 +17,8 @@ jobs:
         with:
           node-version: 20
       - run: node scripts/fetch-ocean-data.mjs
+        env:
+          CWA_KEY: ${{ secrets.CWA_KEY }} # 中央氣象署開放資料金鑰（政府源）；未設定時自動退回 Open-Meteo
       - name: Commit if changed
         run: |
           if ! git diff --quiet public/data/ocean.json; then

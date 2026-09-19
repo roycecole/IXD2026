@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useStore } from '../store/useStore.js'
 import { PARAMS, ACTION_BINDINGS } from '../params/registry.js'
 
@@ -5,7 +6,9 @@ import { PARAMS, ACTION_BINDINGS } from '../params/registry.js'
 // 每個控制都呼叫 store.handleCC(cc, value)，與真硬體走同一條綁定 / Learn / soft-takeover 路徑。
 
 const ACTION_LABELS = { spawnWhale: '鯨魚', spawnDolphin: '海豚', spawnTurtle: '海龜', clearTrash: '清垃圾' }
-const PAD_FX = ['水母', '浪湧', '漣漪', '氣泡', '亮星', '海豚', '鯨魚', '海龜'] // nanoPAD2 事件庫（velocity=強度）
+// nanoPAD2 事件庫：16 效果 × 4 bank（bank=強度檔位 弱/中/強/爆），velocity=力度
+const PAD_FX = ['水母', '浪湧', '漣漪', '氣泡', '亮星', '海豚', '鯨魚', '海龜', '淨化', '垃圾', '轉向', '閃光', '衝刺', '三漣', '星雨', '大浪']
+const BANK_NAMES = ['弱', '中', '強', '爆']
 const send = (cc, v) => useStore.getState().handleCC(cc, Math.max(0, Math.min(1, v)))
 const liveVal = (cc) => { const st = useStore.getState(); const pid = st.bindings[cc]; return pid ? (st.params[pid] ?? 0.5) : 0.5 }
 
@@ -56,6 +59,7 @@ function Fader({ cc, label, value }) {
 export default function VirtualController({ onClose }) {
   const params = useStore((s) => s.params)
   const bindings = useStore((s) => s.bindings)
+  const [bank, setBank] = useState(1) // 打擊墊 bank（強度檔位），對應 nanoPAD2 音高區段
   const val = (cc) => { const pid = bindings[cc]; return pid ? (params[pid] ?? 0.5) : 0.5 }
   const lab = (cc) => { const pid = bindings[cc]; return pid ? (PARAMS[pid]?.label || pid) : '—' }
   const transport = [{ cc: 45, l: '●', t: '錄製' }, { cc: 41, l: '▶', t: '播放' }, { cc: 42, l: '■', t: '停止' }, { cc: 46, l: '⟲', t: '清除' }]
@@ -90,11 +94,21 @@ export default function VirtualController({ onClose }) {
             </button>
           ))}
         </div>
-        <div className="vk-pads" title="nanoPAD2 打擊墊 · 視覺事件庫">
-          {Array.from({ length: 16 }, (_, i) => (
-            <button key={i} className="vk-pad" title={`Pad ${i + 1}｜${PAD_FX[i % 8]}`}
-                    onClick={() => useStore.getState().handleNote(48 + i, 0.9)}>{PAD_FX[i % 8]}</button>
-          ))}
+        <div className="vk-padwrap" role="region" aria-label="nanoPAD2 打擊墊：16 種效果，bank 切換強度">
+          <div className="vk-banks">
+            <span className="vk-cc">BANK</span>
+            {BANK_NAMES.map((b, i) => (
+              <button key={i} className={'vk-bank' + (bank === i ? ' on' : '')} aria-pressed={bank === i}
+                      title={`Bank ${i + 1}（${b}）｜nanoPAD2 對應音高 ${i * 16}–${i * 16 + 15}`}
+                      onClick={() => setBank(i)}>{b}</button>
+            ))}
+          </div>
+          <div className="vk-pads" title="nanoPAD2 打擊墊 · 16 種視覺事件（velocity=強度）">
+            {Array.from({ length: 16 }, (_, i) => (
+              <button key={i} className="vk-pad" title={`Pad ${i + 1}｜${PAD_FX[i]}（bank ${BANK_NAMES[bank]}）`}
+                      onClick={() => useStore.getState().handleNote(bank * 16 + i, 0.9)}>{PAD_FX[i]}</button>
+            ))}
+          </div>
         </div>
       </div>
     </div>

@@ -21,6 +21,7 @@ export const GROUPS = [
     { id: 'spin', label: '旋轉海洋球', value: 0.30 },
     { id: 'zoom', label: '視角遠近',   value: 0.50 },
     { id: 'glow', label: '夢幻輝光',   value: 0.60 },
+    { id: 'hue',  label: '海色色相',   value: 0.50 }, // 場景配色：0 墨綠 ← 0.5 湛藍 → 1 紫粉
   ]},
 ]
 

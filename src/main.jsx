@@ -1,6 +1,5 @@
-import React from 'react'
+import React, { Suspense, lazy } from 'react'
 import { createRoot } from 'react-dom/client'
-import App from './App.jsx'
 import { useStore } from './store/useStore.js'
 import './styles.css'
 
@@ -12,8 +11,15 @@ if (import.meta.env.PROD && 'serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {})
 }
 
+// #remote=<hostId> → 手機遙控頁（輕量，不載 three / 主畫面）；否則載入完整導演台
+const remoteMatch = (location.hash || '').match(/^#remote=(.+)$/)
+const App = lazy(() => import('./App.jsx'))
+const RemoteApp = lazy(() => import('./remote/RemoteApp.jsx'))
+
 createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <App />
+    <Suspense fallback={<div className="canvas-loading">載入中…</div>}>
+      {remoteMatch ? <RemoteApp hostId={decodeURIComponent(remoteMatch[1])} /> : <App />}
+    </Suspense>
   </React.StrictMode>,
 )

@@ -6,7 +6,7 @@ export default function Monitor() {
   const outs = log.filter((l) => l.dir === 'out').slice(-4)
 
   return (
-    <footer className="monitor">
+    <section className="monitor" aria-label="輸入輸出監看：MIDI 進、系統事件出">
       <div className="mcol">
         <div className="mhead">IN · 演奏者（KORG）</div>
         {ins.length
@@ -19,6 +19,6 @@ export default function Monitor() {
           ? outs.map((l, i) => <div key={i} className="mline">{l.text}</div>)
           : <div className="mline dim">—</div>}
       </div>
-    </footer>
+    </section>
   )
 }

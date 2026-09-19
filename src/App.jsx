@@ -5,6 +5,7 @@ import Monitor from './ui/Monitor.jsx'
 import Splitter from './ui/Splitter.jsx'
 import Footer from './ui/Footer.jsx'
 import InfoModal from './ui/InfoModal.jsx'
+import MultiModal from './ui/MultiModal.jsx'
 import VirtualController from './ui/VirtualController.jsx'
 import ParamHUD from './ui/ParamHUD.jsx'
 import TakeoverHint from './ui/TakeoverHint.jsx'
@@ -21,6 +22,26 @@ const Scene3D = lazy(() => import('./scene/Scene3D.jsx')) // code-split：three 
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
 
+// Gamepad 搖桿 → 海（左桿=洋流方向、右桿=自轉/海水高度、A/B/X/Y=召喚、Start=播放）
+const gpPrev = []
+function pollGamepad(st) {
+  let pad = null
+  try { const pads = navigator.getGamepads ? navigator.getGamepads() : []; for (const p of pads) if (p && p.connected) { pad = p; break } } catch (e) {}
+  if (!pad) return
+  const dz = (v) => (Math.abs(v) > 0.18 ? v : 0)
+  const ax0 = dz(pad.axes[0] || 0), ax1 = dz(pad.axes[1] || 0)
+  if (ax0) st.input('flowX', 0.5 + ax0 * 0.5)
+  if (ax1) st.input('flowY', 0.5 - ax1 * 0.5)
+  const ax2 = dz(pad.axes[2] || 0), ax3 = dz(pad.axes[3] || 0)
+  if (ax2) st.input('spin', (st.params.spin ?? 0.3) + ax2 * 0.012)
+  if (ax3) st.input('seaLevel', (st.params.seaLevel ?? 0.5) - ax3 * 0.008)
+  for (const [i, a] of [[0, 'spawnDolphin'], [1, 'spawnWhale'], [2, 'spawnTurtle'], [3, 'clearTrash'], [9, 'transportPlay'], [8, 'transportRecord']]) {
+    const pr = !!(pad.buttons[i] && pad.buttons[i].pressed)
+    if (pr && !gpPrev[i]) { const fn = st[a]; if (fn) fn() }
+    gpPrev[i] = pr
+  }
+}
+
 export default function App() {
   const { connect } = useMIDI()
   const raf = useRef(0)
@@ -34,6 +55,31 @@ export default function App() {
   const [showVK, setShowVK] = useState(false) // 虛擬控制器
   const [showInfo, setShowInfo] = useState(() => { try { return !localStorage.getItem('ixd2026.seen') } catch (e) { return true } })
   const closeInfo = () => { setShowInfo(false); try { localStorage.setItem('ixd2026.seen', '1') } catch (e) {} }
+  const [showMulti, setShowMulti] = useState(false)     // 多人合奏 QR
+  const [installEvt, setInstallEvt] = useState(null)    // PWA 加入主畫面
+  const [updReady, setUpdReady] = useState(false)       // 部署新版 → 提示重新整理
+
+  // PWA：安裝提示（beforeinstallprompt）+ 更新 toast（新 SW 接管且非首次 → 有新版）
+  useEffect(() => {
+    const onBip = (e) => { e.preventDefault(); setInstallEvt(e) }
+    window.addEventListener('beforeinstallprompt', onBip)
+    const onInstalled = () => setInstallEvt(null)
+    window.addEventListener('appinstalled', onInstalled)
+    const sw = navigator.serviceWorker
+    const hadController = !!(sw && sw.controller)
+    const onCtrl = () => { if (hadController) setUpdReady(true) }
+    sw && sw.addEventListener && sw.addEventListener('controllerchange', onCtrl)
+    return () => {
+      window.removeEventListener('beforeinstallprompt', onBip)
+      window.removeEventListener('appinstalled', onInstalled)
+      sw && sw.removeEventListener && sw.removeEventListener('controllerchange', onCtrl)
+    }
+  }, [])
+  const doInstall = async () => {
+    const e = installEvt; if (!e) return
+    setInstallEvt(null)
+    try { await e.prompt() } catch (err) {}
+  }
 
   // 全域鍵盤：H 演出模式、空白鍵播放、R 錄製、1-4 召喚生物、? 說明（輸入/按鈕聚焦時放行原生行為）
   useEffect(() => {
@@ -110,6 +156,7 @@ export default function App() {
         if (now - a.at > STEP) { a.at = now; st.applyScene(SCENES[a.idx % SCENES.length].params); a.idx++ }
       } else if (a.on) a.on = false
       n++
+      if (n % 2 === 0) pollGamepad(st) // Gamepad 搖桿 / 按鈕（未接手把時為 no-op）
       if (n % 6 === 0) audioUpdate()   // 背景音引擎（未開啟時為 no-op）
       if (n % 90 === 0) st.persistParams()
       if (n % 600 === 0) st.persistLog()
@@ -139,7 +186,8 @@ export default function App() {
   return (
     <div className={'app' + (stage ? ' stagemode' : '')} style={{ '--panel-w': panelW + 'px', '--monitor-h': monitorH + 'px', '--canvas-vh': canvasVh }}>
       {stage && <button className="stage-exit" onClick={() => setStage(false)} title="離開演出模式（或按 H）">✕</button>}
-      <TopBar onConnect={connect} onInfo={() => setShowInfo(true)} onVK={() => setShowVK((v) => !v)} vkOn={showVK} />
+      <TopBar onConnect={connect} onInfo={() => setShowInfo(true)} onVK={() => setShowVK((v) => !v)} vkOn={showVK}
+              onMulti={() => setShowMulti((v) => !v)} multiOn={showMulti} />
       <main className="stage">
         <div className="canvas-wrap" onDoubleClick={() => setStage((s) => !s)} onWheel={onWheel} title="雙擊演出模式 · 滾輪縮放">
           <Suspense fallback={<div className="canvas-loading">載入海洋…</div>}><Scene3D /></Suspense>
@@ -152,9 +200,15 @@ export default function App() {
       </main>
       <Splitter axis="y" onDelta={(dy) => setMonitorH((h) => clamp(h - dy, 60, 340))} />
       <Monitor />
-      <Footer onInfo={() => setShowInfo(true)} />
+      <Footer onInfo={() => setShowInfo(true)} installEvt={installEvt} onInstall={doInstall} />
       {showVK && <VirtualController onClose={() => setShowVK(false)} />}
       {showInfo && <InfoModal onClose={closeInfo} />}
+      {showMulti && <MultiModal onClose={() => setShowMulti(false)} />}
+      {updReady && (
+        <button className="upd-toast" onClick={() => location.reload()} title="部署了新版本">
+          有新版本 · 點此更新
+        </button>
+      )}
     </div>
   )
 }

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useStore } from '../store/useStore.js'
 import { SCENES } from '../timeline/scenes.js'
 import { buildShareUrl } from '../lib/share.js'
-import { captureCanvas, downloadBlob } from '../lib/capture.js'
+import { captureCanvas, downloadBlob, shareSnapshot } from '../lib/capture.js'
 import { audioToggle, audioState } from '../audio/engine.js'
 import { micToggle } from '../audio/mic.js'
 
@@ -11,7 +11,7 @@ function fmt(t) {
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
-export default function TopBar({ onConnect, onInfo, onVK, vkOn }) {
+export default function TopBar({ onConnect, onInfo, onVK, vkOn, onMulti, multiOn }) {
   const rec = useStore((s) => s.rec)
   const midi = useStore((s) => s.midi)
   const startRecording = useStore((s) => s.startRecording)
@@ -70,6 +70,14 @@ export default function TopBar({ onConnect, onInfo, onVK, vkOn }) {
     pushLog('out', '匯出 LOG')
   }
 
+  const doShareImage = async () => {
+    const r = await shareSnapshot()
+    if (!r.ok) { setShareMsg('分享失敗：' + r.why); pushLog('out', '分享星球失敗：' + r.why) }
+    else if (r.how === 'download') { setShareMsg('已下載分享圖'); pushLog('out', '分享星球 → 下載 PNG') }
+    else if (r.how === 'share') pushLog('out', '分享星球 → 系統分享')
+    setTimeout(() => setShareMsg(''), 2200)
+  }
+
   return (
     <header className="topbar">
       <div className="transport">
@@ -93,6 +101,8 @@ export default function TopBar({ onConnect, onInfo, onVK, vkOn }) {
 
       <div className="tools">
         <button onClick={doShare} title="複製分享連結（帶目前參數）">分享</button>
+        <button onClick={doShareImage} title="分享星球：擷取此刻的海 → 分享 / 下載圖片">分享星球</button>
+        <button className={'conn' + (multiOn ? ' on' : '')} onClick={onMulti} title="多人合奏：手機掃 QR 當遙控器">多人</button>
         <button onClick={doCapture} disabled={capturing} title="錄製球體 10 秒並下載影片">
           {capturing ? `錄影 ${capPct}%` : '錄影'}
         </button>

@@ -23,6 +23,10 @@ const REDUCED = (() => { try { return window.matchMedia('(prefers-reduced-motion
 // ---- 手感 / 感測 ----
 let spinImpulse = 0                    // 拖曳釋放後的慣性自轉（指數衰減）
 let jellyPulse = 0                     // nanoPAD2 打擊墊 → 水母集體脈衝（衰減）
+let glowBoost = 0                      // 閃光事件（衰減）：水線 / 球殼 / 大氣短暫增亮
+let fishDash = 0                       // 魚群衝刺事件（衰減）：巡游 / 轉向加速
+let dayT = 0                           // 極慢晝夜相位（4 分鐘一輪，背景 / 霧色微變）
+const compass = { last: null }         // 指北針：轉身 → 洋流方向
 let lastTapAt = 0                      // 雙擊偵測：第二擊不重複爆星（留給演出模式切換）
 let gather = null                      // 長按聚集點：魚群游向此處
 const flow = { x: 0, z: 0 }            // 洋流方向向量（flowX/flowY 參數，nanoPAD2 X-Y 可綁）
@@ -36,6 +40,18 @@ async function ensureMotion() {        // 首次手勢時請求感測權限（iO
       if ((await DeviceOrientationEvent.requestPermission()) !== 'granted') return
     }
     window.addEventListener('deviceorientation', (e) => {
+      if (e.alpha != null) {                             // 指北針：明顯轉身（>8°）→ 洋流方向跟著羅盤
+        if (compass.last == null) compass.last = e.alpha
+        let da = e.alpha - compass.last
+        if (da > 180) da -= 360; if (da < -180) da += 360
+        if (Math.abs(da) > 8) {
+          compass.last = e.alpha
+          const rad = (e.alpha * Math.PI) / 180
+          const st = useStore.getState()
+          st.input('flowX', 0.5 + 0.4 * Math.sin(rad))
+          st.input('flowY', 0.5 + 0.4 * Math.cos(rad))
+        }
+      }
       if (e.beta == null || e.gamma == null) return
       if (gyro.beta0 == null) gyro.beta0 = e.beta       // 以拿起手機的角度為基準
       gyro.tz = Math.max(-0.45, Math.min(0.45, -(e.gamma / 90) * 0.8))
@@ -68,9 +84,10 @@ const VIS = {
 if (REDUCED) Object.assign(VIS, { surfLinesX: 16, jelly: 7, fish: 18, trash: 8, particles: 26, shootingStars: 0 })
 
 // ---- 平滑環境值 ----
-const env = { seaLevel: 0.55, current: 0.45, clarity: 0.6, jelly: 0.5, fish: 0.55, swim: 0.5, trash: 0.25, glow: 0.6 }
+const env = { seaLevel: 0.55, current: 0.45, clarity: 0.6, jelly: 0.5, fish: 0.55, swim: 0.5, trash: 0.25, glow: 0.6, hue: 0.5 }
 let waveTime = 0, waveMomentum = 0   // 拖曳球體 → 水體慣性（衰減）
-const seaY = () => (env.seaLevel - 0.5) * 2.0
+// 海水高度＝來源數值：0=near 見底、1=滿球（水面貼近球頂）；>97% 由 OverflowFx 觸發外緣溢流
+const seaY = () => Math.max(-1.75, Math.min(1.75, (env.seaLevel - 0.5) * 3.5))
 function waveH(x, z) {
   const T = waveTime
   const fv = Math.hypot(flow.x, flow.z)
@@ -81,7 +98,9 @@ function waveH(x, z) {
 const effClarity = () => env.clarity * (1 - 0.7 * env.trash)
 const effFish = () => Math.max(0, env.fish * (1 - 0.8 * env.trash))
 const effJelly = () => Math.max(0, env.jelly * (1 - 0.6 * env.trash))
-const wcol = { r: 0.55, g: 0.85, b: 1.0 } // 水線顏色（依清澈度更新）
+const wcol = { r: 0.55, g: 0.85, b: 1.0 } // 水線顏色（依清澈度 + 場景色相更新）
+const _wc = new THREE.Color()
+const waterHue = () => 0.28 + env.hue * 0.5 // hue 參數 → 色相：0 墨綠 ← 0.5 湛藍 → 1 紫粉
 
 // ---- 貼圖（僅粒子點 / 文字用）----
 const TEXS = {}
@@ -157,12 +176,16 @@ function EnvDriver() {
     env.swim += ((p.swimSpeed ?? 0.5) - env.swim) * k
     env.trash += ((p.trashCount ?? 0.25) - env.trash) * k
     env.glow += ((p.glow ?? 0.6) - env.glow) * k
+    env.hue += ((p.hue ?? 0.5) - env.hue) * k
     flow.x += (((p.flowX ?? 0.5) - 0.5) * 2 - flow.x) * k
     flow.z += (((p.flowY ?? 0.5) - 0.5) * 2 - flow.z) * k
     waveTime += dt * (0.45 + env.current * 1.5 + waveMomentum + micState.level * 2.2) // 吹氣 → 風起浪快
     waveMomentum *= Math.exp(-dt * 1.6)
+    glowBoost *= Math.exp(-dt * 2.2)
+    fishDash *= Math.exp(-dt * 1.4)
     const clar = effClarity()
-    wcol.r = 0.42 + clar * 0.13; wcol.g = 0.62 + clar * 0.23; wcol.b = 0.72 + clar * 0.28
+    _wc.setHSL(waterHue(), 0.5 + clar * 0.2, 0.55 + clar * 0.15) // 場景配色：色相轉調、清澈提亮
+    wcol.r = _wc.r; wcol.g = _wc.g; wcol.b = _wc.b
   })
   return null
 }
@@ -173,7 +196,7 @@ function WaterLines() {
   useFrame(() => {
     bBegin(batch)
     const yw = seaY()
-    const murkA = 0.1 + effClarity() * 0.16              // 線的基礎透明度（輕盈）
+    const murkA = 0.1 + effClarity() * 0.16 + glowBoost * 0.12 // 線的基礎透明度（輕盈；閃光事件短暫增亮）
     const crestT = 0.10 * (0.55 + env.current * 0.8)     // 浪尖門檻
     // 水面線（X 向）
     const zr = Math.sqrt(Math.max(0.05, WR * WR - yw * yw))
@@ -258,6 +281,7 @@ function WaterParticles() {
     })
     pts.geometry.attributes.position.needsUpdate = true
     pts.material.opacity = 0.35 + env.glow * 0.5
+    pts.material.color.setHSL(waterHue() + 0.04, 0.6, 0.74) // 粒子跟著場景色相
   })
   return <primitive object={pts} />
 }
@@ -268,7 +292,7 @@ function WaterVolume() {
   useFrame(() => {
     const m = ref.current; if (!m) return
     const clar = effClarity()
-    m.material.color.setHSL(0.56 - (1 - clar) * 0.12, 0.5, 0.14 + clar * 0.08)
+    m.material.color.setHSL(waterHue() - (1 - clar) * 0.1, 0.5, 0.14 + clar * 0.08)
     m.material.opacity = 0.05 + (1 - clar) * 0.16
   })
   return <mesh ref={ref}><sphereGeometry args={[WR, 32, 32]} /><meshBasicMaterial transparent opacity={0.08} side={THREE.BackSide} depthWrite={false} /></mesh>
@@ -449,7 +473,7 @@ function LineCreatures() {
     })
     // 魚群（疏密不均、速度差、轉向延遲）
     clusters.forEach((c) => {
-      c.ang += dt * c.speed * (0.3 + env.current * 0.7) * (0.4 + env.swim)
+      c.ang += dt * c.speed * (0.3 + env.current * 0.7) * (0.4 + env.swim) * (1 + fishDash)
       if (gather) {                                        // 長按聚集：魚群游向手指
         c.cx += (gather.x - c.cx) * Math.min(1, dt * 2)
         c.cy += (gather.y - c.cy) * Math.min(1, dt * 2)
@@ -464,10 +488,20 @@ function LineCreatures() {
     fishes.forEach((f, i) => {
       f.vis += ((i < fishActive ? 1 : 0) - f.vis) * Math.min(1, dt * 2)
       const c = clusters[f.cluster]
-      const k = Math.min(1, dt * f.lag * (0.4 + env.swim))
-      const nx = f.x + (c.cx + f.ox - f.x) * k
+      const k = Math.min(1, dt * f.lag * (0.4 + env.swim) * (1 + fishDash * 1.5))
+      let nx = f.x + (c.cx + f.ox - f.x) * k
       const ny = f.y + (c.cy + f.oy - f.y) * k
-      const nz = f.z + (c.cz + f.oz - f.z) * k
+      let nz = f.z + (c.cz + f.oz - f.z) * k
+      // 生態敘事：魚群主動避開垃圾（近距離斥力，遠離污染源）
+      for (let ti = 0; ti < trash.length; ti++) {
+        const o = trash[ti]; if (o.vis < 0.2) continue
+        const ddx = nx - o.x, ddz = nz - o.z
+        const d2 = ddx * ddx + ddz * ddz
+        if (d2 < 0.3 && d2 > 1e-6) {
+          const d = Math.sqrt(d2), push = (0.55 - d) / 0.55
+          nx += (ddx / d) * push * dt * 1.6; nz += (ddz / d) * push * dt * 1.6
+        }
+      }
       const dx = nx - f.x, dz = nz - f.z
       if (dx * dx + dz * dz > 1e-7) f.heading += angleTo(f.heading, Math.atan2(dz, dx)) * Math.min(1, dt * 3.5)
       f.x = nx; f.y = ny; f.z = nz
@@ -544,7 +578,9 @@ function drawRing(b, cx, cy, cz, rad, a) {
   }
 }
 
-// nanoPAD2 打擊墊 → 視覺事件庫（velocity=強度）：水母脈衝/浪湧/漣漪/氣泡柱/亮星/召喚鯨豚龜
+// nanoPAD2 打擊墊 → 視覺事件庫（velocity=強度）：16 效果 × 4 bank（bank=強度檔位）
+// 0水母脈衝 1浪湧 2漣漪 3氣泡柱 4亮星 5海豚 6鯨魚 7海龜
+// 8淨化波 9垃圾投放 10洋流轉向 11閃光 12魚群衝刺 13漣漪三連 14星雨 15大浪+氣泡
 function PadFx() {
   const ripples = useMemo(() => makeBatch(9 * 29), [])
   const rState = useMemo(() => Array.from({ length: 9 }, () => ({ active: false, t: 0, x: 0, y: 0, z: 0, str: 0 })), [])
@@ -559,22 +595,43 @@ function PadFx() {
   }, [])
   const spawnRipple = (v) => { const r = rState.find((s) => !s.active); if (!r) return; r.active = true; r.t = 0; r.str = 0.4 + v * 0.9; const a = Math.random() * Math.PI * 2, rr = Math.random() * 0.9; r.x = Math.cos(a) * rr; r.z = Math.sin(a) * rr; r.y = seaY() + 0.02 }
   const spawnBubbles = (v) => { let n = Math.floor(6 + v * 16); const a = Math.random() * Math.PI * 2, rr = 0.3 + Math.random(); const cx = Math.cos(a) * rr, cz = Math.sin(a) * rr; for (const b of bubbles.st) { if (n <= 0) break; if (b.active) continue; b.active = true; b.t = 0; b.x = cx + (Math.random() - 0.5) * 0.25; b.z = cz + (Math.random() - 0.5) * 0.25; b.y = -WR * 0.7 + Math.random() * 0.3; b.vy = 0.4 + v * 0.7; n-- } }
+  const lastPurify = useRef(0)
+  const spawnPurify = (v) => { // 淨化波：由球心擴散的大漣漪 × 3 + 全場短暫增亮
+    for (let i = 0; i < 3; i++) {
+      const r = rState.find((s) => !s.active); if (!r) break
+      r.active = true; r.t = -i * 0.18; r.str = 1.3 + v * 0.9 + i * 0.35
+      r.x = 0; r.z = 0; r.y = seaY() - 0.35 - i * 0.25
+    }
+    glowBoost = Math.min(1.6, glowBoost + 0.8 + v * 0.5)
+  }
   useFrame((_, dt) => {
+    const sp = useStore.getState().spawns
+    if (sp.purify > lastPurify.current) { lastPurify.current = sp.purify; spawnPurify(1) } // 清垃圾 → 淨化波
     while (padEvents.length) {
-      const e = padEvents.shift(), v = e.vel
-      switch (e.ev % 8) {
+      const e = padEvents.shift()
+      const v = Math.min(1, e.vel * [0.7, 1, 1.35, 1.7][e.bank || 0]) // bank → 強度檔位
+      const st = useStore.getState()
+      switch (e.ev % 16) {
         case 0: jellyPulse = Math.max(jellyPulse, v); break
         case 1: waveMomentum = Math.min(3, waveMomentum + v * 1.5); break
         case 2: spawnRipple(v); break
         case 3: spawnBubbles(v); break
         case 4: burstQueue.push({ x: (Math.random() - 0.5) * 2, y: seaY() + 0.1, z: (Math.random() - 0.5) * 2 }); break
-        case 5: useStore.getState().spawnDolphin(); break
-        case 6: useStore.getState().spawnWhale(); break
-        default: useStore.getState().spawnTurtle(); break
+        case 5: st.spawnDolphin(); break
+        case 6: st.spawnWhale(); break
+        case 7: st.spawnTurtle(); break
+        case 8: spawnPurify(v); break
+        case 9: st.input('trashCount', Math.min(1, (st.params.trashCount ?? 0) + 0.12 * v)); break
+        case 10: { const a2 = Math.random() * Math.PI * 2; st.input('flowX', 0.5 + 0.45 * Math.cos(a2) * v); st.input('flowY', 0.5 + 0.45 * Math.sin(a2) * v); break }
+        case 11: glowBoost = Math.min(1.6, glowBoost + 0.5 + v * 0.9); break
+        case 12: fishDash = Math.min(2, fishDash + 0.6 + v); break
+        case 13: for (let i2 = 0; i2 < 3; i2++) spawnRipple(v * (0.6 + i2 * 0.3)); break
+        case 14: for (let i2 = 0; i2 < 4; i2++) burstQueue.push({ x: (Math.random() - 0.5) * 2.4, y: seaY() + 0.2 + Math.random() * 0.9, z: (Math.random() - 0.5) * 2.4 }); break
+        default: waveMomentum = Math.min(3, waveMomentum + v * 2); spawnBubbles(v); break
       }
     }
     bBegin(ripples)
-    rState.forEach((r) => { if (!r.active) return; r.t += dt; if (r.t > 1.6) { r.active = false; return } const rad = r.str * (0.25 + r.t * 1.7); drawRing(ripples, r.x, r.y, r.z, rad, Math.max(0, 1 - r.t / 1.6) * 0.6) })
+    rState.forEach((r) => { if (!r.active) return; r.t += dt; if (r.t < 0) return; if (r.t > 1.6) { r.active = false; return } const rad = r.str * (0.25 + r.t * 1.7); drawRing(ripples, r.x, r.y, r.z, rad, Math.max(0, 1 - r.t / 1.6) * 0.6) })
     bEnd(ripples)
     const bp = bubbles.m.geometry.attributes.position.array, bc = bubbles.m.geometry.attributes.color.array
     bubbles.st.forEach((b, i) => {
@@ -747,7 +804,7 @@ function GlassShell() {
       mat.uniforms.uOpacity.value = 0.2 + env.glow * 0.24 + breath * 0.28
     } else {
       mat.uniforms.uColor.value.lerp(cols.base, 0.06)
-      mat.uniforms.uOpacity.value = 0.16 + env.glow * 0.24
+      mat.uniforms.uOpacity.value = 0.16 + env.glow * 0.24 + glowBoost * 0.22
     }
     mat.uniforms.uPoke.value.copy(poke.dir)
     mat.uniforms.uPokeStr.value = poke.str
@@ -797,7 +854,7 @@ function AtmosphereGlow() {
     vertexShader: 'uniform vec3 uPoke; uniform float uPokeStr; varying vec3 vN; varying vec3 vV; void main(){ vec3 nrm=normalize(position); float infl=smoothstep(0.3,1.0,dot(nrm,uPoke)); float back=smoothstep(0.45,1.0,dot(nrm,-uPoke)); vec3 pos=position-nrm*infl*uPokeStr+nrm*back*uPokeStr*0.35; vec4 mv=modelViewMatrix*vec4(pos,1.0); vN=normalize(normalMatrix*normal); vV=normalize(-mv.xyz); gl_Position=projectionMatrix*mv; }',
     fragmentShader: 'varying vec3 vN; varying vec3 vV; uniform vec3 uColor; void main(){ float f=pow(1.0-abs(dot(vN,vV)),3.5); gl_FragColor=vec4(uColor, f*0.45); }',
   }), [])
-  useFrame(() => { mat.uniforms.uColor.value.setHSL(0.56, 0.8, 0.26 + env.glow * 0.16); mat.uniforms.uPoke.value.copy(poke.dir); mat.uniforms.uPokeStr.value = poke.str })
+  useFrame(() => { mat.uniforms.uColor.value.setHSL(waterHue() + 0.05, 0.8, 0.26 + env.glow * 0.16 + glowBoost * 0.08); mat.uniforms.uPoke.value.copy(poke.dir); mat.uniforms.uPokeStr.value = poke.str })
   return <mesh scale={1.12}><sphereGeometry args={[SHELL, 48, 48]} /><primitive object={mat} attach="material" /></mesh>
 }
 
@@ -920,8 +977,56 @@ function FogDriver() {
   const { scene } = useThree()
   const fog = useMemo(() => new THREE.Fog('#05121f', 5, 12), [])
   useEffect(() => { scene.fog = fog; return () => { scene.fog = null } }, [scene, fog])
-  useFrame(() => { const clar = effClarity(); fog.color.setHSL(0.57, 0.5, 0.04 + clar * 0.06); fog.near = 3.5 - (1 - clar) * 1.5; fog.far = 9 + clar * 6 })
+  useFrame((_, dt) => {
+    dayT += dt
+    const day = 0.5 + 0.5 * Math.sin((dayT / 240) * Math.PI * 2) // 生態敘事：極慢晝夜（4 分鐘一輪）
+    const clar = effClarity()
+    const hw = waterHue() + 0.05
+    fog.color.setHSL(hw, 0.5, 0.04 + clar * 0.06 + day * 0.012)
+    fog.near = 3.5 - (1 - clar) * 1.5; fog.far = 9 + clar * 6
+    const bg = scene.background
+    if (bg && bg.isColor) bg.setHSL(hw + 0.02, 0.42, 0.045 + day * 0.028) // 背景隨晝夜 / 場景配色微變
+  })
   return null
+}
+
+// 滿水位溢流：海水高度 >97% 時，液體不斷從水線沿「球體外緣」滑落（資料超標的視覺警示）
+function OverflowFx() {
+  const N = 46
+  const batch = useMemo(() => makeBatch(N), [])
+  const drops = useMemo(() => Array.from({ length: N }, () => ({ active: false, phi: 0, pol: 0, pol0: 0, vel: 0, t: 0 })), [])
+  const acc = useRef(0)
+  useFrame((_, dt) => {
+    const over = Math.max(0, (env.seaLevel - 0.97) / 0.03) // 0..1（100% 滿）
+    const SO = SHELL + 0.015
+    if (over > 0) {
+      acc.current += dt * (3 + over * 16)
+      const yw = Math.min(SO * 0.97, seaY())
+      const pol0 = Math.acos(Math.max(-1, Math.min(1, yw / SO)))
+      while (acc.current > 1) {
+        acc.current -= 1
+        const d = drops.find((s) => !s.active); if (!d) break
+        d.active = true; d.phi = Math.random() * Math.PI * 2
+        d.pol = d.pol0 = pol0 + Math.random() * 0.04; d.vel = 0.1 + Math.random() * 0.15; d.t = 0
+      }
+    }
+    bBegin(batch)
+    drops.forEach((d) => {
+      if (!d.active) return
+      d.t += dt
+      d.vel += dt * 0.55                       // 沿球面往下加速滑落
+      d.pol += d.vel * dt
+      if (d.pol > Math.PI * 0.96) { d.active = false; return }
+      const y1 = Math.cos(d.pol) * SO, r1 = Math.sin(d.pol) * SO
+      const p2 = Math.max(d.pol0, d.pol - 0.05 - d.vel * 0.06) // 拖尾（短線段 = 液滴流痕）
+      const y2 = Math.cos(p2) * SO, r2 = Math.sin(p2) * SO
+      const cs = Math.cos(d.phi), sn = Math.sin(d.phi)
+      const a = Math.min(1, d.t * 4) * Math.max(0.15, 1 - (d.pol - d.pol0) / 2.4) * 0.85
+      bSeg(batch, cs * r1, y1, sn * r1, cs * r2, y2, sn * r2, wcol.r + 0.2, wcol.g + 0.15, wcol.b, a)
+    })
+    bEnd(batch)
+  })
+  return <primitive object={batch.lines} />
 }
 
 // 果凍壓凹：背景點擊拖曳，離球體越近壓越深，放開欠阻尼回彈（寫入 poke，球殼/大氣頂點內凹）
@@ -986,6 +1091,7 @@ export default function Scene3D() {
       <ambientLight intensity={0.6} />
       <Ocean />
       <GlassShell />
+      <OverflowFx />
       <ScanHalo />
       <AtmosphereGlow />
       <SpaceNetwork />

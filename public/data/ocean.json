@@ -7,15 +7,35 @@
   "defaultOption": "feitsui",
   "options": [
     { "id": "feitsui", "name": "翡翠水庫", "region": "北", "level": 77.3,
-      "params": { "seaLevel": 0.69, "current": 0.34, "flowX": 0.15, "flowY": 0.30, "clarity": 0.74, "glow": 0.60, "jellyCount": 0.63, "fishCount": 0.67, "trashCount": 0.15, "swimSpeed": 0.54, "spin": 0.28, "zoom": 0.5 } },
+      "params": { "seaLevel": 0.77, "current": 0.34, "flowX": 0.15, "flowY": 0.30, "clarity": 0.74, "glow": 0.60, "hue": 0.50, "jellyCount": 0.63, "fishCount": 0.67, "trashCount": 0.15, "swimSpeed": 0.54, "spin": 0.28, "zoom": 0.5 } },
     { "id": "shimen", "name": "石門水庫", "region": "北", "level": 100.0,
-      "params": { "seaLevel": 0.80, "current": 0.34, "flowX": 0.15, "flowY": 0.30, "clarity": 0.74, "glow": 0.60, "jellyCount": 0.63, "fishCount": 0.75, "trashCount": 0.15, "swimSpeed": 0.54, "spin": 0.28, "zoom": 0.5 } },
+      "params": { "seaLevel": 1.0, "current": 0.34, "flowX": 0.15, "flowY": 0.30, "clarity": 0.74, "glow": 0.60, "hue": 0.50, "jellyCount": 0.63, "fishCount": 0.75, "trashCount": 0.15, "swimSpeed": 0.54, "spin": 0.28, "zoom": 0.5 },
+      "series": { "label": "進流量", "unit": "m³/s", "date": "2026-09-19", "points": [
+        { "h": 5, "v": 33.44 }, { "h": 6, "v": 38.08 }, { "h": 7, "v": 9.86 }, { "h": 8, "v": 34.1 },
+        { "h": 9, "v": 33.86 }, { "h": 10, "v": 34.1 }, { "h": 11, "v": 33.86 }, { "h": 12, "v": 34.1 },
+        { "h": 13, "v": 58.1 }, { "h": 14, "v": 58.1 }, { "h": 15, "v": 58.1 }, { "h": 16, "v": 15.14 },
+        { "h": 17, "v": 34.18 }, { "h": 18, "v": 34.42 }, { "h": 19, "v": 58.42 }, { "h": 20, "v": 58.42 },
+        { "h": 21, "v": 34.18 }, { "h": 22, "v": 33.36 }, { "h": 23, "v": 57.36 } ] } },
     { "id": "deji", "name": "德基水庫", "region": "中", "level": 98.5,
-      "params": { "seaLevel": 0.79, "current": 0.34, "flowX": 0.15, "flowY": 0.30, "clarity": 0.74, "glow": 0.60, "jellyCount": 0.63, "fishCount": 0.74, "trashCount": 0.15, "swimSpeed": 0.54, "spin": 0.28, "zoom": 0.5 } },
+      "params": { "seaLevel": 0.99, "current": 0.34, "flowX": 0.15, "flowY": 0.30, "clarity": 0.74, "glow": 0.60, "hue": 0.50, "jellyCount": 0.63, "fishCount": 0.74, "trashCount": 0.15, "swimSpeed": 0.54, "spin": 0.28, "zoom": 0.5 },
+      "series": { "label": "進流量", "unit": "m³/s", "date": "2026-09-19", "points": [
+        { "h": 0, "v": 25.06 }, { "h": 1, "v": 27.56 }, { "h": 2, "v": 22.86 }, { "h": 3, "v": 15.24 },
+        { "h": 4, "v": 17.24 }, { "h": 5, "v": 18.4 }, { "h": 6, "v": 19.18 }, { "h": 7, "v": 23.0 },
+        { "h": 8, "v": 21.86 }, { "h": 9, "v": 24.76 }, { "h": 10, "v": 24.69 }, { "h": 11, "v": 24.64 },
+        { "h": 12, "v": 26.51 }, { "h": 13, "v": 26.33 }, { "h": 14, "v": 26.17 }, { "h": 15, "v": 26.03 },
+        { "h": 16, "v": 25.9 }, { "h": 17, "v": 25.81 }, { "h": 18, "v": 26.0 }, { "h": 19, "v": 25.18 },
+        { "h": 20, "v": 25.64 }, { "h": 21, "v": 24.98 }, { "h": 22, "v": 25.4 }, { "h": 23, "v": 25.81 } ] } },
     { "id": "zengwen", "name": "曾文水庫", "region": "南", "level": 100.0,
-      "params": { "seaLevel": 0.80, "current": 0.34, "flowX": 0.15, "flowY": 0.30, "clarity": 0.74, "glow": 0.60, "jellyCount": 0.63, "fishCount": 0.75, "trashCount": 0.15, "swimSpeed": 0.54, "spin": 0.28, "zoom": 0.5 } },
+      "params": { "seaLevel": 1.0, "current": 0.34, "flowX": 0.15, "flowY": 0.30, "clarity": 0.74, "glow": 0.60, "hue": 0.50, "jellyCount": 0.63, "fishCount": 0.75, "trashCount": 0.15, "swimSpeed": 0.54, "spin": 0.28, "zoom": 0.5 },
+      "series": { "label": "進流量", "unit": "m³/s", "date": "2026-09-19", "points": [
+        { "h": 0, "v": 50.0 }, { "h": 1, "v": 14.81 }, { "h": 2, "v": 52.78 }, { "h": 3, "v": 21.76 },
+        { "h": 4, "v": 19.91 }, { "h": 5, "v": 18.52 }, { "h": 6, "v": 52.78 }, { "h": 7, "v": 18.98 },
+        { "h": 8, "v": 52.78 }, { "h": 9, "v": 20.37 }, { "h": 10, "v": 20.37 }, { "h": 11, "v": 18.98 },
+        { "h": 12, "v": 52.78 }, { "h": 13, "v": 18.98 }, { "h": 14, "v": 22.22 }, { "h": 15, "v": 38.89 },
+        { "h": 16, "v": 25.46 }, { "h": 17, "v": 38.89 }, { "h": 18, "v": 38.89 }, { "h": 19, "v": 24.54 },
+        { "h": 20, "v": 38.89 }, { "h": 21, "v": 18.52 }, { "h": 22, "v": 13.89 }, { "h": 23, "v": 7.87 } ] } },
     { "id": "nanhua", "name": "南化水庫", "region": "南", "level": 99.4,
-      "params": { "seaLevel": 0.80, "current": 0.34, "flowX": 0.15, "flowY": 0.30, "clarity": 0.74, "glow": 0.60, "jellyCount": 0.63, "fishCount": 0.74, "trashCount": 0.15, "swimSpeed": 0.54, "spin": 0.28, "zoom": 0.5 } }
+      "params": { "seaLevel": 0.99, "current": 0.34, "flowX": 0.15, "flowY": 0.30, "clarity": 0.74, "glow": 0.60, "hue": 0.50, "jellyCount": 0.63, "fishCount": 0.74, "trashCount": 0.15, "swimSpeed": 0.54, "spin": 0.28, "zoom": 0.5 } }
   ],
-  "mapping": "水庫水位→海水高度 · 風速→洋流 · 風向→洋流方向 · 晴雨→海水清澈 · 氣溫→水母 · 清澈→魚群 · 降雨→垃圾"
+  "mapping": "水庫水位%→海水高度（滿庫=滿球、溢流）· 風速→洋流 · 風向→洋流方向 · 晴雨→清澈 · 氣溫→水母 · 進流量時序→資料播放"
 }

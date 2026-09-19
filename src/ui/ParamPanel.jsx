@@ -42,6 +42,8 @@ export default function ParamPanel({ onVK }) {
   const govOptionId = useStore((s) => s.govOptionId)
   const setGovOption = useStore((s) => s.setGovOption)
   const applyGov = useStore((s) => s.applyGov)
+  const playGovSeries = useStore((s) => s.playGovSeries)
+  const recMode = useStore((s) => s.rec.mode)
   const learn = useStore((s) => s.learn)
   const startSeqLearn = useStore((s) => s.startSeqLearn)
   const cancelLearn = useStore((s) => s.cancelLearn)
@@ -51,8 +53,11 @@ export default function ParamPanel({ onVK }) {
   const clearTrash = useStore((s) => s.clearTrash)
   const seqActive = learn.active && learn.seq >= 0
 
+  const opt = gov && gov.options && (gov.options.find((o) => o.id === govOptionId) || gov.options[0])
+  const hasSeries = !!(opt && opt.series && opt.series.points && opt.series.points.length)
+
   return (
-    <aside className="panel">
+    <aside className="panel" aria-label="控制面板：真實海況與海洋參數">
       <div className="panel-head">
         <span className="dim">控制器</span>
         {midi.connected
@@ -69,6 +74,12 @@ export default function ParamPanel({ onVK }) {
             {gov.options.map((o) => <option key={o.id} value={o.id}>{o.name}（水位 {o.level}%）</option>)}
           </select>
           <button className="gov-apply" onClick={applyGov}>套用此海況</button>
+          {hasSeries && (
+            <button className="gov-apply gov-series" onClick={playGovSeries} disabled={recMode !== 'idle'}
+                    title={`把 ${opt.name} ${opt.series.date || ''} 的每小時${opt.series.label}轉成自動化播放：進流大 → 水流急、魚群聚`}>
+              ▶ 播放 24h {opt.series.label}資料
+            </button>
+          )}
         </div>
       )}
 

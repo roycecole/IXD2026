@@ -7,6 +7,40 @@ export function downloadBlob(blob, name) {
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove() }, 1000)
 }
 
+// 分享星球：擷取當下球體畫面 → 合成分享卡（標題 + 網址）→ 手機走 Web Share、桌機下載 PNG。
+export async function shareSnapshot() {
+  const canvas = document.querySelector('.canvas-wrap canvas')
+  if (!canvas) return { ok: false, why: '找不到畫布' }
+  const S = 1080
+  const card = document.createElement('canvas')
+  card.width = S; card.height = S
+  const g = card.getContext('2d')
+  g.fillStyle = '#05101c'; g.fillRect(0, 0, S, S)
+  // 置中裁切（cover）
+  const sw = canvas.width, sh = canvas.height
+  const side = Math.min(sw, sh)
+  g.drawImage(canvas, (sw - side) / 2, (sh - side) / 2, side, side, 0, 0, S, S)
+  // 下緣漸層 + 文案
+  const grd = g.createLinearGradient(0, S - 220, 0, S)
+  grd.addColorStop(0, 'rgba(5,16,28,0)'); grd.addColorStop(1, 'rgba(5,16,28,0.92)')
+  g.fillStyle = grd; g.fillRect(0, S - 220, S, 220)
+  g.fillStyle = '#eaf6ff'; g.font = '600 44px system-ui, -apple-system, "Noto Sans TC", sans-serif'
+  g.fillText('MidiSea 資料導演台', 48, S - 96)
+  g.fillStyle = 'rgba(190,228,255,0.75)'; g.font = '400 30px system-ui, -apple-system, "Noto Sans TC", sans-serif'
+  g.fillText('midisea.shyetech.com · 台灣政府開放資料的一片海', 48, S - 44)
+  const blob = await new Promise((res) => card.toBlob(res, 'image/png'))
+  if (!blob) return { ok: false, why: '截圖失敗' }
+  const file = new File([blob], 'midisea-star.png', { type: 'image/png' })
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: 'MidiSea 資料導演台', text: '我在 MidiSea 演了一片海' })
+      return { ok: true, how: 'share' }
+    }
+  } catch (e) { if (e && e.name === 'AbortError') return { ok: true, how: 'cancel' } }
+  downloadBlob(blob, 'midisea-star.png')
+  return { ok: true, how: 'download' }
+}
+
 // 錄製 .canvas-wrap 內的 WebGL 畫布 seconds 秒 → 回呼進度與完成的 Blob。
 // 優先 MP4（Chrome 新版 / Safari 支援），否則退回 WebM。
 export function captureCanvas({ seconds = 10, onProgress, onDone } = {}) {

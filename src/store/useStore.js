@@ -37,7 +37,7 @@ export const useStore = create((set, get) => ({
   midi: { connected: false, inputs: [], error: null },
   log: [],
   rec: { mode: 'idle', playhead: 0, duration: (savedRec && savedRec.duration) || 0, playIndex: 0, count: recBuffer.length },
-  spawns: { whale: 0, dolphin: 0, turtle: 0 },   // 按鈕觸發計數（場景讀取後生成訪客）
+  spawns: { whale: 0, dolphin: 0, turtle: 0, purify: 0 },   // 按鈕觸發計數（場景讀取後生成訪客 / 淨化波）
   gov: null,                                     // 真實海況資料快照（public/data/ocean.json）
   govOptionId: null,                             // 目前選擇的水庫海況
 
@@ -135,7 +135,9 @@ export const useStore = create((set, get) => ({
     touch(); haptic(8)
     noteQueue.push({ note, vel: vel01 })
     if (noteQueue.length > 32) noteQueue.shift()
-    padEvents.push({ ev: ((note % 16) + 16) % 16, vel: vel01 }) // 打擊墊 → 視覺事件庫
+    // 打擊墊 → 視覺事件庫：16 效果 × 4 bank（nanoPAD2 Scene / 音高區段 → bank 改變強度檔位）
+    const n = ((note % 64) + 64) % 64
+    padEvents.push({ ev: n % 16, bank: Math.floor(n / 16), vel: vel01 })
     if (padEvents.length > 40) padEvents.shift()
     st.pushLog('in', `Note ${note} vel ${Math.round(vel01 * 127)} → 事件`)
     st.pushLog('out', `/viz pad note=${note} power=${vel01.toFixed(2)}`)
@@ -209,7 +211,7 @@ export const useStore = create((set, get) => ({
   spawnWhale: () => { touch(); haptic(18); set((s) => ({ spawns: { ...s.spawns, whale: s.spawns.whale + 1 } })); get().pushLog('out', '鯨魚出現') },
   spawnDolphin: () => { touch(); haptic(14); set((s) => ({ spawns: { ...s.spawns, dolphin: s.spawns.dolphin + 1 } })); get().pushLog('out', '海豚出現') },
   spawnTurtle: () => { touch(); haptic(14); set((s) => ({ spawns: { ...s.spawns, turtle: s.spawns.turtle + 1 } })); get().pushLog('out', '海龜出現') },
-  clearTrash: () => { touch(); haptic(10); get().setParam('trashCount', 0); get().pushLog('out', '清除垃圾') },
+  clearTrash: () => { touch(); haptic(10); get().setParam('trashCount', 0); set((s) => ({ spawns: { ...s.spawns, purify: s.spawns.purify + 1 } })); get().pushLog('out', '清除垃圾 → 淨化波') },
 
   // ---- 走帶鍵（實體 transport）----
   transportPlay: () => { const m = get().rec.mode; if (m === 'playing') get().stopPlayback(); else if (m === 'idle') get().startPlayback() },
@@ -221,6 +223,31 @@ export const useStore = create((set, get) => ({
   govOption: () => { const g = get().gov; if (!g) return null; if (g.options) return g.options.find((o) => o.id === get().govOptionId) || g.options[0]; return { params: g.params, name: g.sourceShort } },
   setGovOption: (id) => { set({ govOptionId: id }); get().applyGov() },
   applyGov: () => { const o = get().govOption(); if (o && o.params) { get().applyParams(o.params); get().pushLog('out', `套用海況：${o.name || '真實資料'}`) } },
+
+  // 資料播放：把該水庫的真實時間序列（24h 進流量）轉成自動化事件 → 走既有播放引擎。
+  // 進流量→洋流速度 + 魚群聚集；播放中一樣支援 soft-takeover 即時接手。
+  playGovSeries: () => {
+    const st = get()
+    if (st.rec.mode !== 'idle') return
+    const o = st.govOption()
+    const pts = o && o.series && o.series.points
+    if (!pts || !pts.length) return
+    if (o.params) st.applyParams(o.params) // 先落在該海況基準
+    const STEP = 1.1
+    const vmax = Math.max(...pts.map((p) => p.v)) || 1
+    recBuffer = PARAM_ORDER.map((pid) => ({ t: 0, pid, value: get().params[pid] }))
+    pts.forEach((p, i) => {
+      const t = i * STEP + 0.001
+      const n = clamp01(p.v / vmax)
+      recBuffer.push({ t, pid: 'current', value: clamp01(0.15 + n * 0.8) })
+      recBuffer.push({ t, pid: 'fishCount', value: clamp01(0.3 + n * 0.6) })
+      recBuffer.push({ t, pid: 'swimSpeed', value: clamp01(0.35 + n * 0.5) })
+    })
+    const dur = pts.length * STEP
+    set((s) => ({ rec: { ...s.rec, mode: 'idle', playhead: 0, playIndex: 0, duration: dur, count: recBuffer.length } }))
+    get().startPlayback()
+    get().pushLog('out', `▶ 資料播放：${o.name} ${o.series.date || ''} ${o.series.label}（${pts.length} 筆，${o.series.unit}）`)
+  },
 }))
 
 // LED 回饋用：目前「播放中且待接管（soft-takeover 尚未咬合）」的 CC 清單

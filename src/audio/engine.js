@@ -76,7 +76,14 @@ export async function audioToggle() {
   return audioState.on
 }
 
-const SCALE = [2, 2.25, 2.5, 3, 3.375, 4] // 大調五聲（相對根音的頻率比）
+// 生態敘事：聲音隨清澈轉調 — 清澈=大調五聲（明亮），混濁=小調五聲（轉暗）
+const SCALE_CLEAR = [2, 2.25, 2.5, 3, 3.375, 4]
+const SCALE_MURKY = [2, 2.4, 2.667, 3, 3.6, 4]
+function scaleNow() {
+  const p = useStore.getState().params
+  const clar = (p.clarity ?? 0.6) * (1 - 0.7 * (p.trashCount ?? 0.25))
+  return clar > 0.45 ? SCALE_CLEAR : SCALE_MURKY
+}
 
 let panTarget = 0
 // 由場景每幀回報生物位置（-1 左 ~ +1 右），叫聲跟著左右聲道移動
@@ -87,7 +94,8 @@ export function chime() {
   if (!N || muted) return
   const t = Tone.now()
   const root = 45 + ((useStore.getState().params.seaLevel ?? 0.5)) * 65
-  const f = Math.min(2200, root * 4 * SCALE[(Math.random() * SCALE.length) | 0])
+  const SC = scaleNow()
+  const f = Math.min(2200, root * 4 * SC[(Math.random() * SC.length) | 0])
   N.pluck.triggerAttackRelease(f, 0.5, t + 0.01, 0.2)
   N.pluck.triggerAttackRelease(Math.min(2600, f * 1.5), 0.6, t + 0.09, 0.13)
 }
@@ -132,7 +140,8 @@ export function audioUpdate() {
   const density = 0.35 + (p.fishCount ?? 0.5) * (0.4 + (p.swimSpeed ?? 0.5)) * 1.4
   if (t > sparkleAt) {
     sparkleAt = t + (3.2 / density) * (0.5 + Math.random())
-    const f = root * SCALE[(Math.random() * SCALE.length) | 0] * 2
+    const SC = scaleNow()
+    const f = root * SC[(Math.random() * SC.length) | 0] * 2
     N.pluck.triggerAttackRelease(f, 0.35, t + 0.02, 0.12 + Math.random() * 0.18)
   }
 
