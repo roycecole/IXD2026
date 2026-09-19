@@ -1,0 +1,13 @@
+{
+  "name": "MidiSea 資料導演台",
+  "short_name": "MidiSea",
+  "description": "MIDI 控制器演奏的線稿海洋球",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#05101c",
+  "theme_color": "#05101c",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

@@ -6,6 +6,8 @@ export const GROUPS = [
     { id: 'seaLevel', label: '海水高度', value: 0.55 },
     { id: 'current',  label: '洋流速度', value: 0.45 },
     { id: 'clarity',  label: '海水清澈', value: 0.60 },
+    { id: 'flowX',    label: '洋流向 X', value: 0.50 },
+    { id: 'flowY',    label: '洋流向 Y', value: 0.50 },
   ]},
   { id: 'LIFE', label: 'LIFE', params: [
     { id: 'jellyCount', label: '水母數量', value: 0.50 },
@@ -38,12 +40,21 @@ export const DEFAULT_BINDINGS = {
   17: 'swimSpeed', // Knob 2 生物游動速度
   18: 'zoom',
   19: 'glow',
+  // nanoPAD2 X-Y 觸控板：X（出廠 Pitch Bend → 偽 CC128）→ 洋流向 X。
+  // Y 出廠常為 CC1，與 nanoKONTROL2 推桿2(CC1=洋流速度) 撞號 → 預設不綁，
+  // 需要時點「洋流向 Y」→ 滑觸控板 Y 即 Learn 綁定。
+  128: 'flowX',
 }
 
-// 按鈕動作綁定（nanoKONTROL2 Solo 1-4 出廠 = CC32-35）。按下 (value>0.5) 觸發。
+// 按鈕動作綁定（nanoKONTROL2 出廠 CC）。按下 (value>0.5) 觸發。
 export const ACTION_BINDINGS = {
-  32: 'spawnWhale',   // Button 1 鯨魚出現
-  33: 'spawnDolphin', // Button 2 海豚出現
-  34: 'spawnTurtle',  // Button 3 海龜出現
-  35: 'clearTrash',   // Button 4 清除垃圾
+  32: 'spawnWhale',      // Solo 1 鯨魚出現
+  33: 'spawnDolphin',    // Solo 2 海豚出現
+  34: 'spawnTurtle',     // Solo 3 海龜出現
+  35: 'clearTrash',      // Solo 4 清除垃圾
+  // 走帶鍵 → 錄製/播放（演出不碰滑鼠）
+  41: 'transportPlay',   // ▶ 播放/停止切換
+  42: 'transportStop',   // ■ 停止（錄製或播放）
+  45: 'transportRecord', // ● 錄製開始/結束切換
+  46: 'clearRec',        // Cycle 清除錄製
 }

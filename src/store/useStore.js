@@ -198,4 +198,22 @@ export const useStore = create((set, get) => ({
   spawnDolphin: () => { set((s) => ({ spawns: { ...s.spawns, dolphin: s.spawns.dolphin + 1 } })); get().pushLog('out', '海豚出現') },
   spawnTurtle: () => { set((s) => ({ spawns: { ...s.spawns, turtle: s.spawns.turtle + 1 } })); get().pushLog('out', '海龜出現') },
   clearTrash: () => { get().setParam('trashCount', 0); get().pushLog('out', '清除垃圾') },
+
+  // ---- 走帶鍵（實體 transport）----
+  transportPlay: () => { const m = get().rec.mode; if (m === 'playing') get().stopPlayback(); else if (m === 'idle') get().startPlayback() },
+  transportStop: () => { const m = get().rec.mode; if (m === 'recording') get().stopRecording(); else if (m === 'playing') get().stopPlayback() },
+  transportRecord: () => { const m = get().rec.mode; if (m === 'recording') get().stopRecording(); else if (m === 'idle') get().startRecording() },
 }))
+
+// LED 回饋用：目前「播放中且待接管（soft-takeover 尚未咬合）」的 CC 清單
+export function getPendingTakeoverCCs() {
+  const st = useStore.getState()
+  if (st.rec.mode !== 'playing') return []
+  const out = []
+  for (const cc of Object.keys(st.bindings)) {
+    const pid = st.bindings[cc]
+    const to = takeover[pid]
+    if (recParamSet.has(pid) && to && !to.caught) out.push(Number(cc))
+  }
+  return out
+}

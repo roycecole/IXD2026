@@ -14,6 +14,41 @@ const _v = new THREE.Vector3()
 const YAXIS = new THREE.Vector3(0, 1, 0)
 const bioNodes = []   // 生物節點（供 BioNetwork 科技連線）
 
+// ---- 手感 / 感測 ----
+let spinImpulse = 0                    // 拖曳釋放後的慣性自轉（指數衰減）
+let gather = null                      // 長按聚集點：魚群游向此處
+const flow = { x: 0, z: 0 }            // 洋流方向向量（flowX/flowY 參數，nanoPAD2 X-Y 可綁）
+const gyro = { tx: 0, tz: 0, x: 0, z: 0, beta0: null }
+let motionAsked = false
+async function ensureMotion() {        // 首次手勢時請求感測權限（iOS 需要）
+  if (motionAsked) return
+  motionAsked = true
+  try {
+    if (typeof DeviceOrientationEvent !== 'undefined' && DeviceOrientationEvent.requestPermission) {
+      if ((await DeviceOrientationEvent.requestPermission()) !== 'granted') return
+    }
+    window.addEventListener('deviceorientation', (e) => {
+      if (e.beta == null || e.gamma == null) return
+      if (gyro.beta0 == null) gyro.beta0 = e.beta       // 以拿起手機的角度為基準
+      gyro.tz = Math.max(-0.32, Math.min(0.32, -(e.gamma / 90) * 0.5))
+      gyro.tx = Math.max(-0.32, Math.min(0.32, ((e.beta - gyro.beta0) / 90) * 0.5))
+    })
+  } catch (err) {}
+  try {
+    if (typeof DeviceMotionEvent !== 'undefined' && DeviceMotionEvent.requestPermission) {
+      if ((await DeviceMotionEvent.requestPermission()) !== 'granted') return
+    }
+    let lastShake = 0
+    window.addEventListener('devicemotion', (e) => {
+      const a = e.accelerationIncludingGravity
+      if (!a) return
+      const mag = Math.abs(Math.hypot(a.x || 0, a.y || 0, a.z || 0) - 9.81)
+      const now = performance.now()
+      if (mag > 9 && now - lastShake > 700) { lastShake = now; waveMomentum = Math.min(3, waveMomentum + 1.3) } // 搖晃 → 攪動
+    })
+  } catch (err) {}
+}
+
 // ---- 集中管理的視覺參數 ----
 const VIS = {
   surfLinesX: 26, surfSamples: 26,   // 水面波浪線（僅水平流向，無垂直線條）
@@ -29,8 +64,10 @@ let waveTime = 0, waveMomentum = 0   // 拖曳球體 → 水體慣性（衰減�
 const seaY = () => (env.seaLevel - 0.5) * 2.0
 function waveH(x, z) {
   const T = waveTime
+  const fv = Math.hypot(flow.x, flow.z)
+  const dir = fv > 0.03 ? Math.sin((x * flow.x + z * flow.z) * 2.4 + T * 1.4) * 0.075 * fv : 0 // 洋流方向浪
   return (Math.sin(x * 1.7 + T) * 0.09 + Math.sin(z * 2.3 - T * 0.8) * 0.06 +
-    Math.sin(x * 0.8 + z * 1.4 + T * 1.5) * 0.05 + Math.sin(x * 2.9 - z * 1.1 - T * 1.2) * 0.03) * (0.55 + env.current * 0.8)
+    Math.sin(x * 0.8 + z * 1.4 + T * 1.5) * 0.05 + Math.sin(x * 2.9 - z * 1.1 - T * 1.2) * 0.03 + dir) * (0.55 + env.current * 0.8)
 }
 const effClarity = () => env.clarity * (1 - 0.7 * env.trash)
 const effFish = () => Math.max(0, env.fish * (1 - 0.8 * env.trash))
@@ -111,6 +148,8 @@ function EnvDriver() {
     env.swim += ((p.swimSpeed ?? 0.5) - env.swim) * k
     env.trash += ((p.trashCount ?? 0.25) - env.trash) * k
     env.glow += ((p.glow ?? 0.6) - env.glow) * k
+    flow.x += (((p.flowX ?? 0.5) - 0.5) * 2 - flow.x) * k
+    flow.z += (((p.flowY ?? 0.5) - 0.5) * 2 - flow.z) * k
     waveTime += dt * (0.45 + env.current * 1.5 + waveMomentum)
     waveMomentum *= Math.exp(-dt * 1.6)
     const clar = effClarity()
@@ -396,8 +435,15 @@ function LineCreatures() {
     // 魚群（疏密不均、速度差、轉向延遲）
     clusters.forEach((c) => {
       c.ang += dt * c.speed * (0.3 + env.current * 0.7) * (0.4 + env.swim)
-      c.cx = Math.cos(c.ang) * c.r; c.cz = Math.sin(c.ang) * c.r
-      c.cy = c.y + Math.sin(t * 0.5 + c.wobPh) * 0.15
+      if (gather) {                                        // 長按聚集：魚群游向手指
+        c.cx += (gather.x - c.cx) * Math.min(1, dt * 2)
+        c.cy += (gather.y - c.cy) * Math.min(1, dt * 2)
+        c.cz += (gather.z - c.cz) * Math.min(1, dt * 2)
+      } else {
+        c.cx = Math.cos(c.ang) * c.r + flow.x * 0.5        // 洋流推移
+        c.cz = Math.sin(c.ang) * c.r + flow.z * 0.5
+        c.cy = c.y + Math.sin(t * 0.5 + c.wobPh) * 0.15
+      }
     })
     const fishActive = Math.round(effFish() * VIS.fish)
     fishes.forEach((f, i) => {
@@ -418,8 +464,8 @@ function LineCreatures() {
     trash.forEach((o, i) => {
       o.vis += ((i < trashActive ? 1 : 0) - o.vis) * Math.min(1, dt * 2)
       o.rot += dt * o.rotSp * (0.4 + env.current)
-      o.x += dt * 0.045 * (0.3 + env.current) * Math.cos(o.ph)
-      o.z += dt * 0.038 * (0.3 + env.current) * Math.sin(o.ph * 1.3)
+      o.x += dt * (0.045 * (0.3 + env.current) * Math.cos(o.ph) + flow.x * 0.12)
+      o.z += dt * (0.038 * (0.3 + env.current) * Math.sin(o.ph * 1.3) + flow.z * 0.12)
       o.y += Math.sin(t * 0.4 + o.ph) * 0.0012
       const rr = Math.sqrt(o.x * o.x + o.z * o.z)
       if (rr > WR * 0.9) { o.x *= -0.95; o.z *= -0.95 }
@@ -472,15 +518,27 @@ function BioNetwork() {
 
 function Ocean() {
   const g = useRef()
-  useFrame((_, dt) => { const p = useStore.getState().params; if (g.current) g.current.rotation.y += Math.min(0.05, dt) * (0.04 + (p.spin ?? 0.3) * 1.4) })
+  const wt = useRef()
+  useFrame((_, dt) => {
+    const p = useStore.getState().params
+    if (g.current) g.current.rotation.y += Math.min(0.05, dt) * (0.04 + (p.spin ?? 0.3) * 1.4 + spinImpulse)
+    spinImpulse *= Math.exp(-dt * 1.8)                 // 放手後慣性衰減
+    gyro.x += (gyro.tx - gyro.x) * Math.min(1, dt * 3) // 陀螺儀平滑
+    gyro.z += (gyro.tz - gyro.z) * Math.min(1, dt * 3)
+    if (wt.current) { wt.current.rotation.x = gyro.x; wt.current.rotation.z = gyro.z } // 手機傾斜 → 水面保持水平
+  })
   return (
-    <group ref={g}>
-      <WaterVolume />
-      <WaterLines />
-      <WaterParticles />
-      <LineCreatures />
-      <BioNetwork />
-    </group>
+    <>
+      <group ref={wt}>
+        <WaterVolume />
+        <WaterLines />
+        <WaterParticles />
+      </group>
+      <group ref={g}>
+        <LineCreatures />
+        <BioNetwork />
+      </group>
+    </>
   )
 }
 
@@ -548,8 +606,9 @@ function GlassShell() {
     }
     return [mk(0.9, 0.9, -0.6), mk(1.05, 0.5, -0.75)]
   }, [])
-  const ptrs = useRef(new Map())   // pointerId -> { x, y, t0, moved, touch, point }
+  const ptrs = useRef(new Map())   // pointerId -> { x, y, t0, moved, touch, point, gathering }
   const pinch = useRef(null)       // { d0, zoom0 }
+  const gatherTimer = useRef(0)
   useEffect(() => {
     const mv = (e) => {
       const p = ptrs.current.get(e.pointerId)
@@ -559,6 +618,7 @@ function GlassShell() {
       p.moved += Math.abs(dx) + Math.abs(dy)
       const st = useStore.getState()
       if (ptrs.current.size === 2) {                      // 兩指縮放 → 視角遠近
+        gather = null
         const [a, b] = [...ptrs.current.values()]
         const d = Math.hypot(a.x - b.x, a.y - b.y)
         if (!pinch.current) pinch.current = { d0: d, zoom0: st.params.zoom ?? 0.5 }
@@ -566,7 +626,9 @@ function GlassShell() {
         return
       }
       if (ptrs.current.size === 1) {
+        if (p.gathering) return                           // 聚集中：手指停留餵魚，不轉球
         st.input('spin', st.params.spin + dx * 0.003)     // 左右拖曳 → 自轉
+        spinImpulse = Math.max(-6, Math.min(6, spinImpulse + dx * 0.05)) // 慣性儲能
         waveMomentum = Math.min(2.5, waveMomentum + Math.abs(dx) * 0.012)
         if (p.touch) st.input('seaLevel', (st.params.seaLevel ?? 0.5) - dy * 0.0045) // 觸控上下滑 → 海水高度
       }
@@ -574,7 +636,8 @@ function GlassShell() {
     const up = (e) => {
       const p = ptrs.current.get(e.pointerId)
       if (p) {
-        if (p.moved < 10 && performance.now() - p.t0 < 450 && p.point) burstQueue.push(p.point) // 點擊 → 亮星爆發
+        if (p.gathering) gather = null                    // 放開 → 魚群解散回巡游
+        else if (p.moved < 10 && performance.now() - p.t0 < 450 && p.point) burstQueue.push(p.point) // 點擊 → 亮星爆發
         ptrs.current.delete(e.pointerId)
       }
       if (ptrs.current.size < 2) pinch.current = null
@@ -592,14 +655,28 @@ function GlassShell() {
   return (
     <group>
       <mesh onPointerDown={(e) => {
+        ensureMotion() // 首次手勢：請求陀螺儀/加速度權限（iOS）
         const ne = e.nativeEvent || e
-        ptrs.current.set(e.pointerId ?? ne.pointerId, {
+        const id = e.pointerId ?? ne.pointerId
+        ptrs.current.set(id, {
           x: e.clientX ?? ne.clientX, y: e.clientY ?? ne.clientY,
-          t0: performance.now(), moved: 0,
+          t0: performance.now(), moved: 0, gathering: false,
           touch: (e.pointerType ?? ne.pointerType) === 'touch',
           point: e.point ? { x: e.point.x, y: e.point.y, z: e.point.z } : null,
         })
-        if (ptrs.current.size >= 2) pinch.current = null // 第二指落下 → 下次 move 重建縮放基準
+        if (ptrs.current.size >= 2) { pinch.current = null; gather = null } // 第二指落下 → 重建縮放基準
+        clearTimeout(gatherTimer.current)
+        gatherTimer.current = setTimeout(() => {          // 長按 0.5s → 魚群聚集到手指
+          const p = ptrs.current.get(id)
+          if (p && ptrs.current.size === 1 && p.moved < 15 && p.point) {
+            gather = {
+              x: p.point.x * 0.55,
+              y: Math.max(-WR * 0.75, Math.min(seaY() - 0.2, p.point.y * 0.55)),
+              z: p.point.z * 0.55,
+            }
+            p.gathering = true
+          }
+        }, 500)
       }}>
         <sphereGeometry args={[SHELL, 48, 48]} />
         <primitive object={mat} attach="material" />
