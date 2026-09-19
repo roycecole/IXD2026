@@ -54,7 +54,7 @@ export default function ParamPanel() {
       {midi.error && <p className="hint" style={{ color: '#ff7a7a' }}>MIDI：{midi.error}</p>}
 
       <div className="actions">
-        <button onClick={spawnWhale}>🐋 鯨魚</button>
+        <button onClick={spawnWhale}>鯨魚</button>
         <button onClick={spawnDolphin}>海豚</button>
         <button onClick={spawnTurtle}>海龜</button>
         <button onClick={clearTrash}>清除垃圾</button>

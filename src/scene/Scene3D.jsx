@@ -3,110 +3,109 @@ import { useRef, useMemo, useEffect } from 'react'
 import * as THREE from 'three'
 import { useStore } from '../store/useStore.js'
 
-// 效能：場景一律用 useStore.getState() 在 useFrame 內讀參數，MIDI 訊息不觸發 React re-render。
-// 本階段用程序化波浪近似水的運動（非流體模擬），球殼用簡化的邊緣反光（fresnel，非多層折射）。
+// 線稿海洋球：細線輪廓 + 微光 + 通透。程序化波浪（非流體模擬）、簡化弧形反光（非折射）。
+// 效能：useFrame 內以 getState() 讀參數；線段全部寫進少數共用 batch（2 個 draw call），
+// 不逐幀建立物件；粒子/線密度集中在 VIS 管理。
 
-const R = 1.95      // 內容半徑
-const SHELL = 2.02  // 球殼半徑
+const R = 1.95        // 內容半徑
+const SHELL = 2.02    // 球殼半徑
+const WR = R * 0.985  // 水體貼壁半徑
 const _v = new THREE.Vector3()
+const YAXIS = new THREE.Vector3(0, 1, 0)
+const bioNodes = []   // 生物節點（供 BioNetwork 科技連線）
 
-// ---- 平滑後的環境值（每幀由 EnvDriver 往目標 lerp，確保所有變化不跳動）----
-const env = { seaLevel: 0.55, current: 0.45, clarity: 0.6, jelly: 0.5, fish: 0.55, swim: 0.5, trash: 0.25, glow: 0.6 }
-const seaY = () => (env.seaLevel - 0.5) * 2.2
-const waveH = (x, z, t) => {
-  const c = 0.4 + env.current * 1.6
-  return Math.sin(x * 1.6 + t * c) * 0.11 + Math.sin(z * 2.1 - t * c * 0.8) * 0.07 + Math.sin((x + z) * 2.7 + t * c * 1.3) * 0.04
+// ---- 集中管理的視覺參數 ----
+const VIS = {
+  surfLinesX: 20, surfSamples: 24,   // 水面 X 向線數 / 每線取樣
+  surfLinesZ: 12, surfSamplesZ: 18,  // 水面 Z 向線
+  wallArcs: 26, wallSamples: 12,     // 內壁弧線
+  jelly: 12, fish: 40, trash: 14,    // 生物上限
+  particles: 90,                     // 發光粒子
 }
-// 生態耦合：垃圾越多 → 水越濁、生物越少
+
+// ---- 平滑環境值 ----
+const env = { seaLevel: 0.55, current: 0.45, clarity: 0.6, jelly: 0.5, fish: 0.55, swim: 0.5, trash: 0.25, glow: 0.6 }
+let waveTime = 0, waveMomentum = 0   // 拖曳球體 → 水體慣性（衰減）
+const seaY = () => (env.seaLevel - 0.5) * 2.0
+function waveH(x, z) {
+  const T = waveTime
+  return (Math.sin(x * 1.7 + T) * 0.09 + Math.sin(z * 2.3 - T * 0.8) * 0.06 +
+    Math.sin(x * 0.8 + z * 1.4 + T * 1.5) * 0.05 + Math.sin(x * 2.9 - z * 1.1 - T * 1.2) * 0.03) * (0.55 + env.current * 0.8)
+}
 const effClarity = () => env.clarity * (1 - 0.7 * env.trash)
 const effFish = () => Math.max(0, env.fish * (1 - 0.8 * env.trash))
 const effJelly = () => Math.max(0, env.jelly * (1 - 0.6 * env.trash))
+const wcol = { r: 0.55, g: 0.85, b: 1.0 } // 水線顏色（依清澈度更新）
 
-// ---- Canvas 貼圖產生器（js 繪製，快取）----
+// ---- 貼圖（僅粒子點 / 文字用）----
 const TEXS = {}
 function makeTex(key, size, draw) {
   if (TEXS[key]) return TEXS[key]
   const c = document.createElement('canvas'); c.width = c.height = size
   const g = c.getContext('2d'); draw(g, size)
-  const t = new THREE.CanvasTexture(c); t.anisotropy = 2
-  TEXS[key] = t; return t
+  const t = new THREE.CanvasTexture(c); TEXS[key] = t; return t
 }
-const glow = (g, color, blur) => { g.shadowColor = color; g.shadowBlur = blur }
-
+const dotTex = () => makeTex('dot', 64, (g, s) => {
+  const grd = g.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2)
+  grd.addColorStop(0, 'rgba(255,255,255,1)'); grd.addColorStop(0.3, 'rgba(190,235,255,0.9)'); grd.addColorStop(1, 'rgba(190,235,255,0)')
+  g.fillStyle = grd; g.fillRect(0, 0, s, s)
+})
 const glyphTex = (ch) => makeTex('gly' + ch, 128, (g, s) => {
-  glow(g, 'rgba(130,220,255,0.9)', 16)
+  g.shadowColor = 'rgba(130,220,255,0.9)'; g.shadowBlur = 16
   g.fillStyle = 'rgba(205,240,255,0.95)'
-  g.font = `bold ${s * 0.62}px "PingFang TC", system-ui, sans-serif`
+  g.font = `300 ${s * 0.6}px "PingFang TC", system-ui, sans-serif`
   g.textAlign = 'center'; g.textBaseline = 'middle'
   g.fillText(ch, s / 2, s / 2)
 })
-const radialTex = () => makeTex('radial', 128, (g, s) => {
-  const grd = g.createRadialGradient(s / 2, s / 2, s * 0.08, s / 2, s / 2, s * 0.5)
-  grd.addColorStop(0, 'rgba(255,255,255,1)'); grd.addColorStop(0.72, 'rgba(255,255,255,1)'); grd.addColorStop(1, 'rgba(255,255,255,0)')
-  g.fillStyle = grd; g.fillRect(0, 0, s, s)
-})
-const jellyTex = () => makeTex('jelly', 128, (g, s) => {
-  glow(g, 'rgba(155,215,255,0.9)', 26)
-  g.fillStyle = 'rgba(180,225,255,0.6)'
-  g.beginPath(); g.ellipse(s / 2, s * 0.42, s * 0.26, s * 0.2, 0, Math.PI, 0); g.closePath(); g.fill()
-  g.strokeStyle = 'rgba(195,232,255,0.55)'; g.lineWidth = s * 0.02
-  for (let i = -2; i <= 2; i++) { const x = s / 2 + i * s * 0.09; g.beginPath(); g.moveTo(x, s * 0.44); g.bezierCurveTo(x + s * 0.03, s * 0.6, x - s * 0.03, s * 0.74, x, s * 0.86); g.stroke() }
-})
-const fishTex = () => makeTex('fish', 128, (g, s) => {
-  glow(g, 'rgba(140,220,255,0.85)', 14)
-  g.fillStyle = 'rgba(185,232,255,0.92)'
-  g.beginPath(); g.ellipse(s * 0.46, s * 0.5, s * 0.28, s * 0.15, 0, 0, 7); g.fill()
-  g.beginPath(); g.moveTo(s * 0.2, s * 0.5); g.lineTo(s * 0.08, s * 0.36); g.lineTo(s * 0.08, s * 0.64); g.closePath(); g.fill()
-})
-const trashTex = () => makeTex('trash', 128, (g, s) => {
-  glow(g, 'rgba(90,110,120,0.5)', 8)
-  g.fillStyle = 'rgba(120,135,140,0.85)'
-  g.fillRect(s * 0.42, s * 0.32, s * 0.16, s * 0.42)
-  g.fillRect(s * 0.46, s * 0.22, s * 0.08, s * 0.12)
-  g.fillStyle = 'rgba(80,95,100,0.7)'; g.fillRect(s * 0.45, s * 0.18, s * 0.1, s * 0.05)
-})
-const whaleTex = () => makeTex('whale', 256, (g, s) => {
-  glow(g, 'rgba(120,180,240,0.8)', 22)
-  g.fillStyle = 'rgba(150,195,240,0.92)'
-  g.beginPath(); g.ellipse(s * 0.52, s * 0.5, s * 0.36, s * 0.2, 0, 0, 7); g.fill()
-  g.beginPath(); g.moveTo(s * 0.18, s * 0.5); g.quadraticCurveTo(s * 0.05, s * 0.3, s * 0.02, s * 0.34); g.quadraticCurveTo(s * 0.12, s * 0.5, s * 0.02, s * 0.66); g.quadraticCurveTo(s * 0.05, s * 0.7, s * 0.18, s * 0.5); g.fill()
-  g.fillStyle = 'rgba(20,40,70,0.85)'; g.beginPath(); g.arc(s * 0.76, s * 0.46, s * 0.02, 0, 7); g.fill()
-})
-const dolphinTex = () => makeTex('dolphin', 256, (g, s) => {
-  glow(g, 'rgba(150,210,255,0.85)', 18)
-  g.fillStyle = 'rgba(180,222,255,0.92)'
-  g.beginPath(); g.ellipse(s * 0.5, s * 0.52, s * 0.34, s * 0.14, -0.12, 0, 7); g.fill()
-  g.beginPath(); g.moveTo(s * 0.5, s * 0.4); g.lineTo(s * 0.56, s * 0.24); g.lineTo(s * 0.63, s * 0.44); g.closePath(); g.fill()
-  g.beginPath(); g.moveTo(s * 0.8, s * 0.5); g.lineTo(s * 0.93, s * 0.46); g.lineTo(s * 0.82, s * 0.57); g.closePath(); g.fill()
-  g.beginPath(); g.moveTo(s * 0.18, s * 0.52); g.lineTo(s * 0.06, s * 0.42); g.lineTo(s * 0.1, s * 0.55); g.lineTo(s * 0.06, s * 0.62); g.closePath(); g.fill()
-})
-const turtleTex = () => makeTex('turtle', 256, (g, s) => {
-  glow(g, 'rgba(140,225,200,0.85)', 18)
-  g.fillStyle = 'rgba(155,225,195,0.9)'
-  g.beginPath(); g.ellipse(s * 0.5, s * 0.52, s * 0.26, s * 0.22, 0, 0, 7); g.fill()
-  ;[[0.28, 0.34], [0.72, 0.34], [0.28, 0.72], [0.72, 0.72]].forEach(([fx, fy]) => { g.beginPath(); g.ellipse(s * fx, s * fy, s * 0.1, s * 0.05, fx < 0.5 ? -0.6 : 0.6, 0, 7); g.fill() })
-  g.beginPath(); g.ellipse(s * 0.5, s * 0.24, s * 0.08, s * 0.06, 0, 0, 7); g.fill()
-  g.strokeStyle = 'rgba(40,90,80,0.5)'; g.lineWidth = s * 0.012
-  g.beginPath(); g.moveTo(s * 0.5, s * 0.32); g.lineTo(s * 0.5, s * 0.72); g.moveTo(s * 0.32, s * 0.52); g.lineTo(s * 0.68, s * 0.52); g.stroke()
-})
-const creatureTex = (type) => (type === 'whale' ? whaleTex() : type === 'dolphin' ? dolphinTex() : turtleTex())
 
-function buildGrid(seg, size) {
-  const geo = new THREE.BufferGeometry(), N = seg + 1, verts = [], uvs = [], idx = []
-  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
-    verts.push((i / seg - 0.5) * size, 0, (j / seg - 0.5) * size); uvs.push(i / seg, j / seg)
-  }
-  for (let j = 0; j < seg; j++) for (let i = 0; i < seg; i++) {
-    const a = j * N + i, b = a + 1, c = a + N, d = c + 1; idx.push(a, c, b, b, c, d)
-  }
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3))
-  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
-  geo.setIndex(idx)
-  return geo
+// ---- 線段 batch（immediate-mode：每幀重寫，additive 微光）----
+function makeBatch(maxSeg) {
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(maxSeg * 6), 3))
+  geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(maxSeg * 6), 3))
+  const lines = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }))
+  lines.frustumCulled = false
+  return { lines, geo, pos: geo.attributes.position.array, col: geo.attributes.color.array, n: 0, max: maxSeg }
 }
-function sprite(map, extra) { return new THREE.Sprite(new THREE.SpriteMaterial({ map, transparent: true, depthWrite: false, opacity: 0, fog: true, ...extra })) }
+const bBegin = (b) => { b.n = 0 }
+function bSeg(b, ax, ay, az, bx, by, bz, r, g, bl, a) {
+  if (b.n >= b.max) return
+  const o = b.n * 6
+  b.pos[o] = ax; b.pos[o + 1] = ay; b.pos[o + 2] = az; b.pos[o + 3] = bx; b.pos[o + 4] = by; b.pos[o + 5] = bz
+  b.col[o] = r * a; b.col[o + 1] = g * a; b.col[o + 2] = bl * a
+  b.col[o + 3] = r * a; b.col[o + 4] = g * a; b.col[o + 5] = bl * a
+  b.n++
+}
+function bEnd(b) {
+  b.geo.setDrawRange(0, b.n * 2)
+  b.geo.attributes.position.needsUpdate = true
+  b.geo.attributes.color.needsUpdate = true
+}
+// 折線：local pts（flat xyz）繞 Y 旋轉 + 縮放 + 平移後寫入
+const SCR = new Float32Array(240)
+function poly(b, pts, n, px, py, pz, cs, sn, s, r, g, bl, a) {
+  let ax = 0, ay = 0, az = 0, first = true
+  for (let i = 0; i < n; i++) {
+    const lx = pts[i * 3] * s, ly = pts[i * 3 + 1] * s, lz = pts[i * 3 + 2] * s
+    const wx = px + lx * cs - lz * sn, wy = py + ly, wz = pz + lx * sn + lz * cs
+    if (!first) bSeg(b, ax, ay, az, wx, wy, wz, r, g, bl, a)
+    ax = wx; ay = wy; az = wz; first = false
+  }
+}
+// 舊網路層（節點連線）沿用
+function makeLineLayer(maxSeg) { const b = makeBatch(maxSeg); return b.lines._batch = b, b.lines }
+function updateLines(lines, pts, threshold, col, maxSeg) {
+  const b = lines._batch; bBegin(b)
+  for (let i = 0; i < pts.length && b.n < maxSeg; i++) for (let j = i + 1; j < pts.length && b.n < maxSeg; j++) {
+    const a = pts[i], c = pts[j]
+    const dx = a.x - c.x, dy = a.y - c.y, dz = a.z - c.z
+    const d = Math.sqrt(dx * dx + dy * dy + dz * dz)
+    if (d < threshold) bSeg(b, a.x, a.y, a.z, c.x, c.y, c.z, col.r, col.g, col.b, 1 - d / threshold)
+  }
+  bEnd(b)
+}
 
-// ---- 每幀把 env 往目標平滑 ----
+// ---- 每幀平滑 + 波時間推進（含拖曳慣性衰減）----
 function EnvDriver() {
   useFrame((_, dt) => {
     const p = useStore.getState().params
@@ -119,133 +118,401 @@ function EnvDriver() {
     env.swim += ((p.swimSpeed ?? 0.5) - env.swim) * k
     env.trash += ((p.trashCount ?? 0.25) - env.trash) * k
     env.glow += ((p.glow ?? 0.6) - env.glow) * k
+    waveTime += dt * (0.45 + env.current * 1.5 + waveMomentum)
+    waveMomentum *= Math.exp(-dt * 1.6)
+    const clar = effClarity()
+    wcol.r = 0.42 + clar * 0.13; wcol.g = 0.62 + clar * 0.23; wcol.b = 0.72 + clar * 0.28
   })
   return null
 }
 
+// ---- 水體（重點）：水面細線 + 沿內壁收攏到球底的弧線 + 斷續浪尖微光，連續變形 ----
+function WaterLines() {
+  const batch = useMemo(() => makeBatch(1500), [])
+  useFrame(() => {
+    bBegin(batch)
+    const yw = seaY()
+    const murkA = 0.1 + effClarity() * 0.16              // 線的基礎透明度（輕盈）
+    const crestT = 0.10 * (0.55 + env.current * 0.8)     // 浪尖門檻
+    // 水面線（X 向）
+    const zr = Math.sqrt(Math.max(0.05, WR * WR - yw * yw))
+    for (let j = 0; j < VIS.surfLinesX; j++) {
+      const z = ((j / (VIS.surfLinesX - 1)) * 2 - 1) * zr * 0.96
+      const xr = Math.sqrt(Math.max(0.001, WR * WR - yw * yw - z * z))
+      let ax = 0, ay = 0, az = 0, first = true
+      for (let i = 0; i <= VIS.surfSamples; i++) {
+        let x = ((i / VIS.surfSamples) * 2 - 1) * xr
+        let y = yw + waveH(x, z)
+        if (i === 0 || i === VIS.surfSamples) {           // 端點貼回內壁（交界沿壁爬升回落）
+          const rw = Math.sqrt(Math.max(0.001, WR * WR - y * y - z * z))
+          x = i === 0 ? -rw : rw
+        }
+        if (!first) {
+          const h = (y - yw)
+          const crest = h > crestT ? (h - crestT) * 6 : 0 // 局部斷續浪尖微光
+          bSeg(batch, ax, ay, az, x, y, z, wcol.r + crest * 0.3, wcol.g + crest * 0.25, wcol.b, Math.min(0.9, murkA + crest))
+        }
+        ax = x; ay = y; az = z; first = false
+      }
+    }
+    // 水面線（Z 向，較疏、更淡 → 不同方向疊加）
+    for (let j = 0; j < VIS.surfLinesZ; j++) {
+      const x = ((j / (VIS.surfLinesZ - 1)) * 2 - 1) * zr * 0.9
+      const zr2 = Math.sqrt(Math.max(0.001, WR * WR - yw * yw - x * x))
+      let ax = 0, ay = 0, az = 0, first = true
+      for (let i = 0; i <= VIS.surfSamplesZ; i++) {
+        let z = ((i / VIS.surfSamplesZ) * 2 - 1) * zr2
+        let y = yw + waveH(x, z)
+        if (i === 0 || i === VIS.surfSamplesZ) {
+          const rw = Math.sqrt(Math.max(0.001, WR * WR - y * y - x * x))
+          z = i === 0 ? -rw : rw
+        }
+        if (!first) bSeg(batch, ax, ay, az, x, y, z, wcol.r, wcol.g, wcol.b, murkA * 0.6)
+        ax = x; ay = y; az = z; first = false
+      }
+    }
+    // 內壁弧線：由水線接觸點沿球壁收攏到球底（上端隨浪連續變形）
+    let pcx = 0, pcy = 0, pcz = 0
+    for (let k = 0; k <= VIS.wallArcs; k++) {
+      const phi = (k / VIS.wallArcs) * Math.PI * 2
+      const r0 = Math.sqrt(Math.max(0.001, WR * WR - yw * yw))
+      const cx0 = Math.cos(phi) * r0, cz0 = Math.sin(phi) * r0
+      const yc = yw + waveH(cx0, cz0)
+      const rc = Math.sqrt(Math.max(0.001, WR * WR - yc * yc))
+      const cx = Math.cos(phi) * rc, cz = Math.sin(phi) * rc
+      if (k > 0) {                                        // 水線接觸環（斷續微光，不是完整描邊）
+        const h = yc - yw
+        const a = 0.05 + Math.max(0, h) * 3.5
+        bSeg(batch, pcx, pcy, pcz, cx, yc, cz, wcol.r + 0.2, wcol.g + 0.15, wcol.b, Math.min(0.55, a))
+      }
+      pcx = cx; pcy = yc; pcz = cz
+      if (k === VIS.wallArcs) break
+      let ax = cx, ay = yc, az = cz
+      for (let m = 1; m <= VIS.wallSamples; m++) {
+        const s = m / VIS.wallSamples
+        const ease = 1 - (1 - s) * (1 - s)
+        let y = yc + (-WR * 0.985 - yc) * ease
+        y += waveH(Math.cos(phi) * 0.5, Math.sin(phi) * 0.5) * (1 - s) * (1 - s) * 0.5 // 連續銜接
+        const r = Math.sqrt(Math.max(0.0005, WR * WR - y * y))
+        const x = Math.cos(phi) * r, z = Math.sin(phi) * r
+        bSeg(batch, ax, ay, az, x, y, z, wcol.r, wcol.g, wcol.b, murkA * (1 - s * 0.55))
+        ax = x; ay = y; az = z
+      }
+    }
+    bEnd(batch)
+  })
+  return <primitive object={batch.lines} />
+}
+
+// ---- 發光粒子：水面漂移 + 水下隨流收攏 ----
+function WaterParticles() {
+  const N = VIS.particles
+  const pts = useMemo(() => {
+    const g = new THREE.BufferGeometry()
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(N * 3), 3))
+    const m = new THREE.Points(g, new THREE.PointsMaterial({ map: dotTex(), size: 0.07, sizeAttenuation: true, transparent: true, depthWrite: false, fog: false, blending: THREE.AdditiveBlending, color: new THREE.Color('#bfe9ff'), opacity: 0.8 }))
+    m.frustumCulled = false; return m
+  }, [])
+  const st = useMemo(() => Array.from({ length: N }, (_, i) => ({
+    surf: i < N * 0.6, a: Math.random() * Math.PI * 2, r: Math.random(), y: -Math.random() * 1.4, sp: 0.3 + Math.random() * 0.7,
+  })), [])
+  useFrame((state, dt) => {
+    const yw = seaY(), arr = pts.geometry.attributes.position.array
+    st.forEach((p, i) => {
+      p.a += dt * p.sp * (0.15 + env.current * 0.5)
+      if (p.surf) {
+        const rr = Math.sqrt(Math.max(0.05, WR * WR - yw * yw)) * 0.92 * p.r
+        const x = Math.cos(p.a) * rr, z = Math.sin(p.a) * rr
+        arr[i * 3] = x; arr[i * 3 + 1] = yw + waveH(x, z) + 0.02; arr[i * 3 + 2] = z
+      } else {
+        p.y -= dt * 0.05 * (0.3 + env.current)
+        if (p.y < -WR * 0.85) p.y = yw - 0.1
+        const rmax = Math.sqrt(Math.max(0.02, WR * WR - p.y * p.y)) * 0.8 * p.r
+        arr[i * 3] = Math.cos(p.a) * rmax; arr[i * 3 + 1] = p.y; arr[i * 3 + 2] = Math.sin(p.a) * rmax
+      }
+    })
+    pts.geometry.attributes.position.needsUpdate = true
+    pts.material.opacity = 0.35 + env.glow * 0.5
+  })
+  return <primitive object={pts} />
+}
+
+// ---- 極淡水體量感（避免厚重實色）----
 function WaterVolume() {
   const ref = useRef()
   useFrame(() => {
     const m = ref.current; if (!m) return
     const clar = effClarity()
-    m.material.color.setHSL(0.57 - (1 - clar) * 0.14, 0.5 + (1 - clar) * 0.2, 0.16 + clar * 0.12)
-    m.material.opacity = 0.16 + (1 - clar) * 0.3
+    m.material.color.setHSL(0.56 - (1 - clar) * 0.12, 0.5, 0.14 + clar * 0.08)
+    m.material.opacity = 0.05 + (1 - clar) * 0.16
   })
-  return <mesh ref={ref}><sphereGeometry args={[R * 0.99, 32, 32]} /><meshBasicMaterial color="#0a3a66" transparent opacity={0.2} side={THREE.BackSide} depthWrite={false} /></mesh>
+  return <mesh ref={ref}><sphereGeometry args={[WR, 32, 32]} /><meshBasicMaterial transparent opacity={0.08} side={THREE.BackSide} depthWrite={false} /></mesh>
 }
 
-function WaveSurface() {
-  const ref = useRef()
-  const geo = useMemo(() => buildGrid(48, 3.9), [])
-  const alpha = useMemo(() => radialTex(), [])
-  useFrame((state) => {
-    const m = ref.current; if (!m) return
+// ================= 線稿生物 =================
+const clamp01v = (o) => { // 限制在水體內（不穿殼、不出水面）
+  const ymax = seaY() - 0.08
+  if (o.y > ymax) o.y = ymax
+  if (o.y < -WR * 0.86) o.y = -WR * 0.86
+  const rmax = Math.sqrt(Math.max(0.02, WR * WR - o.y * o.y)) * 0.92
+  const d = Math.sqrt(o.x * o.x + o.z * o.z)
+  if (d > rmax) { o.x *= rmax / d; o.z *= rmax / d }
+}
+function angleTo(a, b) { let d = b - a; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; return d }
+
+function drawJelly(b, j, t) {
+  const a = j.vis * 0.7, s = j.size
+  const pulse = Math.sin(t * 1.5 + j.ph)
+  const bw = 1 + 0.16 * pulse, bh = 0.8 - 0.1 * pulse
+  const cs = 1, sn = 0
+  let n = 0 // 傘狀輪廓（XY 面）
+  for (let i = 0; i <= 8; i++) { const q = Math.PI * i / 8; SCR[n * 3] = Math.cos(q) * 0.5 * bw; SCR[n * 3 + 1] = Math.sin(q) * 0.55 * bh; SCR[n * 3 + 2] = 0; n++ }
+  poly(b, SCR, n, j.x, j.y, j.z, cs, sn, s, 0.72, 0.86, 1.0, a)
+  n = 0 // 傘狀輪廓（ZY 面）
+  for (let i = 0; i <= 8; i++) { const q = Math.PI * i / 8; SCR[n * 3] = 0; SCR[n * 3 + 1] = Math.sin(q) * 0.55 * bh; SCR[n * 3 + 2] = Math.cos(q) * 0.5 * bw; n++ }
+  poly(b, SCR, n, j.x, j.y, j.z, cs, sn, s, 0.72, 0.86, 1.0, a)
+  n = 0 // 傘緣環
+  for (let i = 0; i <= 8; i++) { const q = Math.PI * 2 * i / 8; SCR[n * 3] = Math.cos(q) * 0.5 * bw; SCR[n * 3 + 1] = 0; SCR[n * 3 + 2] = Math.sin(q) * 0.5 * bw; n++ }
+  poly(b, SCR, n, j.x, j.y, j.z, cs, sn, s, 0.72, 0.86, 1.0, a * 0.8)
+  for (let k = 0; k < 5; k++) { // 觸手（延遲擺動）
+    const q = Math.PI * 2 * k / 5
+    const bx = Math.cos(q) * 0.3 * bw, bz = Math.sin(q) * 0.3 * bw
+    n = 0
+    for (let m = 0; m <= 6; m++) {
+      const sw = Math.sin(t * 2.1 - m * 0.75 + j.ph + k) * 0.055 * m * (0.5 + env.current * 0.8)
+      SCR[n * 3] = bx + sw; SCR[n * 3 + 1] = -m * 0.14 * (1 + 0.08 * pulse); SCR[n * 3 + 2] = bz + Math.cos(t * 1.7 - m * 0.6 + k) * 0.03 * m; n++
+    }
+    poly(b, SCR, n, j.x, j.y, j.z, cs, sn, s, 0.68, 0.82, 1.0, a * 0.55)
+  }
+}
+
+function drawFish(b, f, t) {
+  const a = f.vis * 0.8, s = f.size
+  const cs = Math.cos(f.heading), sn = Math.sin(f.heading)
+  const tw = Math.sin(t * 8 * (0.6 + env.swim) + f.ph) * 0.16 // 尾擺（側向）
+  let n = 0 // 側面紡錘輪廓
+  const P = [[0.5, 0, 0], [0.1, 0.13, 0], [-0.3, 0.03, 0], [-0.3, -0.03, tw * 0.3], [0.1, -0.11, 0], [0.5, 0, 0]]
+  P.forEach((p) => { SCR[n * 3] = p[0]; SCR[n * 3 + 1] = p[1]; SCR[n * 3 + 2] = p[2]; n++ })
+  poly(b, SCR, n, f.x, f.y, f.z, cs, sn, s, 0.66, 0.9, 1.0, a)
+  n = 0 // 尾鰭 V
+  ;[[-0.3, 0, 0], [-0.55, 0.12, tw], [-0.3, 0, 0], [-0.55, -0.1, tw]].forEach((p) => { SCR[n * 3] = p[0]; SCR[n * 3 + 1] = p[1]; SCR[n * 3 + 2] = p[2]; n++ })
+  poly(b, SCR, 2, f.x, f.y, f.z, cs, sn, s, 0.66, 0.9, 1.0, a * 0.9)
+  poly(b, SCR.subarray(6), 2, f.x, f.y, f.z, cs, sn, s, 0.66, 0.9, 1.0, a * 0.9)
+}
+
+function drawWhale(b, g, t) {
+  const a = g.alpha * 0.85, s = g.size
+  const cs = Math.cos(g.heading), sn = Math.sin(g.heading)
+  const und = (lx) => Math.sin(t * 1.5 - lx * 1.2) * 0.03
+  let n = 0 // 背 + 腹輪廓
+  const O = [[1.0, 0.04], [0.55, 0.26], [0.0, 0.3], [-0.5, 0.2], [-0.88, 0.05], [-0.88, -0.02], [-0.4, -0.17], [0.2, -0.21], [0.7, -0.12], [1.0, 0.04]]
+  O.forEach((p) => { SCR[n * 3] = p[0]; SCR[n * 3 + 1] = p[1] + und(p[0]); SCR[n * 3 + 2] = 0; n++ })
+  poly(b, SCR, n, g.x, g.y, g.z, cs, sn, s, 0.62, 0.8, 1.0, a)
+  const fl = Math.sin(t * 1.5 + 1) * 0.08 // 尾鰭（上下）
+  n = 0; [[-0.88, 0.02, 0], [-1.14, 0.16 + fl, 0.1], [-0.88, 0.02, 0], [-1.14, 0.1 + fl, -0.14]].forEach((p) => { SCR[n * 3] = p[0]; SCR[n * 3 + 1] = p[1]; SCR[n * 3 + 2] = p[2]; n++ })
+  poly(b, SCR, 2, g.x, g.y, g.z, cs, sn, s, 0.62, 0.8, 1.0, a)
+  poly(b, SCR.subarray(6), 2, g.x, g.y, g.z, cs, sn, s, 0.62, 0.8, 1.0, a)
+  n = 0; [[0.4, -0.1, 0], [0.18, -0.34, 0.06], [0.44, -0.16, 0.02]].forEach((p) => { SCR[n * 3] = p[0]; SCR[n * 3 + 1] = p[1]; SCR[n * 3 + 2] = p[2]; n++ }) // 胸鰭
+  poly(b, SCR, 3, g.x, g.y, g.z, cs, sn, s, 0.62, 0.8, 1.0, a * 0.9)
+  for (let i = 0; i < 2; i++) { // 腹部流線
+    n = 0; [[0.55, -0.09 - i * 0.035, 0], [0.05, -0.16 - i * 0.03, 0]].forEach((p) => { SCR[n * 3] = p[0]; SCR[n * 3 + 1] = p[1]; SCR[n * 3 + 2] = p[2]; n++ })
+    poly(b, SCR, 2, g.x, g.y, g.z, cs, sn, s, 0.62, 0.8, 1.0, a * 0.45)
+  }
+}
+
+function drawDolphin(b, g, t) {
+  const a = g.alpha * 0.85, s = g.size
+  const cs = Math.cos(g.heading), sn = Math.sin(g.heading)
+  const und = (lx) => Math.sin(t * 3 - lx * 1.6) * 0.04
+  let n = 0
+  const O = [[1.05, 0.0], [0.86, 0.07], [0.35, 0.17], [-0.25, 0.15], [-0.8, 0.03], [-0.8, -0.02], [-0.2, -0.13], [0.5, -0.12], [0.88, -0.04], [1.05, 0.0]]
+  O.forEach((p) => { SCR[n * 3] = p[0]; SCR[n * 3 + 1] = p[1] + und(p[0]); SCR[n * 3 + 2] = 0; n++ })
+  poly(b, SCR, n, g.x, g.y, g.z, cs, sn, s, 0.72, 0.9, 1.0, a)
+  n = 0; [[0.05, 0.16, 0], [-0.1, 0.36, 0], [-0.2, 0.14, 0]].forEach((p) => { SCR[n * 3] = p[0]; SCR[n * 3 + 1] = p[1]; SCR[n * 3 + 2] = p[2]; n++ }) // 背鰭
+  poly(b, SCR, 3, g.x, g.y, g.z, cs, sn, s, 0.72, 0.9, 1.0, a)
+  const fl = Math.sin(t * 3.2) * 0.1
+  n = 0; [[-0.8, 0, 0], [-1.02, 0.1 + fl, 0.1], [-0.8, 0, 0], [-1.02, 0.04 + fl, -0.12]].forEach((p) => { SCR[n * 3] = p[0]; SCR[n * 3 + 1] = p[1]; SCR[n * 3 + 2] = p[2]; n++ })
+  poly(b, SCR, 2, g.x, g.y, g.z, cs, sn, s, 0.72, 0.9, 1.0, a)
+  poly(b, SCR.subarray(6), 2, g.x, g.y, g.z, cs, sn, s, 0.72, 0.9, 1.0, a)
+}
+
+function drawTurtle(b, g, t) {
+  const a = g.alpha * 0.85, s = g.size
+  const cs = Math.cos(g.heading), sn = Math.sin(g.heading)
+  let n = 0 // 龜殼（水平橢圓 + 上拱）
+  for (let i = 0; i <= 10; i++) { const q = Math.PI * 2 * i / 10; SCR[n * 3] = Math.cos(q) * 0.45; SCR[n * 3 + 1] = 0; SCR[n * 3 + 2] = Math.sin(q) * 0.58; n++ }
+  poly(b, SCR, n, g.x, g.y, g.z, cs, sn, s, 0.62, 0.95, 0.85, a)
+  n = 0; for (let i = 0; i <= 6; i++) { const q = Math.PI * i / 6; SCR[n * 3] = 0; SCR[n * 3 + 1] = Math.sin(q) * 0.22; SCR[n * 3 + 2] = -Math.cos(q) * 0.58; n++ }
+  poly(b, SCR, n, g.x, g.y, g.z, cs, sn, s, 0.62, 0.95, 0.85, a * 0.9)
+  n = 0; [[0, 0.02, -0.58], [0, 0.02, 0.58]].forEach((p) => { SCR[n * 3] = p[0]; SCR[n * 3 + 1] = p[1]; SCR[n * 3 + 2] = p[2]; n++ }) // 殼中線
+  poly(b, SCR, 2, g.x, g.y, g.z, cs, sn, s, 0.62, 0.95, 0.85, a * 0.5)
+  n = 0; [[-0.45, 0.01, 0], [0.45, 0.01, 0]].forEach((p) => { SCR[n * 3] = p[0]; SCR[n * 3 + 1] = p[1]; SCR[n * 3 + 2] = p[2]; n++ }) // 殼橫線
+  poly(b, SCR, 2, g.x, g.y, g.z, cs, sn, s, 0.62, 0.95, 0.85, a * 0.5)
+  n = 0; [[0, 0.02, 0.58], [0, 0.05, 0.8], [0.05, 0.02, 0.9], [-0.05, 0.02, 0.9], [0, 0.05, 0.8]].forEach((p) => { SCR[n * 3] = p[0]; SCR[n * 3 + 1] = p[1]; SCR[n * 3 + 2] = p[2]; n++ }) // 頭
+  poly(b, SCR, 5, g.x, g.y, g.z, cs, sn, s, 0.62, 0.95, 0.85, a)
+  const pd = Math.sin(t * 1.1 + g.ph) * 0.5 // 前肢划水
+  ;[-1, 1].forEach((sd) => {
+    n = 0; [[sd * 0.4, 0, 0.3], [sd * (0.78 + 0.08 * pd), 0.03, 0.5 + 0.14 * pd]].forEach((p) => { SCR[n * 3] = p[0]; SCR[n * 3 + 1] = p[1]; SCR[n * 3 + 2] = p[2]; n++ })
+    poly(b, SCR, 2, g.x, g.y, g.z, cs, sn, s, 0.62, 0.95, 0.85, a * 0.9)
+    n = 0; [[sd * 0.38, 0, -0.4], [sd * 0.6, 0.02, -0.6]].forEach((p) => { SCR[n * 3] = p[0]; SCR[n * 3 + 1] = p[1]; SCR[n * 3 + 2] = p[2]; n++ })
+    poly(b, SCR, 2, g.x, g.y, g.z, cs, sn, s, 0.62, 0.95, 0.85, a * 0.7)
+  })
+}
+
+function drawBottle(b, o, t) {
+  const a = o.vis * 0.5, s = o.size
+  const cs = Math.cos(o.rot), sn = Math.sin(o.rot)
+  let n = 0
+  const O = [[-0.1, -0.25, 0], [0.1, -0.25, 0], [0.1, 0.12, 0], [0.04, 0.2, 0], [0.04, 0.3, 0], [-0.04, 0.3, 0], [-0.04, 0.2, 0], [-0.1, 0.12, 0], [-0.1, -0.25, 0]]
+  O.forEach((p) => { SCR[n * 3] = p[0]; SCR[n * 3 + 1] = p[1]; SCR[n * 3 + 2] = p[2]; n++ })
+  poly(b, SCR, n, o.x, o.y, o.z, cs, sn, s, 0.6, 0.7, 0.75, a)
+  n = 0; [[-0.05, 0.32, 0], [0.05, 0.32, 0]].forEach((p) => { SCR[n * 3] = p[0]; SCR[n * 3 + 1] = p[1]; SCR[n * 3 + 2] = p[2]; n++ })
+  poly(b, SCR, 2, o.x, o.y, o.z, cs, sn, s, 0.6, 0.7, 0.75, a)
+}
+function drawBag(b, o, t) {
+  const a = o.vis * 0.45, s = o.size
+  const cs = Math.cos(o.rot), sn = Math.sin(o.rot)
+  let n = 0
+  for (let i = 0; i <= 8; i++) {
+    const q = Math.PI * 2 * i / 8
+    const r = 0.24 * (1 + 0.28 * Math.sin(t * 1.3 + i * 1.7 + o.ph)) // 輕微變形
+    SCR[n * 3] = Math.cos(q) * r; SCR[n * 3 + 1] = Math.sin(q) * r * 1.25; SCR[n * 3 + 2] = Math.sin(t * 0.9 + i + o.ph) * 0.05; n++
+  }
+  poly(b, SCR, n, o.x, o.y, o.z, cs, sn, s, 0.66, 0.74, 0.8, a)
+}
+
+// ---- 所有生物 / 垃圾：一個元件、一個 batch ----
+function LineCreatures() {
+  const batch = useMemo(() => makeBatch(1600), [])
+  const jellies = useMemo(() => Array.from({ length: VIS.jelly }, (_, i) => ({
+    x: Math.sin(i * 4.1) * 1.1, y: -0.3 - (i % 4) * 0.28, z: Math.sin(i * 6.3) * 1.0,
+    ph: i * 1.3, size: 0.4 + (i % 3) * 0.13, vis: 0,
+  })), [])
+  const clusters = useMemo(() => Array.from({ length: 3 }, (_, c) => ({
+    ang: c * 2.1, speed: 0.35 + c * 0.18, r: 0.55 + c * 0.3, y: -0.35 - c * 0.35, wobPh: c * 2, cx: 0, cy: 0, cz: 0,
+  })), [])
+  const fishes = useMemo(() => Array.from({ length: VIS.fish }, (_, i) => ({
+    cluster: i % 3, ox: (Math.random() - 0.5) * 0.7, oy: (Math.random() - 0.5) * 0.35, oz: (Math.random() - 0.5) * 0.7,
+    lag: 1.2 + Math.random() * 2.2, x: 0, y: -0.5, z: 0, heading: 0, size: 0.1 + Math.random() * 0.07, ph: i, vis: 0,
+  })), [])
+  const trash = useMemo(() => Array.from({ length: VIS.trash }, (_, i) => ({
+    kind: i % 3 === 2 ? 'bag' : 'bottle', x: Math.sin(i * 5.3) * 1.2, y: -0.15 - (i % 5) * 0.24, z: Math.sin(i * 2.1) * 1.1,
+    rot: i, rotSp: 0.2 + (i % 4) * 0.15, ph: i * 2.2, size: 0.45 + (i % 3) * 0.18, vis: 0,
+  })), [])
+  const guests = useMemo(() => Array.from({ length: 5 }, () => ({ active: false, type: null, born: 0, dir: 1, x: 0, y: 0, z: 0, heading: 0, alpha: 0, size: 1, ph: 0 })), [])
+  const lastSpawns = useRef({ whale: 0, dolphin: 0, turtle: 0 })
+
+  useFrame((state, dt) => {
     const t = state.clock.elapsedTime
-    const pos = geo.attributes.position
-    for (let i = 0; i < pos.count; i++) pos.setY(i, waveH(pos.getX(i), pos.getZ(i), t))
-    pos.needsUpdate = true
-    const y = seaY(); m.position.y = y
-    const rad = (Math.sqrt(Math.max(0.02, R * R - y * y)) * 0.98) / 1.95
-    m.scale.set(rad, 1, rad)
-    const clar = effClarity()
-    m.material.color.setHSL(0.55, 0.6, 0.36 + clar * 0.26)
-    m.material.opacity = 0.28 + env.glow * 0.24
-  })
-  return <mesh ref={ref} geometry={geo}><meshBasicMaterial color="#4fb0e0" transparent opacity={0.5} alphaMap={alpha} side={THREE.DoubleSide} depthWrite={false} /></mesh>
-}
-
-function Jellies() {
-  const MAX = 12
-  const pool = useMemo(() => Array.from({ length: MAX }, (_, i) => ({ m: sprite(jellyTex()), seed: i * 13.7, x: Math.sin(i * 4.1) * 1.2, y: Math.cos(i * 2.7) * 0.8, z: Math.sin(i * 6.3) * 1.1, ph: i })), [])
-  useFrame((state, dt) => {
-    const t = state.clock.elapsedTime, active = Math.round(effJelly() * MAX)
-    pool.forEach((j, i) => {
-      j.m.material.opacity += ((i < active ? 0.85 : 0) - j.m.material.opacity) * Math.min(1, dt * 2)
-      j.y += Math.sin(t * 0.4 + j.seed) * (0.03 + env.swim * 0.05) * dt
-      j.x += Math.sin(t * 0.3 + j.seed) * 0.002 * (1 + env.current * 2)
-      _v.set(j.x, seaY() * 0.3 + j.y, j.z); if (_v.length() > R * 0.9) _v.setLength(R * 0.9); j.m.position.copy(_v)
-      const pulse = 1 + Math.sin(t * 1.5 + j.ph) * 0.12
-      j.m.scale.set(0.5 * pulse, 0.55 * pulse, 1)
+    bBegin(batch)
+    bioNodes.length = 0
+    // 水母
+    const jellyActive = Math.round(effJelly() * VIS.jelly)
+    jellies.forEach((j, i) => {
+      j.vis += ((i < jellyActive ? 1 : 0) - j.vis) * Math.min(1, dt * 2)
+      j.y += Math.sin(t * 0.35 + j.ph) * (0.02 + env.swim * 0.045) * dt * 3
+      j.x += Math.sin(t * 0.22 + j.ph) * 0.0018 * (1 + env.current * 2)
+      j.z += Math.cos(t * 0.19 + j.ph * 2) * 0.0014 * (1 + env.current)
+      clamp01v(j)
+      if (j.vis > 0.03) { drawJelly(batch, j, t); bioNodes.push(j) }
     })
-  })
-  return <group>{pool.map((j, i) => <primitive key={i} object={j.m} />)}</group>
-}
-
-function Fish() {
-  const MAX = 48
-  const pool = useMemo(() => Array.from({ length: MAX }, (_, i) => ({ m: sprite(fishTex()), a: i * 0.5, r: 0.6 + (i % 5) * 0.24, y: Math.sin(i * 3.1) * 1.0, sp: 0.5 + (i % 7) * 0.08 })), [])
-  useFrame((state, dt) => {
-    const t = state.clock.elapsedTime, active = Math.round(effFish() * MAX)
-    pool.forEach((f, i) => {
-      f.m.material.opacity += ((i < active ? 0.9 : 0) - f.m.material.opacity) * Math.min(1, dt * 2)
-      f.a += dt * (0.2 + env.current * 0.8) * (0.4 + env.swim) * f.sp
-      _v.set(Math.cos(f.a) * f.r, f.y + Math.sin(t * 0.7 + i) * 0.1, Math.sin(f.a) * f.r)
-      if (_v.length() > R * 0.92) _v.setLength(R * 0.92); f.m.position.copy(_v)
-      f.m.scale.set(0.26 * (Math.cos(f.a) > 0 ? 1 : -1), 0.26, 1)
+    // 魚群（疏密不均、速度差、轉向延遲）
+    clusters.forEach((c) => {
+      c.ang += dt * c.speed * (0.3 + env.current * 0.7) * (0.4 + env.swim)
+      c.cx = Math.cos(c.ang) * c.r; c.cz = Math.sin(c.ang) * c.r
+      c.cy = c.y + Math.sin(t * 0.5 + c.wobPh) * 0.15
     })
-  })
-  return <group>{pool.map((f, i) => <primitive key={i} object={f.m} />)}</group>
-}
-
-function Trash() {
-  const MAX = 20
-  const pool = useMemo(() => Array.from({ length: MAX }, (_, i) => ({ m: sprite(trashTex()), x: Math.sin(i * 5.3) * 1.3, y: Math.cos(i * 3.9) * 1.2, z: Math.sin(i * 2.1) * 1.2 })), [])
-  useFrame((state, dt) => {
-    const t = state.clock.elapsedTime, active = Math.round(env.trash * MAX)
-    pool.forEach((o, i) => {
-      o.m.material.opacity += ((i < active ? 0.8 : 0) - o.m.material.opacity) * Math.min(1, dt * 2)
-      o.y += Math.sin(t * 0.3 + i) * 0.003
-      _v.set(o.x + Math.sin(t * 0.2 + i) * 0.3, o.y, o.z); if (_v.length() > R * 0.9) _v.setLength(R * 0.9); o.m.position.copy(_v)
-      o.m.scale.setScalar(0.3)
+    const fishActive = Math.round(effFish() * VIS.fish)
+    fishes.forEach((f, i) => {
+      f.vis += ((i < fishActive ? 1 : 0) - f.vis) * Math.min(1, dt * 2)
+      const c = clusters[f.cluster]
+      const k = Math.min(1, dt * f.lag * (0.4 + env.swim))
+      const nx = f.x + (c.cx + f.ox - f.x) * k
+      const ny = f.y + (c.cy + f.oy - f.y) * k
+      const nz = f.z + (c.cz + f.oz - f.z) * k
+      const dx = nx - f.x, dz = nz - f.z
+      if (dx * dx + dz * dz > 1e-7) f.heading += angleTo(f.heading, Math.atan2(dz, dx)) * Math.min(1, dt * 3.5)
+      f.x = nx; f.y = ny; f.z = nz
+      clamp01v(f)
+      if (f.vis > 0.03) drawFish(batch, f, t)
     })
+    // 垃圾（瓶 / 袋：漂移、慢旋、袋變形）
+    const trashActive = Math.round(env.trash * VIS.trash)
+    trash.forEach((o, i) => {
+      o.vis += ((i < trashActive ? 1 : 0) - o.vis) * Math.min(1, dt * 2)
+      o.rot += dt * o.rotSp * (0.4 + env.current)
+      o.x += dt * 0.045 * (0.3 + env.current) * Math.cos(o.ph)
+      o.z += dt * 0.038 * (0.3 + env.current) * Math.sin(o.ph * 1.3)
+      o.y += Math.sin(t * 0.4 + o.ph) * 0.0012
+      const rr = Math.sqrt(o.x * o.x + o.z * o.z)
+      if (rr > WR * 0.9) { o.x *= -0.95; o.z *= -0.95 }
+      clamp01v(o)
+      if (o.vis > 0.03) (o.kind === 'bag' ? drawBag : drawBottle)(batch, o, t)
+    })
+    // 訪客（鯨 / 豚 / 龜）
+    const sp = useStore.getState().spawns
+    for (const type of ['whale', 'dolphin', 'turtle']) {
+      if (sp[type] > lastSpawns.current[type]) {
+        lastSpawns.current[type] = sp[type]
+        const slot = guests.find((s) => !s.active)
+        if (slot) {
+          slot.active = true; slot.type = type; slot.born = t
+          slot.dir = Math.sin(sp[type] * 99) > 0 ? 1 : -1
+          slot.heading = slot.dir > 0 ? 0 : Math.PI
+          slot.size = type === 'whale' ? 1.05 : type === 'dolphin' ? 0.72 : 0.6
+          slot.ph = sp[type]
+        }
+      }
+    }
+    guests.forEach((g) => {
+      if (!g.active) return
+      const age = t - g.born, dur = 10
+      if (age > dur) { g.active = false; return }
+      const f = age / dur
+      const yw = seaY()
+      g.x = (f - 0.5) * 3.0 * g.dir
+      if (g.type === 'whale') g.y = Math.min(yw - 0.3, -0.25 + Math.sin(f * Math.PI) * 0.3)
+      else if (g.type === 'dolphin') g.y = Math.min(yw - 0.18, yw - 0.4 + Math.sin(f * Math.PI * 3) * 0.22)
+      else g.y = -0.62 + Math.sin(f * Math.PI) * 0.18
+      g.z = Math.cos(f * Math.PI) * 0.5
+      clamp01v(g)
+      g.alpha = Math.sin(f * Math.PI)
+      ;(g.type === 'whale' ? drawWhale : g.type === 'dolphin' ? drawDolphin : drawTurtle)(batch, g, t)
+      bioNodes.push(g)
+    })
+    bEnd(batch)
   })
-  return <group>{pool.map((o, i) => <primitive key={i} object={o.m} />)}</group>
+  return <primitive object={batch.lines} />
 }
 
+// 生物科技連線（微光細線）
+function BioNetwork() {
+  const lines = useMemo(() => makeLineLayer(90), [])
+  const col = useMemo(() => new THREE.Color('#7fe6ff'), [])
+  useFrame(() => { updateLines(lines, bioNodes, 1.15, col, 90); lines.material.opacity = 0.3 + env.glow * 0.4 })
+  return <primitive object={lines} />
+}
+
+// 沿波浪流動的文字 / 數字（有前後深度）
 function FlowingText() {
   const chars = useMemo(() => ['海', '浪', '潮', '深', '流', '光', '靜', '夢', '0', '1', '7', '2', '0', '2', '6', '∞'], [])
-  const pool = useMemo(() => Array.from({ length: 14 }, (_, i) => ({ m: sprite(glyphTex(chars[i % chars.length])), x: Math.sin(i * 12.9) * 1.4, z: Math.cos(i * 7.3) * 1.2, idx: i })), [chars])
+  const pool = useMemo(() => Array.from({ length: 14 }, (_, i) => {
+    const m = new THREE.Sprite(new THREE.SpriteMaterial({ map: glyphTex(chars[i % chars.length]), transparent: true, depthWrite: false, opacity: 0, fog: true }))
+    return { m, x: Math.sin(i * 12.9) * 1.4, z: Math.cos(i * 7.3) * 1.2, idx: i }
+  }), [chars])
   useFrame((state, dt) => {
     const t = state.clock.elapsedTime, y0 = seaY()
     pool.forEach((it) => {
       it.x += (0.05 + env.current * 0.4) * (0.4 + env.swim) * dt
       const lim = Math.sqrt(Math.max(0.1, R * R - it.z * it.z)) * 0.9
       if (it.x > lim) it.x = -lim
-      it.m.position.set(it.x, y0 + waveH(it.x, it.z, t) + 0.12, it.z)
+      it.m.position.set(it.x, y0 + waveH(it.x, it.z) + 0.12, it.z)
       const edge = 1 - Math.min(1, Math.abs(it.x) / lim)
-      it.m.material.opacity = (0.28 + 0.7 * edge) * (0.65 + 0.35 * Math.sin(t * 0.8 + it.idx))
-      it.m.scale.setScalar(0.42)
+      it.m.material.opacity = (0.22 + 0.6 * edge) * (0.65 + 0.35 * Math.sin(t * 0.8 + it.idx))
+      it.m.scale.setScalar(0.4)
     })
   })
   return <group>{pool.map((p, i) => <primitive key={i} object={p.m} />)}</group>
-}
-
-function Guests() {
-  const pool = useMemo(() => Array.from({ length: 5 }, () => ({ m: sprite(null), active: false, type: null, born: 0, dir: 1 })), [])
-  const last = useRef({ whale: 0, dolphin: 0, turtle: 0 })
-  useFrame((state) => {
-    const t = state.clock.elapsedTime, sp = useStore.getState().spawns
-    for (const type of ['whale', 'dolphin', 'turtle']) {
-      if (sp[type] > last.current[type]) {
-        last.current[type] = sp[type]
-        const slot = pool.find((s) => !s.active)
-        if (slot) { slot.active = true; slot.type = type; slot.born = t; slot.dir = Math.sin(sp[type] * 99) > 0 ? 1 : -1; slot.m.material.map = creatureTex(type); slot.m.material.needsUpdate = true }
-      }
-    }
-    pool.forEach((slot) => {
-      if (!slot.active) { slot.m.material.opacity = 0; return }
-      const age = t - slot.born, dur = 9
-      if (age > dur) { slot.active = false; slot.m.material.opacity = 0; return }
-      const f = age / dur
-      const baseY = slot.type === 'turtle' ? -0.4 : slot.type === 'whale' ? 0.05 : 0.35
-      _v.set((f - 0.5) * 3.2 * slot.dir, baseY + Math.sin(f * Math.PI) * 0.25 + Math.sin(t * 1.2) * 0.05, Math.cos(f * Math.PI) * 0.7)
-      if (_v.length() > R * 0.96) _v.setLength(R * 0.96); slot.m.position.copy(_v)
-      const size = slot.type === 'whale' ? 1.7 : slot.type === 'dolphin' ? 1.05 : 0.85
-      slot.m.scale.set(size * slot.dir, size, 1)
-      slot.m.material.opacity = Math.sin(f * Math.PI) * 0.95
-    })
-  })
-  return <group>{pool.map((s, i) => <primitive key={i} object={s.m} />)}</group>
 }
 
 function Ocean() {
@@ -254,44 +521,108 @@ function Ocean() {
   return (
     <group ref={g}>
       <WaterVolume />
-      <WaveSurface />
-      <Jellies />
-      <Fish />
-      <Trash />
+      <WaterLines />
+      <WaterParticles />
+      <LineCreatures />
       <FlowingText />
-      <Guests />
+      <BioNetwork />
     </group>
   )
 }
 
+// 薄玻璃球殼：很淡的 fresnel 輪廓 + 局部弧形反光；拖曳＝改變自轉並注入水體慣性
 function GlassShell() {
   const mat = useMemo(() => new THREE.ShaderMaterial({
     transparent: true, depthWrite: false,
-    uniforms: { uColor: { value: new THREE.Color('#9fe0ff') }, uOpacity: { value: 0.6 } },
+    uniforms: { uColor: { value: new THREE.Color('#bfe4ff') }, uOpacity: { value: 0.3 } },
     vertexShader: 'varying vec3 vN; varying vec3 vV; void main(){ vec4 mv=modelViewMatrix*vec4(position,1.0); vN=normalize(normalMatrix*normal); vV=normalize(-mv.xyz); gl_Position=projectionMatrix*mv; }',
-    fragmentShader: 'varying vec3 vN; varying vec3 vV; uniform vec3 uColor; uniform float uOpacity; void main(){ float f=pow(1.0-max(dot(vN,vV),0.0),2.5); gl_FragColor=vec4(uColor, f*uOpacity); }',
+    fragmentShader: 'varying vec3 vN; varying vec3 vV; uniform vec3 uColor; uniform float uOpacity; void main(){ float f=pow(1.0-max(dot(vN,vV),0.0),3.0); gl_FragColor=vec4(uColor, f*uOpacity); }',
   }), [])
+  const arcs = useMemo(() => {
+    const mk = (tilt, span, y) => {
+      const pts = []
+      for (let i = 0; i <= 14; i++) { const a = -span / 2 + (i / 14) * span; pts.push(new THREE.Vector3(Math.cos(a) * SHELL * 0.995, 0, Math.sin(a) * SHELL * 0.995)) }
+      const g = new THREE.BufferGeometry().setFromPoints(pts)
+      const l = new THREE.Line(g, new THREE.LineBasicMaterial({ color: '#dff2ff', transparent: true, opacity: 0.18, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }))
+      l.rotation.set(tilt, y, 0.35); return l
+    }
+    return [mk(0.9, 0.9, -0.6), mk(1.05, 0.5, -0.75)]
+  }, [])
   const drag = useRef(false), lastX = useRef(0)
   useEffect(() => {
-    const mv = (e) => { if (!drag.current) return; const dx = e.clientX - lastX.current; lastX.current = e.clientX; const st = useStore.getState(); st.input('spin', st.params.spin + dx * 0.003) }
+    const mv = (e) => {
+      if (!drag.current) return
+      const dx = e.clientX - lastX.current; lastX.current = e.clientX
+      const st = useStore.getState()
+      st.input('spin', st.params.spin + dx * 0.003)
+      waveMomentum = Math.min(2.5, waveMomentum + Math.abs(dx) * 0.012) // 水體慣性
+    }
     const up = () => { drag.current = false }
     window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up)
     return () => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up) }
   }, [])
-  useFrame(() => { mat.uniforms.uOpacity.value = 0.3 + env.glow * 0.55 })
+  useFrame(() => { mat.uniforms.uOpacity.value = 0.16 + env.glow * 0.24 })
   return (
-    <mesh onPointerDown={(e) => { drag.current = true; lastX.current = (e.clientX ?? e.nativeEvent.clientX) }}>
-      <sphereGeometry args={[SHELL, 48, 48]} />
-      <primitive object={mat} attach="material" />
-    </mesh>
+    <group>
+      <mesh onPointerDown={(e) => { drag.current = true; lastX.current = (e.clientX ?? e.nativeEvent.clientX) }}>
+        <sphereGeometry args={[SHELL, 48, 48]} />
+        <primitive object={mat} attach="material" />
+      </mesh>
+      {arcs.map((a, i) => <primitive key={i} object={a} />)}
+    </group>
   )
+}
+
+function AtmosphereGlow() {
+  const mat = useMemo(() => new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.BackSide,
+    uniforms: { uColor: { value: new THREE.Color('#4db8ff') } },
+    vertexShader: 'varying vec3 vN; varying vec3 vV; void main(){ vec4 mv=modelViewMatrix*vec4(position,1.0); vN=normalize(normalMatrix*normal); vV=normalize(-mv.xyz); gl_Position=projectionMatrix*mv; }',
+    fragmentShader: 'varying vec3 vN; varying vec3 vV; uniform vec3 uColor; void main(){ float f=pow(1.0-abs(dot(vN,vV)),3.5); gl_FragColor=vec4(uColor, f*0.45); }',
+  }), [])
+  useFrame(() => { mat.uniforms.uColor.value.setHSL(0.56, 0.8, 0.26 + env.glow * 0.16) })
+  return <mesh scale={1.12}><sphereGeometry args={[SHELL, 48, 48]} /><primitive object={mat} attach="material" /></mesh>
+}
+
+function SpaceNetwork() {
+  const COUNT = 22
+  const nodes = useMemo(() => Array.from({ length: COUNT }, () => {
+    const r = SHELL * 1.05 + Math.random() * 1.2, th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1)
+    return { p: new THREE.Vector3(r * Math.sin(ph) * Math.cos(th), r * Math.cos(ph) * 0.75, r * Math.sin(ph) * Math.sin(th)), sp: 0.04 + Math.random() * 0.12 }
+  }), [])
+  const lines = useMemo(() => makeLineLayer(130), [])
+  const pts = useMemo(() => {
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(COUNT * 3), 3))
+    const m = new THREE.Points(g, new THREE.PointsMaterial({ map: dotTex(), size: 0.22, sizeAttenuation: true, transparent: true, depthWrite: false, fog: false, blending: THREE.AdditiveBlending, color: new THREE.Color('#7fe0ff') }))
+    m.frustumCulled = false; return m
+  }, [])
+  const col = useMemo(() => new THREE.Color('#5fd0ff'), [])
+  useFrame((_, dt) => {
+    nodes.forEach((n) => n.p.applyAxisAngle(YAXIS, dt * n.sp * 0.25))
+    updateLines(lines, nodes.map((n) => n.p), 1.7, col, 130)
+    const pa = pts.geometry.attributes.position.array
+    nodes.forEach((n, i) => { pa[i * 3] = n.p.x; pa[i * 3 + 1] = n.p.y; pa[i * 3 + 2] = n.p.z })
+    pts.geometry.attributes.position.needsUpdate = true
+    lines.material.opacity = 0.35 + env.glow * 0.35
+    pts.material.opacity = 0.55 + env.glow * 0.3
+  })
+  return <group><primitive object={lines} /><primitive object={pts} /></group>
+}
+
+function Stars() {
+  const geo = useMemo(() => {
+    const N = 520, a = new Float32Array(N * 3)
+    for (let i = 0; i < N; i++) { const r = 12 + Math.random() * 30, th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1); a[i * 3] = r * Math.sin(ph) * Math.cos(th); a[i * 3 + 1] = r * Math.cos(ph); a[i * 3 + 2] = r * Math.sin(ph) * Math.sin(th) }
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(a, 3)); return g
+  }, [])
+  return <points geometry={geo}><pointsMaterial map={dotTex()} size={0.4} sizeAttenuation transparent opacity={0.8} depthWrite={false} fog={false} blending={THREE.AdditiveBlending} color="#cfeeff" /></points>
 }
 
 function FogDriver() {
   const { scene } = useThree()
   const fog = useMemo(() => new THREE.Fog('#05121f', 5, 12), [])
   useEffect(() => { scene.fog = fog; return () => { scene.fog = null } }, [scene, fog])
-  useFrame(() => { const clar = effClarity(); fog.color.setHSL(0.57, 0.5, 0.04 + clar * 0.07); fog.near = 3.5 - (1 - clar) * 1.5; fog.far = 9 + clar * 6 })
+  useFrame(() => { const clar = effClarity(); fog.color.setHSL(0.57, 0.5, 0.04 + clar * 0.06); fog.near = 3.5 - (1 - clar) * 1.5; fog.far = 9 + clar * 6 })
   return null
 }
 
@@ -308,9 +639,12 @@ export default function Scene3D() {
       <color attach="background" args={['#05101c']} />
       <EnvDriver />
       <FogDriver />
+      <Stars />
       <ambientLight intensity={0.6} />
       <Ocean />
       <GlassShell />
+      <AtmosphereGlow />
+      <SpaceNetwork />
       <CameraRig />
     </Canvas>
   )
