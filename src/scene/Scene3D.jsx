@@ -20,7 +20,7 @@ const bioNodes = []   // 生物節點（供 BioNetwork 科技連線）
 let spinImpulse = 0                    // 拖曳釋放後的慣性自轉（指數衰減）
 let gather = null                      // 長按聚集點：魚群游向此處
 const flow = { x: 0, z: 0 }            // 洋流方向向量（flowX/flowY 參數，nanoPAD2 X-Y 可綁）
-const gyro = { tx: 0, tz: 0, x: 0, z: 0, beta0: null }
+const gyro = { tx: 0, tz: 0, x: 0, z: 0, vx: 0, vz: 0, beta0: null } // vx/vz：欠阻尼彈簧速度（晃動感）
 let motionAsked = false
 async function ensureMotion() {        // 首次手勢時請求感測權限（iOS 需要）
   if (motionAsked) return
@@ -528,8 +528,14 @@ function Ocean() {
     const p = useStore.getState().params
     if (g.current) g.current.rotation.y += Math.min(0.05, dt) * (0.04 + (p.spin ?? 0.3) * 1.4 + spinImpulse)
     spinImpulse *= Math.exp(-dt * 1.8)                 // 放手後慣性衰減
-    gyro.x += (gyro.tx - gyro.x) * Math.min(1, dt * 3) // 陀螺儀平滑
-    gyro.z += (gyro.tz - gyro.z) * Math.min(1, dt * 3)
+    // 陀螺儀：欠阻尼彈簧 → 水面追平衡時會過衝晃動（像真的水）
+    gyro.vx += (gyro.tx - gyro.x) * 16 * dt
+    gyro.vz += (gyro.tz - gyro.z) * 16 * dt
+    const damp = Math.exp(-dt * 4.2)
+    gyro.vx *= damp; gyro.vz *= damp
+    gyro.x += gyro.vx * dt; gyro.z += gyro.vz * dt
+    // 傾動速度 → 注入浪湧（晃手機，海水跟著晃）
+    waveMomentum = Math.min(3, waveMomentum + (Math.abs(gyro.vx) + Math.abs(gyro.vz)) * dt * 5)
     if (wt.current) { wt.current.rotation.x = gyro.x; wt.current.rotation.z = gyro.z } // 手機傾斜 → 水面保持水平
   })
   return (
@@ -656,7 +662,19 @@ function GlassShell() {
       window.removeEventListener('pointercancel', up)
     }
   }, [])
-  useFrame(() => { mat.uniforms.uOpacity.value = 0.16 + env.glow * 0.24 })
+  const cols = useMemo(() => ({ base: new THREE.Color('#bfe4ff'), rec: new THREE.Color('#ff8f7a') }), [])
+  useFrame((state) => {
+    // 狀態氛圍：錄製中球殼微紅呼吸
+    const rec = useStore.getState().rec
+    if (rec.mode === 'recording') {
+      const breath = 0.5 + 0.5 * Math.sin(state.clock.elapsedTime * 2.4)
+      mat.uniforms.uColor.value.lerp(cols.rec, 0.08)
+      mat.uniforms.uOpacity.value = 0.2 + env.glow * 0.24 + breath * 0.28
+    } else {
+      mat.uniforms.uColor.value.lerp(cols.base, 0.06)
+      mat.uniforms.uOpacity.value = 0.16 + env.glow * 0.24
+    }
+  })
   return (
     <group>
       <mesh onPointerDown={(e) => {
@@ -793,6 +811,30 @@ function ShootingStars() {
   return <primitive object={batch.lines} />
 }
 
+// 狀態氛圍：播放中的掃描光環（位置 = 播放進度，由球底掃到球頂）
+function ScanHalo() {
+  const ring = useMemo(() => {
+    const N = 72, pts = []
+    for (let i = 0; i <= N; i++) { const a = (i / N) * Math.PI * 2; pts.push(new THREE.Vector3(Math.cos(a), 0, Math.sin(a))) }
+    const geo = new THREE.BufferGeometry().setFromPoints(pts)
+    const mat = new THREE.LineBasicMaterial({ color: '#8fe0ff', transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, fog: false })
+    const l = new THREE.Line(geo, mat); l.frustumCulled = false; return l
+  }, [])
+  useFrame(() => {
+    const rec = useStore.getState().rec
+    if (rec.mode === 'playing' && rec.duration > 0) {
+      const f = Math.min(1, rec.playhead / rec.duration)
+      const y = -SHELL * 0.96 + f * 2 * SHELL * 0.96
+      const r = Math.sqrt(Math.max(0.01, SHELL * SHELL - y * y)) * 1.015
+      ring.position.y = y; ring.scale.set(r, 1, r)
+      ring.material.opacity = 0.18 + 0.45 * Math.sin(Math.PI * f)
+    } else {
+      ring.material.opacity += (0 - ring.material.opacity) * 0.12
+    }
+  })
+  return <primitive object={ring} />
+}
+
 function FogDriver() {
   const { scene } = useThree()
   const fog = useMemo(() => new THREE.Fog('#05121f', 5, 12), [])
@@ -819,6 +861,7 @@ export default function Scene3D() {
       <ambientLight intensity={0.6} />
       <Ocean />
       <GlassShell />
+      <ScanHalo />
       <AtmosphereGlow />
       <SpaceNetwork />
       <StarBursts />

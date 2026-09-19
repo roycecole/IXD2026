@@ -21,6 +21,16 @@ export default function App() {
   const [panelW, setPanelW] = useState(savedSizes.panelW || 340)
   const [monitorH, setMonitorH] = useState(savedSizes.monitorH || 84)
   const [canvasVh, setCanvasVh] = useState(savedSizes.canvasVh || 46) // 手機：畫布高度(vh)，面板可拉高
+  const [stage, setStage] = useState(false) // 演出模式：隱藏全部 UI，只留球體
+
+  // 按 H 切換演出模式（輸入框聚焦時不觸發）
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.key === 'h' || e.key === 'H') && !/INPUT|TEXTAREA|SELECT/.test(e.target.tagName || '')) setStage((s) => !s)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   // 手機 bottom-sheet 把手：往上拖 → 面板拉高（畫布縮小）
   const sheetDrag = (e) => {
@@ -66,8 +76,9 @@ export default function App() {
   }, [])
 
   return (
-    <div className="app" style={{ '--panel-w': panelW + 'px', '--monitor-h': monitorH + 'px', '--canvas-vh': canvasVh }}>
-      <TopBar onConnect={connect} />
+    <div className={'app' + (stage ? ' stagemode' : '')} style={{ '--panel-w': panelW + 'px', '--monitor-h': monitorH + 'px', '--canvas-vh': canvasVh }}>
+      {stage && <button className="stage-exit" onClick={() => setStage(false)} title="離開演出模式（或按 H）">✕</button>}
+      <TopBar onConnect={connect} onStageToggle={() => setStage(true)} />
       <main className="stage">
         <div className="canvas-wrap"><Scene3D /></div>
         <Splitter axis="x" onDelta={(dx) => setPanelW((w) => clamp(w - dx, 260, 640))} />
