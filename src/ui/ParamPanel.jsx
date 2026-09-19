@@ -39,6 +39,10 @@ export default function ParamPanel() {
   const learn = useStore((s) => s.learn)
   const startSeqLearn = useStore((s) => s.startSeqLearn)
   const cancelLearn = useStore((s) => s.cancelLearn)
+  const spawnWhale = useStore((s) => s.spawnWhale)
+  const spawnDolphin = useStore((s) => s.spawnDolphin)
+  const spawnTurtle = useStore((s) => s.spawnTurtle)
+  const clearTrash = useStore((s) => s.clearTrash)
   const seqActive = learn.active && learn.seq >= 0
 
   return (
@@ -48,6 +52,13 @@ export default function ParamPanel() {
         <span className="ctrl-name">{midi.connected ? (midi.inputs[0] || 'MIDI') : '未連線'}</span>
       </div>
       {midi.error && <p className="hint" style={{ color: '#ff7a7a' }}>MIDI：{midi.error}</p>}
+
+      <div className="actions">
+        <button onClick={spawnWhale}>🐋 鯨魚</button>
+        <button onClick={spawnDolphin}>海豚</button>
+        <button onClick={spawnTurtle}>海龜</button>
+        <button onClick={clearTrash}>清除垃圾</button>
+      </div>
 
       <button className={'learn-btn' + (seqActive ? ' on' : '')}
               onClick={() => (seqActive ? cancelLearn() : startSeqLearn())}>

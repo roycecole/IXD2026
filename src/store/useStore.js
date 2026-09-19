@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { PARAMS, PARAM_ORDER, DEFAULT_BINDINGS } from '../params/registry.js'
+import { PARAMS, PARAM_ORDER, DEFAULT_BINDINGS, ACTION_BINDINGS } from '../params/registry.js'
 import { LS, SS, loadLS, saveLS, removeLS, loadSS, saveSS } from '../lib/persist.js'
 
 const clamp01 = (v) => Math.max(0, Math.min(1, v))
@@ -31,6 +31,7 @@ export const useStore = create((set, get) => ({
   midi: { connected: false, inputs: [], error: null },
   log: [],
   rec: { mode: 'idle', playhead: 0, duration: (savedRec && savedRec.duration) || 0, playIndex: 0, count: recBuffer.length },
+  spawns: { whale: 0, dolphin: 0, turtle: 0 },   // 按鈕觸發計數（場景讀取後生成訪客）
 
   // ---- 參數 ----
   setParam: (pid, v) => set((s) => ({ params: { ...s.params, [pid]: clamp01(v) } })),
@@ -86,6 +87,10 @@ export const useStore = create((set, get) => ({
       }
       return
     }
+
+    // 按鈕動作（鯨魚 / 海豚 / 海龜 / 清除垃圾）：按下觸發
+    const action = ACTION_BINDINGS[cc]
+    if (action) { if (value01 > 0.5) { const fn = st[action]; if (fn) fn() } return }
 
     const pid = st.bindings[cc]
     if (!pid) { st.pushLog('in', `CC ${cc} = ${Math.round(value01 * 127)}（未綁定）`); return }
@@ -184,4 +189,10 @@ export const useStore = create((set, get) => ({
     if (st.rec.mode === 'recording') { for (const k in partial) st.input(k, partial[k]) }
     else st.applyParams(partial)
   },
+
+  // ---- 海洋動作（按鈕觸發）----
+  spawnWhale: () => { set((s) => ({ spawns: { ...s.spawns, whale: s.spawns.whale + 1 } })); get().pushLog('out', '鯨魚出現') },
+  spawnDolphin: () => { set((s) => ({ spawns: { ...s.spawns, dolphin: s.spawns.dolphin + 1 } })); get().pushLog('out', '海豚出現') },
+  spawnTurtle: () => { set((s) => ({ spawns: { ...s.spawns, turtle: s.spawns.turtle + 1 } })); get().pushLog('out', '海龜出現') },
+  clearTrash: () => { get().setParam('trashCount', 0); get().pushLog('out', '清除垃圾') },
 }))
