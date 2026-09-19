@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useStore } from '../store/useStore.js'
 import { SCENES } from '../timeline/scenes.js'
 import { buildShareUrl } from '../lib/share.js'
 import { captureCanvas, downloadBlob } from '../lib/capture.js'
+import { audioToggle, audioState } from '../audio/engine.js'
 
 function fmt(t) {
   const m = Math.floor(t / 60), s = Math.floor(t % 60)
@@ -22,6 +23,15 @@ export default function TopBar({ onConnect }) {
 
   const [shareMsg, setShareMsg] = useState('')
   const [capPct, setCapPct] = useState(-1)
+  const [audioOn, setAudioOn] = useState(false)
+  const [hz, setHz] = useState(0)
+
+  // 聲音開啟時每 0.5s 更新根音 Hz 顯示
+  useEffect(() => {
+    if (!audioOn) return
+    const iv = setInterval(() => setHz(audioState.rootHz), 500)
+    return () => clearInterval(iv)
+  }, [audioOn])
 
   const recording = rec.mode === 'recording'
   const playing = rec.mode === 'playing'
@@ -87,6 +97,11 @@ export default function TopBar({ onConnect }) {
           {capturing ? `錄影 ${capPct}%` : '錄影'}
         </button>
         <button onClick={doExportLog} title="匯出 IN/OUT LOG 供除錯">匯出LOG</button>
+        <button className={'conn' + (audioOn ? ' on' : '')}
+                onClick={async () => { const on = await audioToggle(); setAudioOn(on); useStore.getState().pushLog('out', on ? `聲音開啟（根音 ${audioState.rootHz}Hz）` : '聲音靜音') }}
+                title="舒適背景音（Tone.js）：海水高度=根音Hz、清澈=明亮度、洋流=浪速、輝光=空間感、垃圾=失諧、打擊墊=音階">
+          {audioOn ? `聲音 ${hz || audioState.rootHz}Hz` : '聲音'}
+        </button>
         {shareMsg && <span className="toast">{shareMsg}</span>}
       </div>
 

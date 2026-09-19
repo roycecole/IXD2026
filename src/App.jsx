@@ -8,6 +8,7 @@ import { useMIDI } from './hooks/useMIDI.js'
 import { useStore } from './store/useStore.js'
 import { decodeParams } from './lib/share.js'
 import { LS, loadLS, saveLS } from './lib/persist.js'
+import { audioUpdate } from './audio/engine.js'
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
 
@@ -41,6 +42,7 @@ export default function App() {
       if (st.rec.mode === 'recording') st.advanceRec(dt)
       else if (st.rec.mode === 'playing') st.tickPlayback(dt)
       n++
+      if (n % 6 === 0) audioUpdate()   // 背景音引擎（未開啟時為 no-op）
       if (n % 90 === 0) st.persistParams()
       if (n % 600 === 0) st.persistLog()
       raf.current = requestAnimationFrame(loop)

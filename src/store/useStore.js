@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { PARAMS, PARAM_ORDER, DEFAULT_BINDINGS, ACTION_BINDINGS } from '../params/registry.js'
 import { LS, SS, loadLS, saveLS, removeLS, loadSS, saveSS } from '../lib/persist.js'
+import { noteQueue } from '../audio/bus.js'
 
 const clamp01 = (v) => Math.max(0, Math.min(1, v))
 const perfNow = () => { try { return performance.now() / 1000 } catch (e) { return 0 } }
@@ -119,9 +120,11 @@ export const useStore = create((set, get) => ({
     st.pushLog('in', `CC ${cc} = ${Math.round(value01 * 127)} → ${PARAMS[pid].label}`)
   },
 
-  // 打擊墊 → 資料事件（velocity = 強度）
+  // 打擊墊 → 資料事件（velocity = 強度）+ 音訊觸發
   handleNote: (note, vel01) => {
     const st = get()
+    noteQueue.push({ note, vel: vel01 })
+    if (noteQueue.length > 32) noteQueue.shift()
     st.pushLog('in', `Note ${note} vel ${Math.round(vel01 * 127)} → 事件`)
     st.pushLog('out', `/viz pulse note=${note} power=${vel01.toFixed(2)}`)
   },
