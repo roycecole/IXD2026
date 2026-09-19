@@ -1,22 +1,28 @@
 import { create } from 'zustand'
 import { PARAMS, PARAM_ORDER, DEFAULT_BINDINGS } from '../params/registry.js'
+import { LS, SS, loadLS, saveLS, removeLS, loadSS, saveSS } from '../lib/persist.js'
 
-const LS_KEY = 'ixd2026.bindings'
 const clamp01 = (v) => Math.max(0, Math.min(1, v))
-
-function loadBindings() {
-  try { const s = localStorage.getItem(LS_KEY); if (s) return JSON.parse(s) } catch (e) {}
-  return { ...DEFAULT_BINDINGS }
-}
-function saveBindings(b) { try { localStorage.setItem(LS_KEY, JSON.stringify(b)) } catch (e) {} }
+const perfNow = () => { try { return performance.now() / 1000 } catch (e) { return 0 } }
 
 // ---- 非反應式緩衝：高頻資料放這裡，不進 React state 以免每則訊息觸發重繪 ----
 let recBuffer = []           // 錄製事件 { t, pid, value }（依 playhead 遞增 → 天然時間序）
-let recParamSet = new Set()  // 播放時被自動化驅動的參數集合（供 soft-takeover 判斷）
+let recParamSet = new Set()  // 播放時「真的被自動化驅動」的參數（t>0 事件），供 soft-takeover 判斷
 let takeover = {}            // pid -> { caught:boolean, last:number|null }
+let fullLog = loadSS(SS.log, []) // 完整 IN/OUT log（本 session），供匯出除錯
 
+// ---- 載入上次保存 ----
+const savedRec = loadLS(LS.recording, null)
+if (savedRec && Array.isArray(savedRec.events)) recBuffer = savedRec.events
+
+const savedParams = loadLS(LS.params, null)
 const initialParams = {}
-PARAM_ORDER.forEach((pid) => { initialParams[pid] = PARAMS[pid].value })
+PARAM_ORDER.forEach((pid) => {
+  initialParams[pid] = savedParams && typeof savedParams[pid] === 'number' ? clamp01(savedParams[pid]) : PARAMS[pid].value
+})
+
+function loadBindings() { const b = loadLS(LS.bindings, null); return b && typeof b === 'object' ? b : { ...DEFAULT_BINDINGS } }
+function saveBindings(b) { saveLS(LS.bindings, b) }
 
 export const useStore = create((set, get) => ({
   params: initialParams,
@@ -24,20 +30,24 @@ export const useStore = create((set, get) => ({
   learn: { active: false, target: null, seq: -1 },
   midi: { connected: false, inputs: [], error: null },
   log: [],
-  rec: { mode: 'idle', playhead: 0, duration: 0, playIndex: 0, count: 0 }, // mode: idle | recording | playing
+  rec: { mode: 'idle', playhead: 0, duration: (savedRec && savedRec.duration) || 0, playIndex: 0, count: recBuffer.length },
 
   // ---- 參數 ----
   setParam: (pid, v) => set((s) => ({ params: { ...s.params, [pid]: clamp01(v) } })),
   applyParams: (partial) => set((s) => {
     const params = { ...s.params }
-    for (const k in partial) params[k] = clamp01(partial[k])
+    for (const k in partial) if (k in params) params[k] = clamp01(partial[k])
     return { params }
   }),
 
-  // 人為輸入入口（MIDI / 滑鼠 / 滑桿）：套用參數，且錄製中時寫入事件緩衝。
-  // 播放（tickPlayback）不走這裡，避免回放又被錄進去。
+  // 人為輸入入口（MIDI / 滑鼠 / 滑桿）：套用參數，錄製中時寫入事件緩衝。
+  // 播放中對「被自動化」的參數手動輸入 → 立即登記接管（caught），配合 tickPlayback 跳過覆寫。
   input: (pid, v) => {
     const st = get()
+    if (st.rec.mode === 'playing' && recParamSet.has(pid)) {
+      const t = takeover[pid] || (takeover[pid] = { caught: false, last: null })
+      t.caught = true
+    }
     st.setParam(pid, v)
     if (st.rec.mode === 'recording') recBuffer.push({ t: st.rec.playhead, pid, value: clamp01(v) })
   },
@@ -81,7 +91,6 @@ export const useStore = create((set, get) => ({
     if (!pid) { st.pushLog('in', `CC ${cc} = ${Math.round(value01 * 127)}（未綁定）`); return }
 
     // soft-takeover：僅在「播放錄製」且此參數正被自動化驅動時啟用。
-    // 實體旋鈕的值需先「經過」目前畫面值才接管，避免一抓就跳。
     if (st.rec.mode === 'playing' && recParamSet.has(pid)) {
       const cur = st.params[pid]
       let to = takeover[pid]
@@ -113,28 +122,37 @@ export const useStore = create((set, get) => ({
   },
 
   pushLog: (dir, text) => set((s) => {
+    fullLog.push({ t: perfNow(), dir, text })
+    if (fullLog.length > 2000) fullLog.shift()
     const log = [...s.log, { dir, text }]
     if (log.length > 40) log.shift()
     return { log }
   }),
+  exportLogText: () => fullLog.map((l) => `[${(l.t || 0).toFixed(2)}s][${l.dir.toUpperCase()}] ${l.text}`).join('\n'),
+  persistLog: () => saveSS(SS.log, fullLog),
+  persistParams: () => saveLS(LS.params, get().params),
+
   setMidi: (m) => set((s) => ({ midi: { ...s.midi, ...m } })),
 
   // ---- 錄製 / 播放（參數自動化）----
   startRecording: () => {
-    // t=0 快照全部參數，確保回放能重現起始狀態
-    recBuffer = PARAM_ORDER.map((pid) => ({ t: 0, pid, value: get().params[pid] }))
+    if (get().rec.mode === 'playing') return // 防禦：播放中不可開錄，避免摧毀既有錄製
+    recBuffer = PARAM_ORDER.map((pid) => ({ t: 0, pid, value: get().params[pid] })) // t=0 快照全部
     set({ rec: { mode: 'recording', playhead: 0, duration: 0, playIndex: 0, count: recBuffer.length } })
     get().pushLog('out', '● 開始錄製')
   },
-  stopRecording: () => set((s) => {
+  stopRecording: () => {
+    const dur = get().rec.playhead
+    saveLS(LS.recording, { events: recBuffer, duration: dur })
     get().pushLog('out', `■ 錄製結束（${recBuffer.length} 事件）`)
-    return { rec: { ...s.rec, mode: 'idle', duration: s.rec.playhead, count: recBuffer.length } }
-  }),
+    set((s) => ({ rec: { ...s.rec, mode: 'idle', duration: dur, count: recBuffer.length } }))
+  },
   advanceRec: (dt) => set((s) => ({ rec: { ...s.rec, playhead: s.rec.playhead + dt } })),
 
   startPlayback: () => {
     if (!recBuffer.length) return
-    recParamSet = new Set(recBuffer.map((e) => e.pid))
+    // 只把「錄製過程中真的被改動」的參數列入自動化集合（t>0），soft-takeover 才不會誤鎖靜態參數
+    recParamSet = new Set(recBuffer.filter((e) => e.t > 0).map((e) => e.pid))
     takeover = {}
     set((s) => ({ rec: { ...s.rec, mode: 'playing', playhead: 0, playIndex: 0 } }))
     get().pushLog('out', '▶ 播放錄製')
@@ -144,17 +162,26 @@ export const useStore = create((set, get) => ({
     const ph = r.playhead + dt
     let i = r.playIndex
     const params = { ...s.params }
-    while (i < recBuffer.length && recBuffer[i].t <= ph) { const e = recBuffer[i]; params[e.pid] = clamp01(e.value); i++ }
+    while (i < recBuffer.length && recBuffer[i].t <= ph) {
+      const e = recBuffer[i]
+      // 已被演出者接管的參數不再被錄音覆寫（soft-takeover 保持）
+      if (!(takeover[e.pid] && takeover[e.pid].caught)) params[e.pid] = clamp01(e.value)
+      i++
+    }
     if (ph >= r.duration) { takeover = {}; return { params, rec: { ...r, mode: 'idle', playhead: r.duration, playIndex: i } } }
     return { params, rec: { ...r, playhead: ph, playIndex: i } }
   }),
   stopPlayback: () => { takeover = {}; set((s) => ({ rec: { ...s.rec, mode: 'idle' } })) },
   clearRec: () => {
-    recBuffer = []; recParamSet = new Set(); takeover = {}
+    recBuffer = []; recParamSet = new Set(); takeover = {}; removeLS(LS.recording)
     set({ rec: { mode: 'idle', playhead: 0, duration: 0, playIndex: 0, count: 0 } })
     get().pushLog('out', '⟲ 已清除錄製')
   },
 
-  // 場景預設（即時套用一組參數）
-  applyScene: (partial) => get().applyParams(partial),
+  // 場景預設（即時套用一組參數）。錄製中改走 input 以便被錄進去。
+  applyScene: (partial) => {
+    const st = get()
+    if (st.rec.mode === 'recording') { for (const k in partial) st.input(k, partial[k]) }
+    else st.applyParams(partial)
+  },
 }))

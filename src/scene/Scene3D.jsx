@@ -162,7 +162,7 @@ function CameraRig() {
 
 export default function Scene3D() {
   return (
-    <Canvas camera={{ position: [0, 0, 8], fov: 45 }} dpr={[1, 2]}>
+    <Canvas camera={{ position: [0, 0, 8], fov: 45 }} dpr={[1, 2]} gl={{ preserveDrawingBuffer: true, antialias: true }}>
       <color attach="background" args={['#05060c']} />
       <fog attach="fog" args={['#05060c', 30, 72]} />
       <Lights />
