@@ -484,7 +484,53 @@ function Ocean() {
   )
 }
 
-// 薄玻璃球殼：很淡的 fresnel 輪廓 + 局部弧形反光；拖曳＝改變自轉並注入水體慣性
+// 點擊 / 觸擊 → 亮星星爆發（世界座標佇列，由 StarBursts 消化）
+const burstQueue = []
+function StarBursts() {
+  const MAXB = 5, PER = 14, TOTAL = MAXB * PER
+  const pts = useMemo(() => {
+    const g = new THREE.BufferGeometry()
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(TOTAL * 3), 3))
+    g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(TOTAL * 3), 3))
+    const m = new THREE.Points(g, new THREE.PointsMaterial({ map: dotTex(), size: 0.14, sizeAttenuation: true, transparent: true, depthWrite: false, fog: false, blending: THREE.AdditiveBlending, vertexColors: true }))
+    m.frustumCulled = false; return m
+  }, [])
+  const bursts = useMemo(() => Array.from({ length: MAXB }, () => ({ active: false, t: 0, ox: 0, oy: 0, oz: 0, dirs: new Float32Array(PER * 3) })), [])
+  useFrame((_, dt) => {
+    while (burstQueue.length) {
+      const q = burstQueue.shift()
+      const b = bursts.find((x) => !x.active); if (!b) break
+      b.active = true; b.t = 0; b.ox = q.x; b.oy = q.y; b.oz = q.z
+      for (let i = 0; i < PER; i++) {
+        const th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1), sp = 0.45 + Math.random() * 0.95
+        b.dirs[i * 3] = Math.sin(ph) * Math.cos(th) * sp
+        b.dirs[i * 3 + 1] = Math.cos(ph) * sp
+        b.dirs[i * 3 + 2] = Math.sin(ph) * Math.sin(th) * sp
+      }
+    }
+    const pos = pts.geometry.attributes.position.array
+    const col = pts.geometry.attributes.color.array
+    bursts.forEach((b, bi) => {
+      for (let i = 0; i < PER; i++) {
+        const o = (bi * PER + i) * 3
+        if (!b.active) { col[o] = col[o + 1] = col[o + 2] = 0; continue }
+        const e = 1 - Math.pow(1 - Math.min(1, b.t / 1.1), 2)
+        pos[o] = b.ox + b.dirs[i * 3] * e
+        pos[o + 1] = b.oy + b.dirs[i * 3 + 1] * e
+        pos[o + 2] = b.oz + b.dirs[i * 3 + 2] * e
+        const a = Math.max(0, 1 - b.t / 1.1) * (0.7 + 0.3 * Math.sin(b.t * 20 + i)) // 閃爍衰減
+        col[o] = a; col[o + 1] = 0.95 * a; col[o + 2] = 0.8 * a
+      }
+      if (b.active) { b.t += dt; if (b.t > 1.1) b.active = false }
+    })
+    pts.geometry.attributes.position.needsUpdate = true
+    pts.geometry.attributes.color.needsUpdate = true
+  })
+  return <primitive object={pts} />
+}
+
+// 薄玻璃球殼：很淡的 fresnel 輪廓 + 局部弧形反光。
+// 手勢：拖曳=自轉(+水體慣性)；觸控上下滑=海水高度；兩指縮放=遠近；點擊/觸擊=亮星爆發
 function GlassShell() {
   const mat = useMemo(() => new THREE.ShaderMaterial({
     transparent: true, depthWrite: false,
@@ -502,23 +548,59 @@ function GlassShell() {
     }
     return [mk(0.9, 0.9, -0.6), mk(1.05, 0.5, -0.75)]
   }, [])
-  const drag = useRef(false), lastX = useRef(0)
+  const ptrs = useRef(new Map())   // pointerId -> { x, y, t0, moved, touch, point }
+  const pinch = useRef(null)       // { d0, zoom0 }
   useEffect(() => {
     const mv = (e) => {
-      if (!drag.current) return
-      const dx = e.clientX - lastX.current; lastX.current = e.clientX
+      const p = ptrs.current.get(e.pointerId)
+      if (!p) return
+      const dx = e.clientX - p.x, dy = e.clientY - p.y
+      p.x = e.clientX; p.y = e.clientY
+      p.moved += Math.abs(dx) + Math.abs(dy)
       const st = useStore.getState()
-      st.input('spin', st.params.spin + dx * 0.003)
-      waveMomentum = Math.min(2.5, waveMomentum + Math.abs(dx) * 0.012) // 水體慣性
+      if (ptrs.current.size === 2) {                      // 兩指縮放 → 視角遠近
+        const [a, b] = [...ptrs.current.values()]
+        const d = Math.hypot(a.x - b.x, a.y - b.y)
+        if (!pinch.current) pinch.current = { d0: d, zoom0: st.params.zoom ?? 0.5 }
+        else st.input('zoom', pinch.current.zoom0 + (d - pinch.current.d0) * 0.0035)
+        return
+      }
+      if (ptrs.current.size === 1) {
+        st.input('spin', st.params.spin + dx * 0.003)     // 左右拖曳 → 自轉
+        waveMomentum = Math.min(2.5, waveMomentum + Math.abs(dx) * 0.012)
+        if (p.touch) st.input('seaLevel', (st.params.seaLevel ?? 0.5) - dy * 0.0045) // 觸控上下滑 → 海水高度
+      }
     }
-    const up = () => { drag.current = false }
-    window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up)
-    return () => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up) }
+    const up = (e) => {
+      const p = ptrs.current.get(e.pointerId)
+      if (p) {
+        if (p.moved < 10 && performance.now() - p.t0 < 450 && p.point) burstQueue.push(p.point) // 點擊 → 亮星爆發
+        ptrs.current.delete(e.pointerId)
+      }
+      if (ptrs.current.size < 2) pinch.current = null
+    }
+    window.addEventListener('pointermove', mv)
+    window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', up)
+    return () => {
+      window.removeEventListener('pointermove', mv)
+      window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', up)
+    }
   }, [])
   useFrame(() => { mat.uniforms.uOpacity.value = 0.16 + env.glow * 0.24 })
   return (
     <group>
-      <mesh onPointerDown={(e) => { drag.current = true; lastX.current = (e.clientX ?? e.nativeEvent.clientX) }}>
+      <mesh onPointerDown={(e) => {
+        const ne = e.nativeEvent || e
+        ptrs.current.set(e.pointerId ?? ne.pointerId, {
+          x: e.clientX ?? ne.clientX, y: e.clientY ?? ne.clientY,
+          t0: performance.now(), moved: 0,
+          touch: (e.pointerType ?? ne.pointerType) === 'touch',
+          point: e.point ? { x: e.point.x, y: e.point.y, z: e.point.z } : null,
+        })
+        if (ptrs.current.size >= 2) pinch.current = null // 第二指落下 → 下次 move 重建縮放基準
+      }}>
         <sphereGeometry args={[SHELL, 48, 48]} />
         <primitive object={mat} attach="material" />
       </mesh>
@@ -657,6 +739,7 @@ export default function Scene3D() {
       <GlassShell />
       <AtmosphereGlow />
       <SpaceNetwork />
+      <StarBursts />
       <CameraRig />
     </Canvas>
   )
