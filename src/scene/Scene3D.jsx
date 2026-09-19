@@ -16,11 +16,11 @@ const bioNodes = []   // 生物節點（供 BioNetwork 科技連線）
 
 // ---- 集中管理的視覺參數 ----
 const VIS = {
-  surfLinesX: 20, surfSamples: 24,   // 水面 X 向線數 / 每線取樣
-  surfLinesZ: 12, surfSamplesZ: 18,  // 水面 Z 向線
+  surfLinesX: 26, surfSamples: 26,   // 水面波浪線（僅水平流向，無垂直線條）
   wallArcs: 26, wallSamples: 12,     // 內壁弧線
   jelly: 12, fish: 40, trash: 14,    // 生物上限
   particles: 90,                     // 發光粒子
+  shootingStars: 3,                  // 背景流星
 }
 
 // ---- 平滑環境值 ----
@@ -49,13 +49,6 @@ const dotTex = () => makeTex('dot', 64, (g, s) => {
   const grd = g.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2)
   grd.addColorStop(0, 'rgba(255,255,255,1)'); grd.addColorStop(0.3, 'rgba(190,235,255,0.9)'); grd.addColorStop(1, 'rgba(190,235,255,0)')
   g.fillStyle = grd; g.fillRect(0, 0, s, s)
-})
-const glyphTex = (ch) => makeTex('gly' + ch, 128, (g, s) => {
-  g.shadowColor = 'rgba(130,220,255,0.9)'; g.shadowBlur = 16
-  g.fillStyle = 'rgba(205,240,255,0.95)'
-  g.font = `300 ${s * 0.6}px "PingFang TC", system-ui, sans-serif`
-  g.textAlign = 'center'; g.textBaseline = 'middle'
-  g.fillText(ch, s / 2, s / 2)
 })
 
 // ---- 線段 batch（immediate-mode：每幀重寫，additive 微光）----
@@ -155,23 +148,7 @@ function WaterLines() {
         ax = x; ay = y; az = z; first = false
       }
     }
-    // 水面線（Z 向，較疏、更淡 → 不同方向疊加）
-    for (let j = 0; j < VIS.surfLinesZ; j++) {
-      const x = ((j / (VIS.surfLinesZ - 1)) * 2 - 1) * zr * 0.9
-      const zr2 = Math.sqrt(Math.max(0.001, WR * WR - yw * yw - x * x))
-      let ax = 0, ay = 0, az = 0, first = true
-      for (let i = 0; i <= VIS.surfSamplesZ; i++) {
-        let z = ((i / VIS.surfSamplesZ) * 2 - 1) * zr2
-        let y = yw + waveH(x, z)
-        if (i === 0 || i === VIS.surfSamplesZ) {
-          const rw = Math.sqrt(Math.max(0.001, WR * WR - y * y - x * x))
-          z = i === 0 ? -rw : rw
-        }
-        if (!first) bSeg(batch, ax, ay, az, x, y, z, wcol.r, wcol.g, wcol.b, murkA * 0.6)
-        ax = x; ay = y; az = z; first = false
-      }
-    }
-    // 內壁弧線：由水線接觸點沿球壁收攏到球底（上端隨浪連續變形）
+    // 內壁弧線：由水線接觸點沿球壁收攏到球底（上端隨浪連續變形；頂部淡入避免波浪區出現垂直線）
     let pcx = 0, pcy = 0, pcz = 0
     for (let k = 0; k <= VIS.wallArcs; k++) {
       const phi = (k / VIS.wallArcs) * Math.PI * 2
@@ -195,7 +172,7 @@ function WaterLines() {
         y += waveH(Math.cos(phi) * 0.5, Math.sin(phi) * 0.5) * (1 - s) * (1 - s) * 0.5 // 連續銜接
         const r = Math.sqrt(Math.max(0.0005, WR * WR - y * y))
         const x = Math.cos(phi) * r, z = Math.sin(phi) * r
-        bSeg(batch, ax, ay, az, x, y, z, wcol.r, wcol.g, wcol.b, murkA * (1 - s * 0.55))
+        bSeg(batch, ax, ay, az, x, y, z, wcol.r, wcol.g, wcol.b, murkA * (1 - s * 0.55) * Math.min(1, 0.08 + s * 2.4))
         ax = x; ay = y; az = z
       }
     }
@@ -493,28 +470,6 @@ function BioNetwork() {
   return <primitive object={lines} />
 }
 
-// 沿波浪流動的文字 / 數字（有前後深度）
-function FlowingText() {
-  const chars = useMemo(() => ['海', '浪', '潮', '深', '流', '光', '靜', '夢', '0', '1', '7', '2', '0', '2', '6', '∞'], [])
-  const pool = useMemo(() => Array.from({ length: 14 }, (_, i) => {
-    const m = new THREE.Sprite(new THREE.SpriteMaterial({ map: glyphTex(chars[i % chars.length]), transparent: true, depthWrite: false, opacity: 0, fog: true }))
-    return { m, x: Math.sin(i * 12.9) * 1.4, z: Math.cos(i * 7.3) * 1.2, idx: i }
-  }), [chars])
-  useFrame((state, dt) => {
-    const t = state.clock.elapsedTime, y0 = seaY()
-    pool.forEach((it) => {
-      it.x += (0.05 + env.current * 0.4) * (0.4 + env.swim) * dt
-      const lim = Math.sqrt(Math.max(0.1, R * R - it.z * it.z)) * 0.9
-      if (it.x > lim) it.x = -lim
-      it.m.position.set(it.x, y0 + waveH(it.x, it.z) + 0.12, it.z)
-      const edge = 1 - Math.min(1, Math.abs(it.x) / lim)
-      it.m.material.opacity = (0.22 + 0.6 * edge) * (0.65 + 0.35 * Math.sin(t * 0.8 + it.idx))
-      it.m.scale.setScalar(0.4)
-    })
-  })
-  return <group>{pool.map((p, i) => <primitive key={i} object={p.m} />)}</group>
-}
-
 function Ocean() {
   const g = useRef()
   useFrame((_, dt) => { const p = useStore.getState().params; if (g.current) g.current.rotation.y += Math.min(0.05, dt) * (0.04 + (p.spin ?? 0.3) * 1.4) })
@@ -524,7 +479,6 @@ function Ocean() {
       <WaterLines />
       <WaterParticles />
       <LineCreatures />
-      <FlowingText />
       <BioNetwork />
     </group>
   )
@@ -609,13 +563,70 @@ function SpaceNetwork() {
   return <group><primitive object={lines} /><primitive object={pts} /></group>
 }
 
+// 背景動畫 1：星空閃爍 + 整體緩慢流轉
 function Stars() {
-  const geo = useMemo(() => {
-    const N = 520, a = new Float32Array(N * 3)
-    for (let i = 0; i < N; i++) { const r = 12 + Math.random() * 30, th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1); a[i * 3] = r * Math.sin(ph) * Math.cos(th); a[i * 3 + 1] = r * Math.cos(ph); a[i * 3 + 2] = r * Math.sin(ph) * Math.sin(th) }
-    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(a, 3)); return g
+  const COUNT = 520
+  const { pts, phases } = useMemo(() => {
+    const a = new Float32Array(COUNT * 3), c = new Float32Array(COUNT * 3), ph = new Float32Array(COUNT * 2)
+    for (let i = 0; i < COUNT; i++) {
+      const r = 12 + Math.random() * 30, th = Math.random() * Math.PI * 2, p = Math.acos(2 * Math.random() - 1)
+      a[i * 3] = r * Math.sin(p) * Math.cos(th); a[i * 3 + 1] = r * Math.cos(p); a[i * 3 + 2] = r * Math.sin(p) * Math.sin(th)
+      c[i * 3] = 0.75; c[i * 3 + 1] = 0.88; c[i * 3 + 2] = 1
+      ph[i * 2] = Math.random() * Math.PI * 2          // 相位
+      ph[i * 2 + 1] = 0.25 + Math.random() * 1.5       // 各自的閃爍速度
+    }
+    const g = new THREE.BufferGeometry()
+    g.setAttribute('position', new THREE.BufferAttribute(a, 3))
+    g.setAttribute('color', new THREE.BufferAttribute(c, 3))
+    const m = new THREE.Points(g, new THREE.PointsMaterial({ map: dotTex(), size: 0.38, sizeAttenuation: true, transparent: true, opacity: 0.9, depthWrite: false, fog: false, blending: THREE.AdditiveBlending, vertexColors: true }))
+    m.frustumCulled = false
+    return { pts: m, phases: ph }
   }, [])
-  return <points geometry={geo}><pointsMaterial map={dotTex()} size={0.4} sizeAttenuation transparent opacity={0.8} depthWrite={false} fog={false} blending={THREE.AdditiveBlending} color="#cfeeff" /></points>
+  const grp = useRef()
+  useFrame((state, dt) => {
+    const t = state.clock.elapsedTime
+    if (grp.current) grp.current.rotation.y += dt * 0.012
+    const col = pts.geometry.attributes.color.array
+    for (let i = 0; i < COUNT; i++) {
+      const tw = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(t * phases[i * 2 + 1] + phases[i * 2]))
+      col[i * 3] = 0.75 * tw; col[i * 3 + 1] = 0.88 * tw; col[i * 3 + 2] = tw
+    }
+    pts.geometry.attributes.color.needsUpdate = true
+  })
+  return <group ref={grp}><primitive object={pts} /></group>
+}
+
+// 背景動畫 2：偶發流星（拖尾漸淡）
+function ShootingStars() {
+  const batch = useMemo(() => makeBatch(VIS.shootingStars * 2), [])
+  const slots = useMemo(() => Array.from({ length: VIS.shootingStars }, () => ({
+    active: false, x: 0, y: 0, z: 0, vx: 0, vy: 0, life: 0, next: 2 + Math.random() * 6,
+  })), [])
+  useFrame((_, dt) => {
+    bBegin(batch)
+    slots.forEach((s) => {
+      if (!s.active) {
+        s.next -= dt
+        if (s.next <= 0) {
+          s.active = true; s.life = 0
+          s.x = -7 + Math.random() * 4; s.y = 2.2 + Math.random() * 2.8; s.z = -5 - Math.random() * 5
+          const sp = 5.5 + Math.random() * 4
+          s.vx = sp; s.vy = -(1.1 + Math.random() * 1.6)
+        }
+        return
+      }
+      s.life += dt
+      s.x += s.vx * dt; s.y += s.vy * dt
+      const a = Math.max(0, Math.sin(Math.min(1, s.life / 1.5) * Math.PI)) * 0.8
+      const t1x = s.x - s.vx * 0.11, t1y = s.y - s.vy * 0.11
+      const t2x = s.x - s.vx * 0.26, t2y = s.y - s.vy * 0.26
+      bSeg(batch, s.x, s.y, s.z, t1x, t1y, s.z, 0.85, 0.95, 1.0, a)
+      bSeg(batch, t1x, t1y, s.z, t2x, t2y, s.z, 0.85, 0.95, 1.0, a * 0.3)
+      if (s.life > 1.7 || s.x > 9) { s.active = false; s.next = 3 + Math.random() * 7 }
+    })
+    bEnd(batch)
+  })
+  return <primitive object={batch.lines} />
 }
 
 function FogDriver() {
@@ -640,6 +651,7 @@ export default function Scene3D() {
       <EnvDriver />
       <FogDriver />
       <Stars />
+      <ShootingStars />
       <ambientLight intensity={0.6} />
       <Ocean />
       <GlassShell />

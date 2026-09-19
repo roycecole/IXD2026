@@ -1,6 +1,7 @@
-import * as Tone from 'tone'
 import { useStore } from '../store/useStore.js'
 import { noteQueue } from './bus.js'
+
+let Tone = null // code-splitting：按下「聲音」才動態載入 Tone.js（不佔首載）
 
 // 舒適背景音引擎（Tone.js）：與畫面共用同一套參數（store），
 // 所以 MIDI 推桿/旋鈕、滑鼠、錄製回放都會同時「演奏」聲音。
@@ -61,6 +62,7 @@ function build() {
 
 export async function audioToggle() {
   if (!N) {
+    if (!Tone) Tone = await import('tone')
     await Tone.start()
     build()
     Object.assign(lastSpawns, useStore.getState().spawns) // 避免補放過去的叫聲
