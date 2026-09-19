@@ -11,7 +11,7 @@ function fmt(t) {
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
-export default function TopBar({ onConnect }) {
+export default function TopBar({ onConnect, onInfo, onVK, vkOn }) {
   const rec = useStore((s) => s.rec)
   const midi = useStore((s) => s.midi)
   const startRecording = useStore((s) => s.startRecording)
@@ -99,6 +99,8 @@ export default function TopBar({ onConnect }) {
           {capturing ? `錄影 ${capPct}%` : '錄影'}
         </button>
         <button onClick={doExportLog} title="匯出 IN/OUT LOG 供除錯">匯出LOG</button>
+        <button className={'conn' + (vkOn ? ' on' : '')} onClick={onVK} title="虛擬 nanoKONTROL2：無實體裝置也能用滑鼠 / 鍵盤操作">控制器</button>
+        <button onClick={onInfo} title="操作說明 / 關於本專案">說明</button>
         <button className={'conn' + (audioOn ? ' on' : '')}
                 onClick={async () => { const on = await audioToggle(); setAudioOn(on); useStore.getState().pushLog('out', on ? `聲音開啟（根音 ${audioState.rootHz}Hz）` : '聲音靜音') }}
                 title="舒適背景音（Tone.js）：海水高度=根音Hz、清澈=明亮度、洋流=浪速、輝光=空間感、垃圾=失諧、打擊墊=音階">

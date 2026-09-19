@@ -4,6 +4,9 @@ import ParamPanel from './ui/ParamPanel.jsx'
 import TopBar from './ui/TopBar.jsx'
 import Monitor from './ui/Monitor.jsx'
 import Splitter from './ui/Splitter.jsx'
+import Footer from './ui/Footer.jsx'
+import InfoModal from './ui/InfoModal.jsx'
+import VirtualController from './ui/VirtualController.jsx'
 import { useMIDI } from './hooks/useMIDI.js'
 import { useStore } from './store/useStore.js'
 import { decodeParams } from './lib/share.js'
@@ -22,11 +25,26 @@ export default function App() {
   const [monitorH, setMonitorH] = useState(savedSizes.monitorH || 84)
   const [canvasVh, setCanvasVh] = useState(savedSizes.canvasVh || 46) // 手機：畫布高度(vh)，面板可拉高
   const [stage, setStage] = useState(false) // 演出模式：隱藏全部 UI，只留球體
+  const [showVK, setShowVK] = useState(false) // 虛擬控制器
+  const [showInfo, setShowInfo] = useState(() => { try { return !localStorage.getItem('ixd2026.seen') } catch (e) { return true } })
+  const closeInfo = () => { setShowInfo(false); try { localStorage.setItem('ixd2026.seen', '1') } catch (e) {} }
 
-  // 按 H 切換演出模式（輸入框聚焦時不觸發）
+  // 全域鍵盤：H 演出模式、空白鍵播放、R 錄製、1-4 召喚生物、? 說明（輸入/按鈕聚焦時放行原生行為）
   useEffect(() => {
     const onKey = (e) => {
-      if ((e.key === 'h' || e.key === 'H') && !/INPUT|TEXTAREA|SELECT/.test(e.target.tagName || '')) setStage((s) => !s)
+      const tag = e.target.tagName || ''
+      if (/INPUT|TEXTAREA|SELECT/.test(tag)) return
+      const k = e.key
+      if (k === 'h' || k === 'H') { setStage((s) => !s); return }
+      if (k === '?') { setShowInfo(true); return }
+      if (tag === 'BUTTON') return // 按鈕聚焦時交給原生（Enter/Space 觸發該鈕）
+      const st = useStore.getState()
+      if (k === ' ') { st.transportPlay(); e.preventDefault() }
+      else if (k === 'r' || k === 'R') st.transportRecord()
+      else if (k === '1') st.spawnWhale()
+      else if (k === '2') st.spawnDolphin()
+      else if (k === '3') st.spawnTurtle()
+      else if (k === '4') st.clearTrash()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -78,7 +96,7 @@ export default function App() {
   return (
     <div className={'app' + (stage ? ' stagemode' : '')} style={{ '--panel-w': panelW + 'px', '--monitor-h': monitorH + 'px', '--canvas-vh': canvasVh }}>
       {stage && <button className="stage-exit" onClick={() => setStage(false)} title="離開演出模式（或按 H）">✕</button>}
-      <TopBar onConnect={connect} />
+      <TopBar onConnect={connect} onInfo={() => setShowInfo(true)} onVK={() => setShowVK((v) => !v)} vkOn={showVK} />
       <main className="stage">
         <div className="canvas-wrap" onDoubleClick={() => setStage((s) => !s)} title="雙擊進入/離開演出模式（或按 H）"><Scene3D /></div>
         <Splitter axis="x" onDelta={(dx) => setPanelW((w) => clamp(w - dx, 260, 640))} />
@@ -87,6 +105,9 @@ export default function App() {
       </main>
       <Splitter axis="y" onDelta={(dy) => setMonitorH((h) => clamp(h - dy, 60, 340))} />
       <Monitor />
+      <Footer onInfo={() => setShowInfo(true)} />
+      {showVK && <VirtualController onClose={() => setShowVK(false)} />}
+      {showInfo && <InfoModal onClose={closeInfo} />}
     </div>
   )
 }

@@ -3,13 +3,61 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>MidiSea 資料導演台 — MIDI × 線稿海洋互動 | IxDA Taiwan 2026</title>
+    <meta name="description" content="用 MIDI 控制器、滑鼠、鍵盤或手機觸控，演奏一顆透明球體裡的線稿海洋：調海水、召喚鯨豚海龜、清理海洋垃圾，可錄製回放。IxDA Taiwan 2026 會員工作坊「AI 共生黑客鬆」12組 卡加布列島作品。" />
+    <meta name="keywords" content="MIDI, nanoKONTROL2, Web MIDI, 互動設計, IxDA, 海洋, Three.js, 資料視覺化, 生成式藝術, 互動裝置, IxDA Taiwan, 黑客鬆" />
+    <meta name="author" content="12組 卡加布列島 · IxDA Taiwan 2026" />
     <meta name="theme-color" content="#05101c" />
+    <meta name="robots" content="index, follow" />
+    <link rel="canonical" href="https://midisea.shyetech.com/" />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="MidiSea 資料導演台" />
+    <meta property="og:title" content="MidiSea 資料導演台 — MIDI × 線稿海洋互動" />
+    <meta property="og:description" content="演奏一顆透明球體裡的線稿海洋：調海水、召喚鯨豚、清理海洋垃圾，可錄製回放。IxDA Taiwan 2026「AI 共生黑客鬆」12組 卡加布列島。" />
+    <meta property="og:url" content="https://midisea.shyetech.com/" />
+    <meta property="og:image" content="https://midisea.shyetech.com/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:locale" content="zh_TW" />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="MidiSea 資料導演台 — MIDI × 線稿海洋互動" />
+    <meta name="twitter:description" content="演奏一顆透明球體裡的線稿海洋。IxDA Taiwan 2026「AI 共生黑客鬆」12組 卡加布列島。" />
+    <meta name="twitter:image" content="https://midisea.shyetech.com/og.png" />
+
+    <!-- PWA / icons -->
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="MidiSea" />
     <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
-    <title>資料導演台 · IXD2026</title>
+
+    <!-- 結構化資料 (JSON-LD) -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebApplication",
+      "name": "MidiSea 資料導演台",
+      "url": "https://midisea.shyetech.com/",
+      "applicationCategory": "MultimediaApplication",
+      "operatingSystem": "Web",
+      "browserRequirements": "需支援 WebGL 與 Web MIDI 的瀏覽器（建議 Chrome / Edge）",
+      "description": "用 MIDI 控制器或滑鼠、鍵盤、觸控演奏線稿海洋的互動作品。",
+      "inLanguage": "zh-Hant",
+      "isAccessibleForFree": true,
+      "author": { "@type": "Organization", "name": "12組 卡加布列島" },
+      "isPartOf": {
+        "@type": "Event",
+        "name": "IxDA Taiwan 2026 會員工作坊 — AI 共生黑客鬆",
+        "url": "https://ixda.kktix.cc/events/ixda-member-2026"
+      }
+    }
+    </script>
   </head>
   <body>
     <div id="root"></div>

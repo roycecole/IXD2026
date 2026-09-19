@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630">
+  <defs>
+    <radialGradient id="ogbg" cx="70%" cy="45%" r="85%">
+      <stop offset="0%" stop-color="#0c2438"/>
+      <stop offset="100%" stop-color="#05101c"/>
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#ogbg)"/>
+  <g fill="#cfeeff">
+    <circle cx="120" cy="90" r="2.5" opacity="0.8"/><circle cx="240" cy="150" r="1.8" opacity="0.6"/>
+    <circle cx="90" cy="260" r="2" opacity="0.7"/><circle cx="300" cy="60" r="1.6" opacity="0.5"/>
+    <circle cx="180" cy="420" r="2.2" opacity="0.6"/><circle cx="60" cy="500" r="1.8" opacity="0.5"/>
+    <circle cx="1120" cy="120" r="2" opacity="0.6"/><circle cx="1050" cy="520" r="2.3" opacity="0.6"/>
+  </g>
+  <!-- 球體 -->
+  <g transform="translate(900 315)">
+    <circle r="220" fill="none" stroke="#7fd4ff" stroke-width="3" opacity="0.7"/>
+    <circle r="220" fill="#0a2036" opacity="0.35"/>
+    <path d="M-190 6 Q-140 -18 -90 6 T10 6 T110 6 T196 6" fill="none" stroke="#a6e4ff" stroke-width="5" stroke-linecap="round"/>
+    <path d="M-168 54 Q-118 34 -68 54 T32 54 T150 54" fill="none" stroke="#6fc2ee" stroke-width="4" stroke-linecap="round" opacity="0.7"/>
+    <path d="M-150 104 Q-100 88 -50 104 T60 104 T160 104" fill="none" stroke="#5aa8d8" stroke-width="3" stroke-linecap="round" opacity="0.5"/>
+    <circle cx="-60" cy="-70" r="5" fill="#dff2ff"/><circle cx="70" cy="-95" r="4" fill="#dff2ff" opacity="0.85"/>
+  </g>
+  <!-- 文字 -->
+  <text x="90" y="250" fill="#eef6ff" font-family="PingFang TC, Noto Sans TC, sans-serif" font-size="72" font-weight="600">MidiSea 資料導演台</text>
+  <text x="92" y="312" fill="#8fd4ff" font-family="PingFang TC, Noto Sans TC, sans-serif" font-size="34">MIDI × 線稿海洋 · 互動裝置</text>
+  <text x="92" y="500" fill="#9fb0c8" font-family="PingFang TC, Noto Sans TC, sans-serif" font-size="26">IxDA Taiwan 2026 會員工作坊「AI 共生黑客鬆」</text>
+  <text x="92" y="540" fill="#c8d6ea" font-family="PingFang TC, Noto Sans TC, sans-serif" font-size="26" font-weight="500">12組 卡加布列島</text>
+</svg>

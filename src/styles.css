@@ -41,7 +41,8 @@ input[type="range"] { accent-color: var(--accent); width: 100%; height: 16px; }
 
 /* ---- 演出模式：只留球體 ---- */
 .app.stagemode .topbar, .app.stagemode .panel, .app.stagemode .monitor,
-.app.stagemode .splitter, .app.stagemode .sheet-handle { display: none !important; }
+.app.stagemode .splitter, .app.stagemode .sheet-handle,
+.app.stagemode .footer, .app.stagemode .vk { display: none !important; }
 .app.stagemode .canvas-wrap { height: 100vh !important; flex: 1 1 auto !important; }
 .stage-exit {
   position: fixed; top: 10px; right: 12px; z-index: 30;
@@ -144,3 +145,72 @@ input[type="range"] { accent-color: var(--accent); width: 100%; height: 16px; }
   .monitor { height: auto; }
   .param { grid-template-columns: 1fr 64px 32px 42px; gap: 6px; }
 }
+
+/* ---- 頁尾 ---- */
+.footer {
+  height: 26px; flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
+  padding: 0 12px; font-size: 11px; color: var(--dim); background: var(--panel);
+  border-top: 1px solid var(--line); overflow: hidden; white-space: nowrap;
+}
+.footer b { color: var(--muted); font-weight: 500; }
+.footer a { color: var(--accent); text-decoration: none; }
+.footer a:hover { text-decoration: underline; }
+.footer-sep { color: var(--line2); }
+.footer-help { margin-left: auto; padding: 2px 9px; font-size: 11px; flex: 0 0 auto; }
+@media (max-width: 620px) { .footer-main, .footer-sep { display: none; } }
+
+/* ---- 虛擬 nanoKONTROL2 ---- */
+.vk {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
+  background: rgba(16, 18, 27, 0.97); border-top: 1px solid var(--line2);
+  box-shadow: 0 -8px 26px rgba(0, 0, 0, 0.45); padding: 8px 12px 12px;
+}
+.vk-head { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+.vk-head button { padding: 2px 9px; }
+.vk-body { display: flex; align-items: flex-end; gap: 16px; overflow-x: auto; padding-bottom: 2px; }
+.vk-transport { display: flex; gap: 4px; flex: 0 0 auto; }
+.vk-tbtn { width: 30px; height: 30px; padding: 0; font-size: 12px; }
+.vk-strips { display: flex; gap: 8px; flex: 0 0 auto; }
+.vk-strip { display: flex; flex-direction: column; align-items: center; gap: 3px; width: 42px; }
+.vk-knob {
+  width: 34px; height: 34px; border-radius: 50%; background: var(--panel2);
+  border: 1px solid var(--line2); position: relative; cursor: ns-resize; touch-action: none;
+}
+.vk-knob:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(93, 202, 165, 0.4); }
+.vk-dial { position: absolute; inset: 0; transform-origin: center center; }
+.vk-dial i { position: absolute; left: 50%; top: 3px; width: 2px; height: 12px; margin-left: -1px; background: var(--accent); display: block; border-radius: 1px; }
+.vk-fader {
+  width: 16px; height: 80px; background: var(--bg); border: 1px solid var(--line2);
+  border-radius: 8px; position: relative; cursor: ns-resize; touch-action: none;
+}
+.vk-fader:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(93, 202, 165, 0.4); }
+.vk-fill { position: absolute; left: 0; right: 0; bottom: 0; background: rgba(93, 202, 165, 0.28); border-radius: 0 0 7px 7px; }
+.vk-thumb { position: absolute; left: -3px; right: -3px; height: 8px; background: var(--accent); border-radius: 3px; }
+.vk-cc { font-family: var(--mono); font-size: 9px; color: var(--faint, var(--dim)); }
+.vk-lab { font-size: 10px; color: var(--muted); text-align: center; line-height: 1.15; height: 24px; overflow: hidden; }
+.vk-solos { display: flex; gap: 5px; flex: 0 0 auto; }
+.vk-solo { font-size: 11px; padding: 7px 9px; }
+
+/* ---- 說明 / 關於 Modal ---- */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 40; background: rgba(4, 6, 12, 0.74);
+  backdrop-filter: blur(3px); display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.modal {
+  background: var(--panel); border: 1px solid var(--line2); border-radius: 14px;
+  max-width: 560px; width: 100%; max-height: 88vh; overflow-y: auto; padding: 20px 22px;
+}
+.modal-head { display: flex; justify-content: space-between; align-items: center; }
+.modal-head h2 { margin: 0; font-size: 19px; font-weight: 600; }
+.modal-head button { padding: 2px 9px; }
+.modal-lead { color: var(--text); font-size: 14px; line-height: 1.75; margin: 10px 0 0; }
+.modal h3 { font-size: 14px; margin: 18px 0 6px; color: var(--accent); }
+.modal-list { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.95; color: #c8cbd8; }
+.modal-list b { color: var(--text); font-weight: 500; }
+.modal-list code, .modal-p code { font-family: var(--mono); background: var(--bg); padding: 1px 5px; border-radius: 4px; font-size: .9em; }
+.modal-p { font-size: 13px; color: #c8cbd8; line-height: 1.75; margin: 0; }
+.modal-about { margin-top: 18px; padding: 12px 14px; background: var(--panel2); border-radius: 10px; font-size: 13px; line-height: 1.85; }
+.modal-about b { color: var(--text); font-weight: 500; }
+.modal-about a { color: var(--accent); display: inline-block; margin-top: 4px; }
+.modal-start { width: 100%; margin-top: 16px; padding: 10px; background: var(--accent); color: #062018; border-color: var(--accent); font-weight: 500; }
+.modal-start:hover { filter: brightness(1.06); background: var(--accent); }
