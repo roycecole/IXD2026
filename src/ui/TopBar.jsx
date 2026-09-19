@@ -4,6 +4,7 @@ import { SCENES } from '../timeline/scenes.js'
 import { buildShareUrl } from '../lib/share.js'
 import { captureCanvas, downloadBlob } from '../lib/capture.js'
 import { audioToggle, audioState } from '../audio/engine.js'
+import { micToggle } from '../audio/mic.js'
 
 function fmt(t) {
   const m = Math.floor(t / 60), s = Math.floor(t % 60)
@@ -24,6 +25,7 @@ export default function TopBar({ onConnect }) {
   const [shareMsg, setShareMsg] = useState('')
   const [capPct, setCapPct] = useState(-1)
   const [audioOn, setAudioOn] = useState(false)
+  const [micOn, setMicOn] = useState(false)
   const [hz, setHz] = useState(0)
 
   // 聲音開啟時每 0.5s 更新根音 Hz 顯示
@@ -101,6 +103,11 @@ export default function TopBar({ onConnect }) {
                 onClick={async () => { const on = await audioToggle(); setAudioOn(on); useStore.getState().pushLog('out', on ? `聲音開啟（根音 ${audioState.rootHz}Hz）` : '聲音靜音') }}
                 title="舒適背景音（Tone.js）：海水高度=根音Hz、清澈=明亮度、洋流=浪速、輝光=空間感、垃圾=失諧、打擊墊=音階">
           {audioOn ? `聲音 ${hz || audioState.rootHz}Hz` : '聲音'}
+        </button>
+        <button className={'conn' + (micOn ? ' on' : '')}
+                onClick={async () => { const on = await micToggle(); setMicOn(on); useStore.getState().pushLog('out', on ? '麥克風開啟：吹氣＝起風' : '麥克風關閉') }}
+                title="麥克風＝風：對手機吹氣 → 浪變大。只做即時音量偵測，不錄音、不上傳">
+          {micOn ? '風·開' : '麥克風'}
         </button>
         {shareMsg && <span className="toast">{shareMsg}</span>}
       </div>

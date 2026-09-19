@@ -46,18 +46,19 @@ function build() {
   })
   pluck.connect(pluckGain)
 
-  // 生物叫聲（滑音單音）
+  // 生物叫聲（滑音單音）→ 立體聲相 Panner（跟隨生物游過的位置）
   const callGain = new Tone.Gain(0.35); callGain.connect(reverb)
+  const callPan = new Tone.Panner(0); callPan.connect(callGain)
   const call = new Tone.Synth({
     portamento: 0.9,
     oscillator: { type: 'sine' },
     envelope: { attack: 0.25, decay: 0.4, sustain: 0.5, release: 1.6 },
   })
-  call.connect(callGain)
+  call.connect(callPan)
 
   Tone.getDestination().volume.value = -8
   master.gain.rampTo(0.85, 2.5) // 緩緩淡入
-  N = { master, reverb, filter, oscA, oscB, oscC, lfo, pluck, call }
+  N = { master, reverb, filter, oscA, oscB, oscC, lfo, pluck, call, callPan }
 }
 
 export async function audioToggle() {
@@ -76,6 +77,20 @@ export async function audioToggle() {
 }
 
 const SCALE = [2, 2.25, 2.5, 3, 3.375, 4] // 大調五聲（相對根音的頻率比）
+
+let panTarget = 0
+// 由場景每幀回報生物位置（-1 左 ~ +1 右），叫聲跟著左右聲道移動
+export function setCreaturePan(x) { panTarget = Math.max(-1, Math.min(1, x)) }
+
+// 點擊亮星爆發 → 輕柔鈴音（兩顆高音五聲音階，隨海水高度的根音走）
+export function chime() {
+  if (!N || muted) return
+  const t = Tone.now()
+  const root = 45 + ((useStore.getState().params.seaLevel ?? 0.5)) * 65
+  const f = Math.min(2200, root * 4 * SCALE[(Math.random() * SCALE.length) | 0])
+  N.pluck.triggerAttackRelease(f, 0.5, t + 0.01, 0.2)
+  N.pluck.triggerAttackRelease(Math.min(2600, f * 1.5), 0.6, t + 0.09, 0.13)
+}
 
 function creatureCall(type) {
   const t = Tone.now()
@@ -111,6 +126,7 @@ export function audioUpdate() {
   N.oscC.detune.rampTo(-det, 1)
   N.lfo.frequency.rampTo(0.05 + (p.current ?? 0.45) * 0.3, 1.2) // 洋流 → 浪的起伏速度
   N.reverb.wet.rampTo(0.28 + (p.glow ?? 0.6) * 0.42, 1.5)       // 輝光 → 空間感
+  N.callPan.pan.rampTo(panTarget * 0.85, 0.12)                  // 生物聲相跟隨
 
   const t = Tone.now()                                    // 魚群×游速 → 點綴音密度（稀疏）
   const density = 0.35 + (p.fishCount ?? 0.5) * (0.4 + (p.swimSpeed ?? 0.5)) * 1.4

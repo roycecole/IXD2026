@@ -2,6 +2,8 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { useRef, useMemo, useEffect } from 'react'
 import * as THREE from 'three'
 import { useStore } from '../store/useStore.js'
+import { chime, setCreaturePan } from '../audio/engine.js'
+import { micState } from '../audio/mic.js'
 
 // 線稿海洋球：細線輪廓 + 微光 + 通透。程序化波浪（非流體模擬）、簡化弧形反光（非折射）。
 // 效能：useFrame 內以 getState() 讀參數；線段全部寫進少數共用 batch（2 個 draw call），
@@ -67,7 +69,7 @@ function waveH(x, z) {
   const fv = Math.hypot(flow.x, flow.z)
   const dir = fv > 0.03 ? Math.sin((x * flow.x + z * flow.z) * 2.4 + T * 1.4) * 0.075 * fv : 0 // 洋流方向浪
   return (Math.sin(x * 1.7 + T) * 0.09 + Math.sin(z * 2.3 - T * 0.8) * 0.06 +
-    Math.sin(x * 0.8 + z * 1.4 + T * 1.5) * 0.05 + Math.sin(x * 2.9 - z * 1.1 - T * 1.2) * 0.03 + dir) * (0.55 + env.current * 0.8)
+    Math.sin(x * 0.8 + z * 1.4 + T * 1.5) * 0.05 + Math.sin(x * 2.9 - z * 1.1 - T * 1.2) * 0.03 + dir) * (0.55 + env.current * 0.8 + micState.level * 0.9)
 }
 const effClarity = () => env.clarity * (1 - 0.7 * env.trash)
 const effFish = () => Math.max(0, env.fish * (1 - 0.8 * env.trash))
@@ -150,7 +152,7 @@ function EnvDriver() {
     env.glow += ((p.glow ?? 0.6) - env.glow) * k
     flow.x += (((p.flowX ?? 0.5) - 0.5) * 2 - flow.x) * k
     flow.z += (((p.flowY ?? 0.5) - 0.5) * 2 - flow.z) * k
-    waveTime += dt * (0.45 + env.current * 1.5 + waveMomentum)
+    waveTime += dt * (0.45 + env.current * 1.5 + waveMomentum + micState.level * 2.2) // 吹氣 → 風起浪快
     waveMomentum *= Math.exp(-dt * 1.6)
     const clar = effClarity()
     wcol.r = 0.42 + clar * 0.13; wcol.g = 0.62 + clar * 0.23; wcol.b = 0.72 + clar * 0.28
@@ -487,6 +489,7 @@ function LineCreatures() {
         }
       }
     }
+    let guestPanX = null // 生物游過 → 左右聲道跟隨
     guests.forEach((g) => {
       if (!g.active) return
       const age = t - g.born, dur = 10
@@ -502,7 +505,9 @@ function LineCreatures() {
       g.alpha = Math.sin(f * Math.PI)
       ;(g.type === 'whale' ? drawWhale : g.type === 'dolphin' ? drawDolphin : drawTurtle)(batch, g, t)
       bioNodes.push(g)
+      if (guestPanX === null) guestPanX = g.x / 1.6
     })
+    setCreaturePan(guestPanX === null ? 0 : guestPanX)
     bEnd(batch)
   })
   return <primitive object={batch.lines} />
@@ -637,7 +642,7 @@ function GlassShell() {
       const p = ptrs.current.get(e.pointerId)
       if (p) {
         if (p.gathering) gather = null                    // 放開 → 魚群解散回巡游
-        else if (p.moved < 10 && performance.now() - p.t0 < 450 && p.point) burstQueue.push(p.point) // 點擊 → 亮星爆發
+        else if (p.moved < 10 && performance.now() - p.t0 < 450 && p.point) { burstQueue.push(p.point); chime() } // 點擊 → 亮星爆發 + 輕柔鈴音
         ptrs.current.delete(e.pointerId)
       }
       if (ptrs.current.size < 2) pinch.current = null
