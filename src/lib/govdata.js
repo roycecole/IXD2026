@@ -5,7 +5,7 @@ export async function loadOceanData() {
     const res = await fetch(`${base}data/ocean.json`, { cache: 'no-cache' })
     if (!res.ok) return null
     const d = await res.json()
-    if (!d || !d.params) return null
+    if (!d || (!d.params && !(d.options && d.options.length))) return null
     return d
   } catch (e) {
     return null

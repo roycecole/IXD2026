@@ -4,6 +4,7 @@ import * as THREE from 'three'
 import { useStore } from '../store/useStore.js'
 import { chime, setCreaturePan } from '../audio/engine.js'
 import { micState } from '../audio/mic.js'
+import { padEvents } from '../store/events.js'
 
 // 線稿海洋球：細線輪廓 + 微光 + 通透。程序化波浪（非流體模擬）、簡化弧形反光（非折射）。
 // 效能：useFrame 內以 getState() 讀參數；線段全部寫進少數共用 batch（2 個 draw call），
@@ -21,6 +22,7 @@ const REDUCED = (() => { try { return window.matchMedia('(prefers-reduced-motion
 
 // ---- 手感 / 感測 ----
 let spinImpulse = 0                    // 拖曳釋放後的慣性自轉（指數衰減）
+let jellyPulse = 0                     // nanoPAD2 打擊墊 → 水母集體脈衝（衰減）
 let lastTapAt = 0                      // 雙擊偵測：第二擊不重複爆星（留給演出模式切換）
 let gather = null                      // 長按聚集點：魚群游向此處
 const flow = { x: 0, z: 0 }            // 洋流方向向量（flowX/flowY 參數，nanoPAD2 X-Y 可綁）
@@ -286,7 +288,7 @@ function angleTo(a, b) { let d = b - a; while (d > Math.PI) d -= Math.PI * 2; wh
 function drawJelly(b, j, t) {
   const a = j.vis * 0.7, s = j.size
   const pulse = Math.sin(t * 1.5 + j.ph)
-  const bw = 1 + 0.16 * pulse, bh = 0.8 - 0.1 * pulse
+  const bw = 1 + 0.16 * pulse + jellyPulse * 0.5, bh = 0.8 - 0.1 * pulse - jellyPulse * 0.2
   const cs = 1, sn = 0
   let n = 0 // 傘狀輪廓（XY 面）
   for (let i = 0; i <= 8; i++) { const q = Math.PI * i / 8; SCR[n * 3] = Math.cos(q) * 0.5 * bw; SCR[n * 3 + 1] = Math.sin(q) * 0.55 * bh; SCR[n * 3 + 2] = 0; n++ }
@@ -532,6 +534,63 @@ function BioNetwork() {
   return <primitive object={lines} />
 }
 
+function drawRing(b, cx, cy, cz, rad, a) {
+  let px = 0, py = 0, pz = 0
+  for (let i = 0; i <= 28; i++) {
+    const q = (i / 28) * Math.PI * 2
+    const x = cx + Math.cos(q) * rad, z = cz + Math.sin(q) * rad
+    if (i > 0) bSeg(b, px, py, pz, x, cy, z, 0.55, 0.9, 1.0, a)
+    px = x; py = cy; pz = z
+  }
+}
+
+// nanoPAD2 打擊墊 → 視覺事件庫（velocity=強度）：水母脈衝/浪湧/漣漪/氣泡柱/亮星/召喚鯨豚龜
+function PadFx() {
+  const ripples = useMemo(() => makeBatch(9 * 29), [])
+  const rState = useMemo(() => Array.from({ length: 9 }, () => ({ active: false, t: 0, x: 0, y: 0, z: 0, str: 0 })), [])
+  const bubbles = useMemo(() => {
+    const N = 160
+    const g = new THREE.BufferGeometry()
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(N * 3), 3))
+    g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(N * 3), 3))
+    const m = new THREE.Points(g, new THREE.PointsMaterial({ map: dotTex(), size: 0.08, sizeAttenuation: true, transparent: true, depthWrite: false, fog: false, vertexColors: true, blending: THREE.AdditiveBlending }))
+    m.frustumCulled = false
+    return { m, st: Array.from({ length: N }, () => ({ active: false, t: 0, x: 0, y: 0, z: 0, vy: 0 })) }
+  }, [])
+  const spawnRipple = (v) => { const r = rState.find((s) => !s.active); if (!r) return; r.active = true; r.t = 0; r.str = 0.4 + v * 0.9; const a = Math.random() * Math.PI * 2, rr = Math.random() * 0.9; r.x = Math.cos(a) * rr; r.z = Math.sin(a) * rr; r.y = seaY() + 0.02 }
+  const spawnBubbles = (v) => { let n = Math.floor(6 + v * 16); const a = Math.random() * Math.PI * 2, rr = 0.3 + Math.random(); const cx = Math.cos(a) * rr, cz = Math.sin(a) * rr; for (const b of bubbles.st) { if (n <= 0) break; if (b.active) continue; b.active = true; b.t = 0; b.x = cx + (Math.random() - 0.5) * 0.25; b.z = cz + (Math.random() - 0.5) * 0.25; b.y = -WR * 0.7 + Math.random() * 0.3; b.vy = 0.4 + v * 0.7; n-- } }
+  useFrame((_, dt) => {
+    while (padEvents.length) {
+      const e = padEvents.shift(), v = e.vel
+      switch (e.ev % 8) {
+        case 0: jellyPulse = Math.max(jellyPulse, v); break
+        case 1: waveMomentum = Math.min(3, waveMomentum + v * 1.5); break
+        case 2: spawnRipple(v); break
+        case 3: spawnBubbles(v); break
+        case 4: burstQueue.push({ x: (Math.random() - 0.5) * 2, y: seaY() + 0.1, z: (Math.random() - 0.5) * 2 }); break
+        case 5: useStore.getState().spawnDolphin(); break
+        case 6: useStore.getState().spawnWhale(); break
+        default: useStore.getState().spawnTurtle(); break
+      }
+    }
+    bBegin(ripples)
+    rState.forEach((r) => { if (!r.active) return; r.t += dt; if (r.t > 1.6) { r.active = false; return } const rad = r.str * (0.25 + r.t * 1.7); drawRing(ripples, r.x, r.y, r.z, rad, Math.max(0, 1 - r.t / 1.6) * 0.6) })
+    bEnd(ripples)
+    const bp = bubbles.m.geometry.attributes.position.array, bc = bubbles.m.geometry.attributes.color.array
+    bubbles.st.forEach((b, i) => {
+      if (!b.active) { bc[i * 3] = bc[i * 3 + 1] = bc[i * 3 + 2] = 0; return }
+      b.t += dt; if (b.t > 2) { b.active = false; bc[i * 3] = bc[i * 3 + 1] = bc[i * 3 + 2] = 0; return }
+      b.y += b.vy * dt; b.vy *= 0.99
+      bp[i * 3] = b.x; bp[i * 3 + 1] = b.y; bp[i * 3 + 2] = b.z
+      const a = Math.max(0, 1 - b.t / 2); bc[i * 3] = 0.7 * a; bc[i * 3 + 1] = 0.9 * a; bc[i * 3 + 2] = a
+    })
+    bubbles.m.geometry.attributes.position.needsUpdate = true
+    bubbles.m.geometry.attributes.color.needsUpdate = true
+    jellyPulse *= Math.exp(-dt * 3)
+  })
+  return <group><primitive object={ripples.lines} /><primitive object={bubbles.m} /></group>
+}
+
 function Ocean() {
   const g = useRef()
   const wt = useRef()
@@ -558,6 +617,7 @@ function Ocean() {
       </group>
       <group ref={g}>
         <LineCreatures />
+        <PadFx />
         <BioNetwork />
       </group>
     </>
@@ -615,7 +675,7 @@ function GlassShell() {
   const mat = useMemo(() => new THREE.ShaderMaterial({
     transparent: true, depthWrite: false,
     uniforms: { uColor: { value: new THREE.Color('#bfe4ff') }, uOpacity: { value: 0.3 }, uPoke: { value: new THREE.Vector3(0, 0, 1) }, uPokeStr: { value: 0 } },
-    vertexShader: 'uniform vec3 uPoke; uniform float uPokeStr; varying vec3 vN; varying vec3 vV; void main(){ vec3 nrm=normalize(position); float infl=smoothstep(0.3,1.0,dot(nrm,uPoke)); vec3 pos=position-nrm*infl*uPokeStr; vec4 mv=modelViewMatrix*vec4(pos,1.0); vN=normalize(normalMatrix*normal); vV=normalize(-mv.xyz); gl_Position=projectionMatrix*mv; }',
+    vertexShader: 'uniform vec3 uPoke; uniform float uPokeStr; varying vec3 vN; varying vec3 vV; void main(){ vec3 nrm=normalize(position); float infl=smoothstep(0.3,1.0,dot(nrm,uPoke)); float back=smoothstep(0.45,1.0,dot(nrm,-uPoke)); vec3 pos=position-nrm*infl*uPokeStr+nrm*back*uPokeStr*0.35; vec4 mv=modelViewMatrix*vec4(pos,1.0); vN=normalize(normalMatrix*normal); vV=normalize(-mv.xyz); gl_Position=projectionMatrix*mv; }',
     fragmentShader: 'varying vec3 vN; varying vec3 vV; uniform vec3 uColor; uniform float uOpacity; void main(){ float f=pow(1.0-max(dot(vN,vV),0.0),3.0); gl_FragColor=vec4(uColor, f*uOpacity); }',
   }), [])
   const arcs = useMemo(() => {
@@ -734,7 +794,7 @@ function AtmosphereGlow() {
   const mat = useMemo(() => new THREE.ShaderMaterial({
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.BackSide,
     uniforms: { uColor: { value: new THREE.Color('#4db8ff') }, uPoke: { value: new THREE.Vector3(0, 0, 1) }, uPokeStr: { value: 0 } },
-    vertexShader: 'uniform vec3 uPoke; uniform float uPokeStr; varying vec3 vN; varying vec3 vV; void main(){ vec3 nrm=normalize(position); float infl=smoothstep(0.3,1.0,dot(nrm,uPoke)); vec3 pos=position-nrm*infl*uPokeStr; vec4 mv=modelViewMatrix*vec4(pos,1.0); vN=normalize(normalMatrix*normal); vV=normalize(-mv.xyz); gl_Position=projectionMatrix*mv; }',
+    vertexShader: 'uniform vec3 uPoke; uniform float uPokeStr; varying vec3 vN; varying vec3 vV; void main(){ vec3 nrm=normalize(position); float infl=smoothstep(0.3,1.0,dot(nrm,uPoke)); float back=smoothstep(0.45,1.0,dot(nrm,-uPoke)); vec3 pos=position-nrm*infl*uPokeStr+nrm*back*uPokeStr*0.35; vec4 mv=modelViewMatrix*vec4(pos,1.0); vN=normalize(normalMatrix*normal); vV=normalize(-mv.xyz); gl_Position=projectionMatrix*mv; }',
     fragmentShader: 'varying vec3 vN; varying vec3 vV; uniform vec3 uColor; void main(){ float f=pow(1.0-abs(dot(vN,vV)),3.5); gl_FragColor=vec4(uColor, f*0.45); }',
   }), [])
   useFrame(() => { mat.uniforms.uColor.value.setHSL(0.56, 0.8, 0.26 + env.glow * 0.16); mat.uniforms.uPoke.value.copy(poke.dir); mat.uniforms.uPokeStr.value = poke.str })
@@ -868,27 +928,41 @@ function FogDriver() {
 function JellyController() {
   const { camera, raycaster, pointer, gl } = useThree()
   const pressing = useRef(false)
+  const bg = useRef(false)
+  const rayD = () => { // 射線離球心最近距離
+    raycaster.setFromCamera(pointer, camera)
+    const r = raycaster.ray
+    const tt = Math.max(0, -r.direction.dot(r.origin))
+    _cl.copy(r.origin).addScaledVector(r.direction, tt)
+    return _cl.length()
+  }
   useEffect(() => {
     const el = gl.domElement
-    const down = () => { pressing.current = true }
+    const down = (e) => {
+      pressing.current = true
+      const rect = el.getBoundingClientRect()
+      const nx = ((e.clientX - rect.left) / rect.width) * 2 - 1
+      const ny = -((e.clientY - rect.top) / rect.height) * 2 + 1
+      raycaster.setFromCamera({ x: nx, y: ny }, camera)
+      const r = raycaster.ray
+      const tt = Math.max(0, -r.direction.dot(r.origin))
+      _cl.copy(r.origin).addScaledVector(r.direction, tt)
+      bg.current = _cl.length() > SHELL // 只有從「背景」按下（射線不穿球）才啟用果凍壓凹
+    }
     const up = () => { pressing.current = false }
     el.addEventListener('pointerdown', down)
     window.addEventListener('pointerup', up)
     window.addEventListener('pointercancel', up)
     return () => { el.removeEventListener('pointerdown', down); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up) }
-  }, [gl])
+  }, [gl, camera, raycaster])
   useFrame((_, dt) => {
-    if (pressing.current) {
-      raycaster.setFromCamera(pointer, camera)
-      const r = raycaster.ray
-      const tt = Math.max(0, -r.direction.dot(r.origin))       // 射線離球心最近點
-      _cl.copy(r.origin).addScaledVector(r.direction, tt)
-      const d = _cl.length()
-      poke.target = Math.max(0, Math.min(1, 1.15 - d / (SHELL * 1.1))) * 0.34
+    if (pressing.current && bg.current) {
+      const d = rayD()
+      poke.target = d > SHELL ? Math.max(0, Math.min(1, 1 - (d - SHELL) / (SHELL * 0.6))) * 0.42 : 0 // 離球越近壓越深
       if (poke.target > 0.001) poke.dir.copy(_cl).normalize()
     } else poke.target = 0
-    poke.vel += (poke.target - poke.str) * 55 * dt              // 欠阻尼彈簧 → 回彈晃動
-    poke.vel *= Math.exp(-dt * 6)
+    poke.vel += (poke.target - poke.str) * 58 * dt // 欠阻尼彈簧 → 放開回彈晃動
+    poke.vel *= Math.exp(-dt * 5.2)
     poke.str += poke.vel * dt
   })
   return null

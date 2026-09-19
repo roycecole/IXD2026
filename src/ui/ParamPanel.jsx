@@ -22,8 +22,10 @@ function Param({ pid }) {
 
   return (
     <div className="param">
-      <span className={'plabel' + (learning ? ' learning' : '')} onClick={onLabel}
-            title="點=Learn 綁定，shift+點=解綁">{meta.label}</span>
+      <span className={'plabel' + (learning ? ' learning' : '')} role="button" tabIndex={0}
+            aria-label={`${meta.label}：Enter 綁定 MIDI，shift+Enter 解綁`} onClick={onLabel}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.shiftKey ? unbindParam(pid) : startLearn(pid) } }}
+            title="點/Enter=Learn 綁定，shift+點=解綁">{meta.label}</span>
       <input type="range" min="0" max="1" step="0.001" value={value}
              onChange={(e) => input(pid, parseFloat(e.target.value))} />
       <span className="pval">{value.toFixed(2)}</span>
@@ -34,9 +36,11 @@ function Param({ pid }) {
   )
 }
 
-export default function ParamPanel() {
+export default function ParamPanel({ onVK }) {
   const midi = useStore((s) => s.midi)
   const gov = useStore((s) => s.gov)
+  const govOptionId = useStore((s) => s.govOptionId)
+  const setGovOption = useStore((s) => s.setGovOption)
   const applyGov = useStore((s) => s.applyGov)
   const learn = useStore((s) => s.learn)
   const startSeqLearn = useStore((s) => s.startSeqLearn)
@@ -51,15 +55,20 @@ export default function ParamPanel() {
     <aside className="panel">
       <div className="panel-head">
         <span className="dim">控制器</span>
-        <span className="ctrl-name">{midi.connected ? (midi.inputs[0] || 'MIDI') : '未連線'}</span>
+        {midi.connected
+          ? <span className="ctrl-name">{midi.inputs[0] || 'MIDI'}</span>
+          : <button className="ctrl-name ctrl-vk" onClick={onVK} title="沒有實體裝置？用滑鼠 / 鍵盤操作虛擬 nanoKONTROL2">未連線 · 用虛擬控制器</button>}
       </div>
       {midi.error && <p className="hint" style={{ color: '#ff7a7a' }}>MIDI：{midi.error}</p>}
 
-      {gov && (
+      {gov && gov.options && (
         <div className="gov-card">
           <div className="gov-title">今日海況 <span className="dim">· {gov.sourceShort}</span></div>
-          <div className="gov-metrics">{gov.metrics.weather} · {gov.metrics.airTemp}°C · 風 {gov.metrics.windSpeed} m/s · 水庫 {gov.metrics.reservoirPct}%</div>
-          <button className="gov-apply" onClick={applyGov}>套用今日真實的海</button>
+          {gov.weather && <div className="gov-metrics">{gov.weather.weather} · {gov.weather.airTemp}°C · 風 {gov.weather.windSpeed} m/s</div>}
+          <select className="gov-select" value={govOptionId || ''} onChange={(e) => setGovOption(e.target.value)}>
+            {gov.options.map((o) => <option key={o.id} value={o.id}>{o.name}（水位 {o.level}%）</option>)}
+          </select>
+          <button className="gov-apply" onClick={applyGov}>套用此海況</button>
         </div>
       )}
 
@@ -70,7 +79,7 @@ export default function ParamPanel() {
         <button onClick={clearTrash}>清除垃圾</button>
       </div>
 
-      <button className={'learn-btn' + (seqActive ? ' on' : '')}
+      <button className={'learn-btn' + (seqActive ? ' on' : '')} aria-pressed={seqActive}
               onClick={() => (seqActive ? cancelLearn() : startSeqLearn())}>
         {seqActive ? '依序對應中…（轉旋鈕）· 點此取消' : '⊕ 依序對應旋鈕 (Learn)'}
       </button>

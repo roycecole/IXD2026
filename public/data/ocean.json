@@ -1,32 +1,21 @@
 {
-  "source": "中央氣象署 CWA 自動氣象站 + 臺北翡翠水庫管理局（政府開放資料 OGDL v1）",
-  "sourceShort": "CWA · 翡翠水庫",
+  "source": "中央氣象署 CWA 氣象站 + 水利署水庫水情（政府開放資料 OGDL v1）",
+  "sourceShort": "CWA · 水利署",
   "fetchedAt": "2026-09-19T23:00:00+08:00",
   "station": "花蓮",
-  "metrics": {
-    "airTemp": 25.8,
-    "humidity": 86,
-    "windSpeed": 4.8,
-    "windDir": 240,
-    "precip": 0,
-    "pressure": 1014,
-    "weather": "晴",
-    "reservoirPct": 77.3,
-    "waveHeightEst": 0.58
-  },
-  "params": {
-    "seaLevel": 0.69,
-    "current": 0.34,
-    "flowX": 0.15,
-    "flowY": 0.30,
-    "clarity": 0.74,
-    "glow": 0.60,
-    "jellyCount": 0.63,
-    "fishCount": 0.72,
-    "trashCount": 0.15,
-    "swimSpeed": 0.54,
-    "spin": 0.28,
-    "zoom": 0.5
-  },
-  "mapping": "水庫蓄水%→海水高度 · 風速→洋流 · 風向→洋流方向 · 晴雨→海水清澈 · 氣溫→水母 · 清澈→魚群 · 降雨→垃圾"
+  "weather": { "airTemp": 25.8, "humidity": 86, "windSpeed": 4.8, "windDir": 240, "precip": 0, "weather": "晴" },
+  "defaultOption": "feitsui",
+  "options": [
+    { "id": "feitsui", "name": "翡翠水庫", "region": "北", "level": 77.3,
+      "params": { "seaLevel": 0.69, "current": 0.34, "flowX": 0.15, "flowY": 0.30, "clarity": 0.74, "glow": 0.60, "jellyCount": 0.63, "fishCount": 0.67, "trashCount": 0.15, "swimSpeed": 0.54, "spin": 0.28, "zoom": 0.5 } },
+    { "id": "shimen", "name": "石門水庫", "region": "北", "level": 100.0,
+      "params": { "seaLevel": 0.80, "current": 0.34, "flowX": 0.15, "flowY": 0.30, "clarity": 0.74, "glow": 0.60, "jellyCount": 0.63, "fishCount": 0.75, "trashCount": 0.15, "swimSpeed": 0.54, "spin": 0.28, "zoom": 0.5 } },
+    { "id": "deji", "name": "德基水庫", "region": "中", "level": 98.5,
+      "params": { "seaLevel": 0.79, "current": 0.34, "flowX": 0.15, "flowY": 0.30, "clarity": 0.74, "glow": 0.60, "jellyCount": 0.63, "fishCount": 0.74, "trashCount": 0.15, "swimSpeed": 0.54, "spin": 0.28, "zoom": 0.5 } },
+    { "id": "zengwen", "name": "曾文水庫", "region": "南", "level": 100.0,
+      "params": { "seaLevel": 0.80, "current": 0.34, "flowX": 0.15, "flowY": 0.30, "clarity": 0.74, "glow": 0.60, "jellyCount": 0.63, "fishCount": 0.75, "trashCount": 0.15, "swimSpeed": 0.54, "spin": 0.28, "zoom": 0.5 } },
+    { "id": "nanhua", "name": "南化水庫", "region": "南", "level": 99.4,
+      "params": { "seaLevel": 0.80, "current": 0.34, "flowX": 0.15, "flowY": 0.30, "clarity": 0.74, "glow": 0.60, "jellyCount": 0.63, "fishCount": 0.74, "trashCount": 0.15, "swimSpeed": 0.54, "spin": 0.28, "zoom": 0.5 } }
+  ],
+  "mapping": "水庫水位→海水高度 · 風速→洋流 · 風向→洋流方向 · 晴雨→海水清澈 · 氣溫→水母 · 清澈→魚群 · 降雨→垃圾"
 }

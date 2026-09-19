@@ -7,6 +7,7 @@ import Footer from './ui/Footer.jsx'
 import InfoModal from './ui/InfoModal.jsx'
 import VirtualController from './ui/VirtualController.jsx'
 import ParamHUD from './ui/ParamHUD.jsx'
+import TakeoverHint from './ui/TakeoverHint.jsx'
 import { useMIDI } from './hooks/useMIDI.js'
 import { useStore } from './store/useStore.js'
 import { decodeParams } from './lib/share.js'
@@ -120,6 +121,21 @@ export default function App() {
 
   const onWheel = (e) => { const st = useStore.getState(); st.input('zoom', (st.params.zoom ?? 0.5) - e.deltaY * 0.0008) }
 
+  // Kiosk 沉浸：演出模式 → 全螢幕 + 螢幕不休眠（wakeLock）+ 藏游標
+  useEffect(() => {
+    let wl = null, released = false
+    if (stage) {
+      try { document.documentElement.requestFullscreen && document.documentElement.requestFullscreen().catch(() => {}) } catch (e) {}
+      const acquire = () => { if (navigator.wakeLock && !released) navigator.wakeLock.request('screen').then((l) => { wl = l }).catch(() => {}) }
+      acquire()
+      const onVis = () => { if (document.visibilityState === 'visible') acquire() }
+      document.addEventListener('visibilitychange', onVis)
+      return () => { released = true; document.removeEventListener('visibilitychange', onVis); try { wl && wl.release() } catch (e) {} }
+    } else {
+      try { if (document.fullscreenElement) document.exitFullscreen && document.exitFullscreen().catch(() => {}) } catch (e) {}
+    }
+  }, [stage])
+
   return (
     <div className={'app' + (stage ? ' stagemode' : '')} style={{ '--panel-w': panelW + 'px', '--monitor-h': monitorH + 'px', '--canvas-vh': canvasVh }}>
       {stage && <button className="stage-exit" onClick={() => setStage(false)} title="離開演出模式（或按 H）">✕</button>}
@@ -128,10 +144,11 @@ export default function App() {
         <div className="canvas-wrap" onDoubleClick={() => setStage((s) => !s)} onWheel={onWheel} title="雙擊演出模式 · 滾輪縮放">
           <Suspense fallback={<div className="canvas-loading">載入海洋…</div>}><Scene3D /></Suspense>
           <ParamHUD />
+          <TakeoverHint />
         </div>
         <Splitter axis="x" onDelta={(dx) => setPanelW((w) => clamp(w - dx, 260, 640))} />
         <div className="sheet-handle" onPointerDown={sheetDrag} title="拖曳調整面板高度"><span /></div>
-        <ParamPanel />
+        <ParamPanel onVK={() => setShowVK(true)} />
       </main>
       <Splitter axis="y" onDelta={(dy) => setMonitorH((h) => clamp(h - dy, 60, 340))} />
       <Monitor />

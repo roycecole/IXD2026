@@ -1,61 +1,63 @@
-// 取真實環境/氣象/水文資料 → 正規化成海洋參數 → public/data/ocean.json
-// 優先 CWA 政府開放資料（需 CWA_KEY），無金鑰時退回 Open-Meteo（免金鑰、含海象）。
-// 於 GitHub Actions 排程執行（見 .github/workflows/refresh-data.yml）。Node 18+ 內建 fetch。
-import { writeFile } from 'node:fs/promises'
+// 刷新 public/data/ocean.json：保留水庫選項（政府開放資料快照），以 Open-Meteo 即時海象/氣象
+// 重算每個水庫選項的海洋參數。於 GitHub Actions 排程執行（refresh-data.yml）。Node 18+ 內建 fetch。
+import { readFile, writeFile } from 'node:fs/promises'
 
-const LAT = 24.0, LON = 121.6 // 台灣東岸（花蓮外海）
+const LAT = 24.0, LON = 121.6
 const clamp01 = (v) => Math.max(0, Math.min(1, v))
 const r2 = (v) => Math.round(v * 100) / 100
 
-function toParams(m) {
-  const tempN = clamp01((m.airTemp - 16) / 16)
-  const current = clamp01(m.windSpeed / 14)
-  const rad = (m.windDir * Math.PI) / 180
-  const clarity = clamp01(0.5 + (m.clear ? 0.3 : 0) - m.precip * 0.15 - Math.max(0, (m.humidity - 80) / 100))
+function optionParams(w, level) {
+  const tempN = clamp01((w.airTemp - 16) / 16)
+  const current = clamp01(w.windSpeed / 14)
+  const rad = (w.windDir * Math.PI) / 180
+  const clarity = clamp01(0.5 + (w.clear ? 0.3 : 0) - w.precip * 0.15 - Math.max(0, (w.humidity - 80) / 100))
   return {
-    seaLevel: r2(clamp01(0.30 + (m.reservoirPct / 100) * 0.5)),
+    seaLevel: r2(clamp01(0.30 + (level / 100) * 0.5)),
     current: r2(current),
     flowX: r2(clamp01(0.5 + 0.4 * Math.sin(rad))),
     flowY: r2(clamp01(0.5 + 0.4 * Math.cos(rad))),
     clarity: r2(clarity),
-    glow: r2(clamp01((m.isDay ? 0.7 : 0.5) + (m.clear ? 0.1 : 0))),
+    glow: r2(clamp01((w.isDay ? 0.7 : 0.5) + (w.clear ? 0.1 : 0))),
     jellyCount: r2(clamp01(0.35 + tempN * 0.45)),
-    fishCount: r2(clamp01(0.35 + clarity * 0.5)),
-    trashCount: r2(clamp01(0.08 + m.precip * 0.3 + (1 - clarity) * 0.25)),
+    fishCount: r2(clamp01(0.4 + (level / 100) * 0.35)),
+    trashCount: r2(clamp01(0.08 + w.precip * 0.3 + (1 - clarity) * 0.25)),
     swimSpeed: r2(clamp01(0.4 + current * 0.4)),
-    spin: 0.28,
-    zoom: 0.5,
+    spin: 0.28, zoom: 0.5,
   }
 }
 
-async function fromOpenMeteo() {
-  const wx = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${LAT}&longitude=${LON}&current=temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m,precipitation,cloud_cover,is_day&timezone=Asia%2FTaipei`).then((r) => r.json())
-  let wave = null
-  try { wave = await fetch(`https://marine-api.open-meteo.com/v1/marine?latitude=${LAT}&longitude=${LON}&current=wave_height,sea_surface_temperature&timezone=Asia%2FTaipei`).then((r) => r.json()) } catch (e) {}
-  const c = wx.current
-  const m = {
-    airTemp: c.temperature_2m, humidity: c.relative_humidity_2m, windSpeed: c.wind_speed_10m / 3.6,
-    windDir: c.wind_direction_10m, precip: c.precipitation, clear: c.cloud_cover < 40, isDay: !!c.is_day,
-    reservoirPct: 70, weather: c.cloud_cover < 40 ? '晴' : c.cloud_cover < 80 ? '多雲' : '陰',
-    waveHeightEst: wave?.current?.wave_height ?? r2(c.wind_speed_10m / 3.6 * 0.12),
-  }
-  if (wave?.current?.sea_surface_temperature) m.airTemp = wave.current.sea_surface_temperature
-  return {
-    source: 'Open-Meteo（海象 + 氣象，免金鑰即時資料）', sourceShort: 'Open-Meteo',
-    fetchedAt: c.time, station: '花蓮外海', metrics: m, params: toParams(m),
-    mapping: '風速→洋流 · 風向→方向 · 雲量→清澈 · 海溫→水母 · 降雨→垃圾',
-  }
-}
+const FALLBACK = [
+  { id: 'feitsui', name: '翡翠水庫', region: '北', level: 77.3 },
+  { id: 'shimen', name: '石門水庫', region: '北', level: 100 },
+  { id: 'zengwen', name: '曾文水庫', region: '南', level: 100 },
+]
 
 async function main() {
-  let out
+  const url = new URL('../public/data/ocean.json', import.meta.url)
+  let cur = null
+  try { cur = JSON.parse(await readFile(url, 'utf8')) } catch (e) {}
+
+  let w
   try {
-    out = await fromOpenMeteo() // TODO: 有 CWA_KEY 時可改抓 CWA opendata（政府源）
+    const wx = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${LAT}&longitude=${LON}&current=temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m,precipitation,cloud_cover,is_day&timezone=Asia%2FTaipei`).then((r) => r.json())
+    const c = wx.current
+    w = { airTemp: c.temperature_2m, humidity: c.relative_humidity_2m, windSpeed: r2(c.wind_speed_10m / 3.6), windDir: c.wind_direction_10m, precip: c.precipitation, clear: c.cloud_cover < 40, isDay: !!c.is_day, weather: c.cloud_cover < 40 ? '晴' : c.cloud_cover < 80 ? '多雲' : '陰', time: c.time }
+    try { const wave = await fetch(`https://marine-api.open-meteo.com/v1/marine?latitude=${LAT}&longitude=${LON}&current=sea_surface_temperature&timezone=Asia%2FTaipei`).then((r) => r.json()); if (wave?.current?.sea_surface_temperature) w.airTemp = wave.current.sea_surface_temperature } catch (e) {}
   } catch (e) {
-    console.error('fetch failed:', e.message)
-    process.exit(0) // 失敗不覆蓋既有檔案（保留上次資料）
+    console.error('weather fetch failed:', e.message)
+    process.exit(0) // 不覆蓋既有檔案
   }
-  await writeFile(new URL('../public/data/ocean.json', import.meta.url), JSON.stringify(out, null, 2) + '\n')
-  console.log('wrote ocean.json:', out.sourceShort, out.fetchedAt, JSON.stringify(out.params))
+
+  const base = (cur?.options && cur.options.length ? cur.options : FALLBACK)
+  const options = base.map((o) => ({ id: o.id, name: o.name, region: o.region, level: o.level, params: optionParams(w, o.level) }))
+  const out = {
+    source: '水利署水庫快照 + Open-Meteo 即時海象/氣象', sourceShort: '水利署 · Open-Meteo',
+    fetchedAt: w.time, station: '花蓮外海',
+    weather: { airTemp: w.airTemp, humidity: w.humidity, windSpeed: w.windSpeed, windDir: w.windDir, precip: w.precip, weather: w.weather },
+    defaultOption: cur?.defaultOption || options[0].id, options,
+    mapping: cur?.mapping || '水庫水位→海水高度 · 風速→洋流 · 晴雨→清澈 · 氣溫→水母',
+  }
+  await writeFile(url, JSON.stringify(out, null, 2) + '\n')
+  console.log('refreshed', options.length, 'options @', w.time)
 }
 main()

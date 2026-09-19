@@ -5,6 +5,7 @@ import { PARAMS, ACTION_BINDINGS } from '../params/registry.js'
 // 每個控制都呼叫 store.handleCC(cc, value)，與真硬體走同一條綁定 / Learn / soft-takeover 路徑。
 
 const ACTION_LABELS = { spawnWhale: '鯨魚', spawnDolphin: '海豚', spawnTurtle: '海龜', clearTrash: '清垃圾' }
+const PAD_FX = ['水母', '浪湧', '漣漪', '氣泡', '亮星', '海豚', '鯨魚', '海龜'] // nanoPAD2 事件庫（velocity=強度）
 const send = (cc, v) => useStore.getState().handleCC(cc, Math.max(0, Math.min(1, v)))
 const liveVal = (cc) => { const st = useStore.getState(); const pid = st.bindings[cc]; return pid ? (st.params[pid] ?? 0.5) : 0.5 }
 
@@ -87,6 +88,12 @@ export default function VirtualController({ onClose }) {
             <button key={cc} className="vk-solo" title={`Solo（CC${cc}）`} onClick={() => send(cc, 1)}>
               {ACTION_LABELS[ACTION_BINDINGS[cc]] || 'S'}
             </button>
+          ))}
+        </div>
+        <div className="vk-pads" title="nanoPAD2 打擊墊 · 視覺事件庫">
+          {Array.from({ length: 16 }, (_, i) => (
+            <button key={i} className="vk-pad" title={`Pad ${i + 1}｜${PAD_FX[i % 8]}`}
+                    onClick={() => useStore.getState().handleNote(48 + i, 0.9)}>{PAD_FX[i % 8]}</button>
           ))}
         </div>
       </div>

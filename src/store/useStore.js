@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { PARAMS, PARAM_ORDER, DEFAULT_BINDINGS, ACTION_BINDINGS } from '../params/registry.js'
 import { LS, SS, loadLS, saveLS, removeLS, loadSS, saveSS } from '../lib/persist.js'
 import { noteQueue } from '../audio/bus.js'
+import { padEvents } from './events.js'
 import { setHud } from './hud.js'
 import { touch } from './activity.js'
 
@@ -38,6 +39,7 @@ export const useStore = create((set, get) => ({
   rec: { mode: 'idle', playhead: 0, duration: (savedRec && savedRec.duration) || 0, playIndex: 0, count: recBuffer.length },
   spawns: { whale: 0, dolphin: 0, turtle: 0 },   // 按鈕觸發計數（場景讀取後生成訪客）
   gov: null,                                     // 真實海況資料快照（public/data/ocean.json）
+  govOptionId: null,                             // 目前選擇的水庫海況
 
   // ---- 參數 ----
   setParam: (pid, v) => set((s) => ({ params: { ...s.params, [pid]: clamp01(v) } })),
@@ -130,11 +132,13 @@ export const useStore = create((set, get) => ({
   // 打擊墊 → 資料事件（velocity = 強度）+ 音訊觸發
   handleNote: (note, vel01) => {
     const st = get()
-    touch()
+    touch(); haptic(8)
     noteQueue.push({ note, vel: vel01 })
     if (noteQueue.length > 32) noteQueue.shift()
+    padEvents.push({ ev: ((note % 16) + 16) % 16, vel: vel01 }) // 打擊墊 → 視覺事件庫
+    if (padEvents.length > 40) padEvents.shift()
     st.pushLog('in', `Note ${note} vel ${Math.round(vel01 * 127)} → 事件`)
-    st.pushLog('out', `/viz pulse note=${note} power=${vel01.toFixed(2)}`)
+    st.pushLog('out', `/viz pad note=${note} power=${vel01.toFixed(2)}`)
   },
 
   pushLog: (dir, text) => set((s) => {
@@ -212,9 +216,11 @@ export const useStore = create((set, get) => ({
   transportStop: () => { const m = get().rec.mode; if (m === 'recording') get().stopRecording(); else if (m === 'playing') get().stopPlayback() },
   transportRecord: () => { const m = get().rec.mode; if (m === 'recording') get().stopRecording(); else if (m === 'idle') get().startRecording() },
 
-  // ---- 真實海況（政府開放資料）----
-  setGov: (d) => set({ gov: d }),
-  applyGov: () => { const g = get().gov; if (g && g.params) { get().applyParams(g.params); get().pushLog('out', `套用今日海況（${g.sourceShort || '真實資料'}）`) } },
+  // ---- 真實海況（政府開放資料 · 多水庫可選）----
+  setGov: (d) => set({ gov: d, govOptionId: d && (d.defaultOption || (d.options && d.options[0] && d.options[0].id)) }),
+  govOption: () => { const g = get().gov; if (!g) return null; if (g.options) return g.options.find((o) => o.id === get().govOptionId) || g.options[0]; return { params: g.params, name: g.sourceShort } },
+  setGovOption: (id) => { set({ govOptionId: id }); get().applyGov() },
+  applyGov: () => { const o = get().govOption(); if (o && o.params) { get().applyParams(o.params); get().pushLog('out', `套用海況：${o.name || '真實資料'}`) } },
 }))
 
 // LED 回饋用：目前「播放中且待接管（soft-takeover 尚未咬合）」的 CC 清單
@@ -226,6 +232,23 @@ export function getPendingTakeoverCCs() {
     const pid = st.bindings[cc]
     const to = takeover[pid]
     if (recParamSet.has(pid) && to && !to.caught) out.push(Number(cc))
+  }
+  return out
+}
+
+// 螢幕指示用：待接管的參數 + 實體旋鈕該往哪轉才能咬合
+export function getTakeoverHints() {
+  const st = useStore.getState()
+  if (st.rec.mode !== 'playing') return []
+  const out = []
+  for (const cc of Object.keys(st.bindings)) {
+    const pid = st.bindings[cc]
+    const to = takeover[pid]
+    if (recParamSet.has(pid) && to && !to.caught) {
+      const cur = st.params[pid]
+      const dir = to.last == null ? '·' : to.last < cur ? '↑' : '↓'
+      out.push({ pid, label: PARAMS[pid].label, dir })
+    }
   }
   return out
 }
