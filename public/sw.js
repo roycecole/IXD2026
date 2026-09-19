@@ -1,10 +1,32 @@
-// 簡易 runtime cache：同源 GET 快取優先、背景更新（PWA 離線可開）
-const CACHE = 'midisea-v1'
+// PWA service worker
+// - HTML 導覽 + JSON 資料：network-first（部署後立即拿到新版，離線才用快取）→ 避免舊版白屏
+// - 帶 hash 的靜態資產：stale-while-revalidate（秒開 + 背景更新）
+const CACHE = 'midisea-v2'
+
 self.addEventListener('install', () => self.skipWaiting())
-self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()))
+
+self.addEventListener('activate', (e) => e.waitUntil((async () => {
+  const keys = await caches.keys()
+  await Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))) // 清舊快取
+  await self.clients.claim()
+})()))
+
 self.addEventListener('fetch', (e) => {
   const { request } = e
   if (request.method !== 'GET' || !request.url.startsWith(self.location.origin)) return
+  const url = new URL(request.url)
+  const isDoc = request.mode === 'navigate' || url.pathname === '/' || url.pathname.endsWith('.html')
+  const isData = url.pathname.endsWith('.json')
+
+  if (isDoc || isData) {
+    e.respondWith(
+      fetch(request)
+        .then((res) => { const c = res.clone(); caches.open(CACHE).then((ca) => ca.put(request, c)); return res })
+        .catch(() => caches.match(request))
+    )
+    return
+  }
+
   e.respondWith(
     caches.open(CACHE).then(async (cache) => {
       const hit = await cache.match(request)
