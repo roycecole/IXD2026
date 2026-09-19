@@ -18,6 +18,7 @@ const bioNodes = []   // 生物節點（供 BioNetwork 科技連線）
 
 // ---- 手感 / 感測 ----
 let spinImpulse = 0                    // 拖曳釋放後的慣性自轉（指數衰減）
+let lastTapAt = 0                      // 雙擊偵測：第二擊不重複爆星（留給演出模式切換）
 let gather = null                      // 長按聚集點：魚群游向此處
 const flow = { x: 0, z: 0 }            // 洋流方向向量（flowX/flowY 參數，nanoPAD2 X-Y 可綁）
 const gyro = { tx: 0, tz: 0, x: 0, z: 0, vx: 0, vz: 0, beta0: null } // vx/vz：欠阻尼彈簧速度（晃動感）
@@ -32,8 +33,8 @@ async function ensureMotion() {        // 首次手勢時請求感測權限（iO
     window.addEventListener('deviceorientation', (e) => {
       if (e.beta == null || e.gamma == null) return
       if (gyro.beta0 == null) gyro.beta0 = e.beta       // 以拿起手機的角度為基準
-      gyro.tz = Math.max(-0.32, Math.min(0.32, -(e.gamma / 90) * 0.5))
-      gyro.tx = Math.max(-0.32, Math.min(0.32, ((e.beta - gyro.beta0) / 90) * 0.5))
+      gyro.tz = Math.max(-0.45, Math.min(0.45, -(e.gamma / 90) * 0.8))
+      gyro.tx = Math.max(-0.45, Math.min(0.45, ((e.beta - gyro.beta0) / 90) * 0.8))
     })
   } catch (err) {}
   try {
@@ -529,13 +530,13 @@ function Ocean() {
     if (g.current) g.current.rotation.y += Math.min(0.05, dt) * (0.04 + (p.spin ?? 0.3) * 1.4 + spinImpulse)
     spinImpulse *= Math.exp(-dt * 1.8)                 // 放手後慣性衰減
     // 陀螺儀：欠阻尼彈簧 → 水面追平衡時會過衝晃動（像真的水）
-    gyro.vx += (gyro.tx - gyro.x) * 16 * dt
-    gyro.vz += (gyro.tz - gyro.z) * 16 * dt
-    const damp = Math.exp(-dt * 4.2)
+    gyro.vx += (gyro.tx - gyro.x) * 26 * dt
+    gyro.vz += (gyro.tz - gyro.z) * 26 * dt
+    const damp = Math.exp(-dt * 4.0)
     gyro.vx *= damp; gyro.vz *= damp
     gyro.x += gyro.vx * dt; gyro.z += gyro.vz * dt
     // 傾動速度 → 注入浪湧（晃手機，海水跟著晃）
-    waveMomentum = Math.min(3, waveMomentum + (Math.abs(gyro.vx) + Math.abs(gyro.vz)) * dt * 5)
+    waveMomentum = Math.min(3, waveMomentum + (Math.abs(gyro.vx) + Math.abs(gyro.vz)) * dt * 7)
     if (wt.current) { wt.current.rotation.x = gyro.x; wt.current.rotation.z = gyro.z } // 手機傾斜 → 水面保持水平
   })
   return (
@@ -648,7 +649,11 @@ function GlassShell() {
       const p = ptrs.current.get(e.pointerId)
       if (p) {
         if (p.gathering) gather = null                    // 放開 → 魚群解散回巡游
-        else if (p.moved < 10 && performance.now() - p.t0 < 450 && p.point) { burstQueue.push(p.point); chime() } // 點擊 → 亮星爆發 + 輕柔鈴音
+        else if (p.moved < 10 && performance.now() - p.t0 < 450 && p.point) {
+          const now = performance.now()
+          if (now - lastTapAt > 320) { burstQueue.push(p.point); chime() } // 點擊 → 亮星爆發 + 鈴音（第二擊留給雙擊切換）
+          lastTapAt = now
+        }
         ptrs.current.delete(e.pointerId)
       }
       if (ptrs.current.size < 2) pinch.current = null

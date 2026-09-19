@@ -11,7 +11,7 @@ function fmt(t) {
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
-export default function TopBar({ onConnect, onStageToggle }) {
+export default function TopBar({ onConnect }) {
   const rec = useStore((s) => s.rec)
   const midi = useStore((s) => s.midi)
   const startRecording = useStore((s) => s.startRecording)
@@ -72,7 +72,7 @@ export default function TopBar({ onConnect, onStageToggle }) {
 
   return (
     <header className="topbar">
-      <span className="title" onDoubleClick={onStageToggle} title="雙擊進入演出模式（隱藏 UI，按 H 返回）">資料導演台 <span className="dim">IXD2026</span></span>
+      <span className="title">資料導演台 <span className="dim">IXD2026</span></span>
 
       <div className="transport">
         <button className={'rec' + (recording ? ' on' : '')}

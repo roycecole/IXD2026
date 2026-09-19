@@ -78,9 +78,9 @@ export default function App() {
   return (
     <div className={'app' + (stage ? ' stagemode' : '')} style={{ '--panel-w': panelW + 'px', '--monitor-h': monitorH + 'px', '--canvas-vh': canvasVh }}>
       {stage && <button className="stage-exit" onClick={() => setStage(false)} title="離開演出模式（或按 H）">✕</button>}
-      <TopBar onConnect={connect} onStageToggle={() => setStage(true)} />
+      <TopBar onConnect={connect} />
       <main className="stage">
-        <div className="canvas-wrap"><Scene3D /></div>
+        <div className="canvas-wrap" onDoubleClick={() => setStage((s) => !s)} title="雙擊進入/離開演出模式（或按 H）"><Scene3D /></div>
         <Splitter axis="x" onDelta={(dx) => setPanelW((w) => clamp(w - dx, 260, 640))} />
         <div className="sheet-handle" onPointerDown={sheetDrag} title="拖曳調整面板高度"><span /></div>
         <ParamPanel />
