@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>MIDI 偵測器 · IXD2026</title>
+<style>
+  :root{
+    --bg:#f4f4f1; --surface:#ffffff; --surface2:#faf9f6; --line:#e2e0d8;
+    --line2:#cfccc2; --text:#26261f; --muted:#6b6a61; --faint:#9a988d;
+    --accent:#1d9e75; --accent-bg:#e1f5ee; --accent-line:#5dcaa5;
+    --warn:#ba7517; --warn-bg:#faeeda; --live:#d85a30; --radius:8px;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,"PingFang TC","Noto Sans TC",system-ui,sans-serif;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#1a1a17; --surface:#242420; --surface2:#2b2b26; --line:#3a3a33;
+      --line2:#4a4a41; --text:#ecebe4; --muted:#a8a69b; --faint:#77756b;
+      --accent:#5dcaa5; --accent-bg:#0f3d31; --accent-line:#1d9e75;
+      --warn:#ef9f27; --warn-bg:#3d2f14; --live:#f0997b;
+    }
+  }
+  *{box-sizing:border-box;}
+  body{margin:0; background:var(--bg); color:var(--text); font-family:var(--sans);
+    font-size:15px; line-height:1.6; padding:20px; max-width:1100px; margin:0 auto;}
+  h1{font-size:20px; font-weight:600; margin:0;}
+  .sub{color:var(--muted); font-size:13px; margin:2px 0 0;}
+  header{display:flex; align-items:center; gap:16px; flex-wrap:wrap; margin-bottom:18px;}
+  header .grow{flex:1; min-width:200px;}
+  button{font-family:inherit; font-size:14px; padding:8px 14px; border-radius:var(--radius);
+    border:1px solid var(--line2); background:var(--surface); color:var(--text);
+    cursor:pointer; transition:background .12s;}
+  button:hover{background:var(--surface2);}
+  button.primary{background:var(--accent); border-color:var(--accent); color:#fff; font-weight:500;}
+  button.primary:hover{filter:brightness(1.05);}
+  button:disabled{opacity:.5; cursor:not-allowed;}
+  .pill{display:inline-flex; align-items:center; gap:6px; font-size:13px; padding:4px 10px;
+    border-radius:20px; background:var(--surface); border:1px solid var(--line);}
+  .dot{width:8px; height:8px; border-radius:50%; background:var(--faint);}
+  .dot.on{background:var(--accent);}
+  .devices{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px;}
+  .card{background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:14px 16px;}
+  /* hero */
+  .hero{margin-bottom:16px; display:flex; align-items:center; gap:20px; flex-wrap:wrap;}
+  .hero .label{font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em;}
+  .hero .big{font-size:26px; font-weight:600; font-family:var(--mono);}
+  .hero .meta{font-size:13px; color:var(--muted);}
+  .hero .barwrap{flex:1; min-width:180px;}
+  .bar{height:10px; border-radius:5px; background:var(--surface2); border:1px solid var(--line); overflow:hidden;}
+  .bar > i{display:block; height:100%; width:0%; background:var(--accent); transition:width .05s linear;}
+  .hero .val{font-family:var(--mono); font-size:20px; font-weight:600; min-width:48px; text-align:right;}
+  /* section titles */
+  .sectitle{display:flex; align-items:center; justify-content:space-between; margin:22px 0 10px;}
+  .sectitle h2{font-size:15px; font-weight:600; margin:0;}
+  .sectitle .tools{display:flex; gap:8px; flex-wrap:wrap;}
+  .sectitle .tools button{padding:6px 11px; font-size:13px;}
+  /* control grid */
+  .grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:10px;}
+  .ctrl{background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:11px 12px;
+    transition:border-color .1s, box-shadow .1s;}
+  .ctrl.active{border-color:var(--live); box-shadow:0 0 0 2px color-mix(in srgb, var(--live) 25%, transparent);}
+  .ctrl .top{display:flex; align-items:center; gap:8px; margin-bottom:8px;}
+  .tag{font-family:var(--mono); font-size:11px; padding:2px 7px; border-radius:5px;
+    background:var(--accent-bg); color:var(--accent); white-space:nowrap;}
+  .tag.note{background:var(--warn-bg); color:var(--warn);}
+  .tag.pb{background:var(--warn-bg); color:var(--warn);}
+  .ctrl .num{font-family:var(--mono); font-size:12px; color:var(--muted);}
+  .ctrl input.name{width:100%; font-family:var(--sans); font-size:13px; padding:5px 7px;
+    border:1px solid var(--line); border-radius:6px; background:var(--surface2); color:var(--text); margin-bottom:8px;}
+  .ctrl input.name:focus{outline:none; border-color:var(--accent);}
+  .ctrl .stats{display:flex; justify-content:space-between; font-size:11px; color:var(--faint);
+    font-family:var(--mono); margin-top:6px;}
+  .empty{color:var(--faint); font-size:14px; padding:24px; text-align:center;
+    border:1px dashed var(--line2); border-radius:10px;}
+  /* log */
+  #log{font-family:var(--mono); font-size:12px; background:var(--surface2); border:1px solid var(--line);
+    border-radius:10px; padding:10px 12px; height:200px; overflow-y:auto; white-space:pre; color:var(--muted);}
+  .row-line{color:var(--text);}
+  .hint{font-size:13px; color:var(--muted); background:var(--warn-bg); border:1px solid var(--line);
+    border-radius:10px; padding:10px 14px; margin-bottom:16px;}
+  code{font-family:var(--mono); background:var(--surface2); padding:1px 5px; border-radius:4px; font-size:.9em;}
+  a{color:var(--accent);}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="grow">
+    <h1>MIDI 偵測器 <span style="color:var(--muted); font-weight:400; font-size:14px;">IXD2026</span></h1>
+    <p class="sub">連上 nanoKONTROL2 / nanoPAD2，動一下任何控制，即可實測 CC 號 / Note 並匯出映射表</p>
+  </div>
+  <span class="pill"><span class="dot" id="statusDot"></span><span id="statusText">未連線</span></span>
+  <button class="primary" id="connectBtn">連線 MIDI</button>
+</header>
+
+<div class="hint" id="secureHint" style="display:none;"></div>
+
+<div class="devices" id="devices"></div>
+
+<div class="card hero">
+  <div>
+    <div class="label">最後觸發</div>
+    <div class="big" id="heroName">—</div>
+    <div class="meta" id="heroMeta">動一下控制器…</div>
+  </div>
+  <div class="barwrap">
+    <div class="bar"><i id="heroBar"></i></div>
+  </div>
+  <div class="val" id="heroVal">–</div>
+</div>
+
+<div class="sectitle">
+  <h2>偵測到的控制 <span id="ctrlCount" style="color:var(--muted); font-weight:400;"></span></h2>
+  <div class="tools">
+    <button id="exportMd">複製 Markdown 表</button>
+    <button id="exportJson">複製 JSON</button>
+    <button id="exportJs">複製 mapping.js</button>
+    <button id="downloadJson">下載 JSON</button>
+    <button id="clearBtn">清除</button>
+  </div>
+</div>
+<div id="grid" class="grid"><div class="empty">尚未偵測到任何控制。按「連線 MIDI」後動一下推桿、旋鈕、按鈕、打擊墊或觸控板。</div></div>
+
+<div class="sectitle"><h2>原始訊息日誌</h2>
+  <div class="tools"><button id="clearLog">清空日誌</button></div>
+</div>
+<div id="log"></div>
+
+<script>
+(function(){
+  "use strict";
+  const $ = (id)=>document.getElementById(id);
+  const controls = new Map();   // key -> {key, kind, number, ch, device, count, min, max, last, label, userLabeled, el, nameEl, barEl, valEl, statEl, timer}
+  let midi = null, activeTimer = null, activeEl = null;
+
+  // ---- localStorage 保存使用者命名 ----
+  const LS_KEY = "ixd2026.midi.labels";
+  function loadLabels(){ try{ return JSON.parse(localStorage.getItem(LS_KEY)||"{}"); }catch(e){ return {}; } }
+  function saveLabels(){ try{
+    const o={}; controls.forEach(c=>{ if(c.userLabeled) o[c.key]=c.label; });
+    localStorage.setItem(LS_KEY, JSON.stringify(o));
+  }catch(e){} }
+  const savedLabels = loadLabels();
+
+  // ---- KORG 出廠預設猜測（僅供參考，實測為準）----
+  function guessLabel(kind, number){
+    if(kind==="CC"){
+      if(number>=0&&number<=7)   return "推桿 "+(number+1);
+      if(number>=16&&number<=23) return "旋鈕 "+(number-15);
+      if(number>=32&&number<=39) return "Solo "+(number-31);
+      if(number>=48&&number<=55) return "Mute "+(number-47);
+      if(number>=64&&number<=71) return "Rec "+(number-63);
+      const tr={41:"Play",42:"Stop",43:"Rewind",44:"FastFwd",45:"Record",46:"Cycle",
+                58:"Track ◀",59:"Track ▶",60:"Marker Set",61:"Marker ◀",62:"Marker ▶"};
+      if(tr[number]) return "走帶:"+tr[number];
+      return "CC "+number+"（待確認·可能為 X-Y）";
+    }
+    if(kind==="Note") return "Pad (note "+number+")";
+    if(kind==="PB")   return "Pitch Bend（可能為 X-Y）";
+    return kind+" "+number;
+  }
+
+  function decode(data){
+    const [status,d1,d2] = data;
+    const type = status & 0xf0, ch = (status & 0x0f)+1;
+    if(type===0xB0) return {kind:"CC",   number:d1, value:d2, max:127};
+    if(type===0x90 && d2>0) return {kind:"Note", number:d1, value:d2, max:127, note:"On"};
+    if(type===0x80 || (type===0x90 && d2===0)) return {kind:"Note", number:d1, value:d2, max:127, note:"Off"};
+    if(type===0xE0) return {kind:"PB", number:0, value:(d2<<7)|d1, max:16383};
+    return {kind:"0x"+type.toString(16), number:d1, value:d2, max:127};
+  }
+
+  // ---- 日誌（rAF 節流）----
+  let logBuf=[], logPending=false;
+  function pushLog(line){
+    logBuf.push(line);
+    if(logBuf.length>60) logBuf.shift();
+    if(!logPending){ logPending=true; requestAnimationFrame(flushLog); }
+  }
+  function flushLog(){
+    logPending=false;
+    const el=$("log");
+    el.textContent = logBuf.join("\n");
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function pad(n,w){ return String(n).padStart(w," "); }
+
+  function ensureCard(key, kind, number, ch, device){
+    let c = controls.get(key);
+    if(c) return c;
+    if(controls.size===0) $("grid").innerHTML="";
+    const guess = savedLabels[key] || guessLabel(kind, number);
+    c = {key, kind, number, ch, device, count:0, min:Infinity, max:-Infinity,
+         label:guess, userLabeled:!!savedLabels[key]};
+    const el=document.createElement("div"); el.className="ctrl";
+    const tagCls = kind==="Note"?"tag note":(kind==="PB"?"tag pb":"tag");
+    const numTxt = kind==="CC"?("CC "+number):(kind==="Note"?("Note "+number):kind);
+    el.innerHTML =
+      '<div class="top"><span class="'+tagCls+'">'+kind+'</span>'+
+      '<span class="num">'+numTxt+' · ch'+ch+' · '+device+'</span></div>'+
+      '<input class="name" value="'+c.label.replace(/"/g,"&quot;")+'" />'+
+      '<div class="bar"><i></i></div>'+
+      '<div class="stats"><span class="v">值 –</span><span class="mm">range –</span><span class="n">×0</span></div>';
+    c.el=el;
+    c.nameEl=el.querySelector("input.name");
+    c.barEl=el.querySelector(".bar > i");
+    c.valEl=el.querySelector(".stats .v");
+    c.mmEl=el.querySelector(".stats .mm");
+    c.nEl=el.querySelector(".stats .n");
+    c.nameEl.addEventListener("input", ()=>{ c.label=c.nameEl.value; c.userLabeled=true; saveLabels(); });
+    $("grid").appendChild(el);
+    controls.set(key,c);
+    $("ctrlCount").textContent="("+controls.size+")";
+    return c;
+  }
+
+  function onMessage(e, deviceName){
+    const dec = decode(e.data);
+    const normKind = dec.kind;
+    const key = deviceName+"|"+normKind+"|"+dec.number;
+    const c = ensureCard(key, normKind, dec.number, (e.data[0]&0x0f)+1, deviceName);
+    c.count++; c.min=Math.min(c.min,dec.value); c.max=Math.max(c.max,dec.value); c.last=dec.value;
+    const pct = Math.round(dec.value/dec.max*100);
+    c.barEl.style.width = pct+"%";
+    c.valEl.textContent = "值 "+dec.value;
+    c.mmEl.textContent = "range "+(c.min===Infinity?"–":c.min)+"–"+(c.max===-Infinity?"–":c.max);
+    c.nEl.textContent = "×"+c.count;
+    // active highlight
+    if(activeEl && activeEl!==c.el) activeEl.classList.remove("active");
+    c.el.classList.add("active"); activeEl=c.el;
+    clearTimeout(activeTimer); activeTimer=setTimeout(()=>{ c.el.classList.remove("active"); },500);
+    // hero
+    $("heroName").textContent = c.userLabeled? c.label : guessLabel(normKind, dec.number);
+    $("heroMeta").textContent = normKind+" "+(normKind==="CC"?dec.number:(normKind==="Note"?dec.number+" ("+dec.note+")":""))
+      +" · 通道 "+((e.data[0]&0x0f)+1)+" · "+deviceName;
+    $("heroBar").style.width = pct+"%";
+    $("heroVal").textContent = dec.value;
+    // raw log
+    const raw="["+Array.from(e.data).map(b=>pad(b,3)).join(" ")+"]";
+    pushLog(raw+"  "+normKind.padEnd(4)+" #"+pad(dec.number,3)+" = "+pad(dec.value,5)+"  "+deviceName);
+  }
+
+  function bindInputs(){
+    if(!midi) return;
+    const chips=[];
+    for(const input of midi.inputs.values()){
+      input.onmidimessage = (e)=>onMessage(e, input.name||"unknown");
+      const on = input.state==="connected";
+      chips.push('<span class="pill"><span class="dot '+(on?"on":"")+'"></span>'+
+        (input.name||"unknown")+' <span style="color:var(--faint)">'+input.state+'</span></span>');
+    }
+    $("devices").innerHTML = chips.length? chips.join("") :
+      '<span class="pill" style="color:var(--muted)">未偵測到輸入裝置 — 請確認 USB 已接、驅動已認得</span>';
+  }
+
+  async function connect(){
+    if(!navigator.requestMIDIAccess){
+      showHint("此瀏覽器不支援 Web MIDI API。請用桌面版 Chrome 或 Edge 開啟。");
+      return;
+    }
+    try{
+      midi = await navigator.requestMIDIAccess({ sysex:false });
+      $("statusDot").classList.add("on");
+      $("statusText").textContent="已連線";
+      $("connectBtn").textContent="已連線 ✓";
+      $("connectBtn").disabled=true;
+      bindInputs();
+      midi.onstatechange=(ev)=>{
+        bindInputs();
+        pushLog("⇄ 裝置變更："+(ev.port?ev.port.name+" → "+ev.port.state:""));
+      };
+    }catch(err){
+      showHint("連線失敗："+err.message+"。若在 file:// 或非 localhost，Web MIDI 可能被阻擋——請用 localhost 服務開啟。");
+    }
+  }
+
+  function showHint(msg){ const h=$("secureHint"); h.style.display="block"; h.textContent=msg; }
+
+  // 安全內容檢查提示
+  if(!window.isSecureContext){
+    showHint("⚠ 目前非安全內容（需 HTTPS 或 localhost）。Web MIDI 可能無法連線。建議：在專案根目錄執行  python3 -m http.server 8000  後，用 Chrome 開 http://localhost:8000/tools/midi-monitor.html");
+  }
+
+  // ---- 匯出 ----
+  function sortedControls(){
+    return Array.from(controls.values()).sort((a,b)=>{
+      const ord={CC:0,Note:1,PB:2};
+      return (ord[a.kind]??9)-(ord[b.kind]??9) || a.number-b.number;
+    });
+  }
+  function toMarkdown(){
+    let s="| 標籤 | 類型 | 號碼 | 通道 | 觀測值域 | 觸發次數 |\n|---|---|---|---|---|---|\n";
+    sortedControls().forEach(c=>{
+      s+="| "+c.label+" | "+c.kind+" | "+(c.kind==="PB"?"—":c.number)+" | "+c.ch+" | "+
+        (c.min===Infinity?"–":c.min)+"–"+(c.max===-Infinity?"–":c.max)+" | "+c.count+" |\n";
+    });
+    return s;
+  }
+  function toJson(){
+    const o={};
+    sortedControls().forEach(c=>{ o[c.label]={device:c.device, kind:c.kind, number:c.number, channel:c.ch}; });
+    return JSON.stringify(o,null,2);
+  }
+  function toMappingJs(){
+    let s="// IXD2026 MIDI 映射（實測產生，可貼進 src/midi/mapping.js）\nexport const MIDI_MAP = {\n";
+    sortedControls().forEach(c=>{
+      const idn = JSON.stringify(c.label);
+      s+="  "+idn+": { kind: "+JSON.stringify(c.kind)+", number: "+c.number+", channel: "+c.ch+" },\n";
+    });
+    s+="};\n";
+    return s;
+  }
+  async function copy(text, btn){
+    try{ await navigator.clipboard.writeText(text); const t=btn.textContent; btn.textContent="已複製 ✓";
+      setTimeout(()=>btn.textContent=t,1200);
+    }catch(e){ alert(text); }
+  }
+  function download(text, name){
+    const blob=new Blob([text],{type:"application/json"});
+    const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=name; a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  // ---- 事件綁定 ----
+  $("connectBtn").addEventListener("click", connect);
+  $("exportMd").addEventListener("click", (e)=>{ if(controls.size) copy(toMarkdown(), e.target); });
+  $("exportJson").addEventListener("click",(e)=>{ if(controls.size) copy(toJson(), e.target); });
+  $("exportJs").addEventListener("click",  (e)=>{ if(controls.size) copy(toMappingJs(), e.target); });
+  $("downloadJson").addEventListener("click", ()=>{ if(controls.size) download(toJson(),"midi-map.json"); });
+  $("clearBtn").addEventListener("click", ()=>{
+    controls.clear(); $("grid").innerHTML='<div class="empty">已清除。動一下控制器重新偵測。</div>';
+    $("ctrlCount").textContent=""; $("heroName").textContent="—"; $("heroMeta").textContent="動一下控制器…";
+    $("heroBar").style.width="0%"; $("heroVal").textContent="–";
+  });
+  $("clearLog").addEventListener("click", ()=>{ logBuf=[]; $("log").textContent=""; });
+})();
+</script>
+</body>
+</html>
