@@ -1,6 +1,7 @@
 import { useStore, getPendingTakeoverCCs } from '../store/useStore.js'
 import { routeMidi } from '../lib/midiRoute.js'
 import { bleConnect, bleSupported } from '../lib/blemidi.js'
+import { t, T } from '../i18n/index.js'
 
 // 回傳 { connect, connectBle }：需由使用者手勢（按鈕）觸發，瀏覽器才會授權 Web MIDI / Web Bluetooth。
 // connect＝USB（Web MIDI，含 LED 回饋）；connectBle＝藍牙 MIDI（Web Bluetooth，直接 GATT，兩者共用 routeMidi）。
@@ -52,7 +53,7 @@ export function useMIDI() {
   const connect = async () => {
     const setMidi = useStore.getState().setMidi
     if (!navigator.requestMIDIAccess) {
-      setMidi({ connected: false, error: '此瀏覽器不支援 Web MIDI（請用桌面版 Chrome / Edge）' })
+      setMidi({ connected: false, error: T('此瀏覽器不支援 Web MIDI（請用桌面版 Chrome / Edge）'), errorP: null })   // error 存中文 key（T 標記），ParamPanel 顯示時才 t()，切語系會跟著換
       return
     }
     try {
@@ -77,7 +78,7 @@ export function useMIDI() {
       startLedLoop()
       access.onstatechange = bind          // 熱插拔自動重綁
     } catch (err) {
-      setMidi({ connected: false, error: String(err && err.message ? err.message : err) })
+      setMidi({ connected: false, error: String(err && err.message ? err.message : err), errorP: null })   // 瀏覽器原始訊息，不翻
     }
   }
 
@@ -85,7 +86,7 @@ export function useMIDI() {
   const connectBle = async () => {
     const setMidi = useStore.getState().setMidi
     if (!bleSupported()) {
-      setMidi({ error: '此瀏覽器不支援 Web Bluetooth（iPad / iPhone Safari 請改用「多人」掃 QR 當遙控器）' })
+      setMidi({ error: T('此瀏覽器不支援 Web Bluetooth（iPad / iPhone Safari 請改用「多人」掃 QR 當遙控器）'), errorP: null })
       return
     }
     try {
@@ -95,16 +96,16 @@ export function useMIDI() {
         onDisconnect: (d) => {
           // 只有「目前這台」斷線才清狀態：先前被換掉的舊連線晚到的斷線事件不該把新連線的名稱清掉
           if (bleCur && bleCur.device !== d) return
-          const s = useStore.getState(); s.setMidi({ bleName: null }); s.pushLog('in', '藍牙 MIDI 已斷線'); bleCur = null
+          const s = useStore.getState(); s.setMidi({ bleName: null }); s.pushLog('in', t('藍牙 MIDI 已斷線')); bleCur = null
         },
       })
       bleCur = dev
       const s = useStore.getState()
       s.setMidi({ bleName: dev.name, error: null })
-      s.pushLog('in', `藍牙 MIDI 已連線：${dev.name}`)
+      s.pushLog('in', t('藍牙 MIDI 已連線：{name}', { name: dev.name }))
     } catch (err) {
       if (err && err.name === 'NotFoundError') return // 使用者取消選擇裝置
-      setMidi({ error: '藍牙 MIDI：' + String(err && err.message ? err.message : err) })
+      setMidi({ error: T('藍牙 MIDI：{msg}'), errorP: { msg: String(err && err.message ? err.message : err) } })
     }
   }
 

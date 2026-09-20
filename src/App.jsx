@@ -27,6 +27,7 @@ import { formatHud } from './lib/series.js'
 import { describeForLog } from './lib/describe.js'
 import { activity } from './store/activity.js'
 import { SCENES } from './timeline/scenes.js'
+import { t, useLocale } from './i18n/index.js'   // 頂層元件用 useLocale() 訂閱語系 + 模組層 t()（事件 / effect 閉包內取「呼叫當下」的語系）
 
 const Scene3D = lazy(() => import('./scene/Scene3D.jsx')) // code-split：three 分塊延後載入，shell 先 paint
 
@@ -54,14 +55,16 @@ function pollGamepad(st) {
 
 // 展場統計（kiosk / 演出模式角落）：掃碼加入人數 + 演出次數
 function StageStats() {
+  useLocale()
   const [, force] = useState(0)
   useEffect(() => { const iv = setInterval(() => force((x) => x + 1), 2000); return () => clearInterval(iv) }, [])
-  return <div className="stage-stats">合奏 {stats.joins} 人 · 演出 {stats.plays + stats.recs} 次</div>
+  return <div className="stage-stats">{t('合奏 {joins} 人 · 演出 {plays} 次', { joins: stats.joins, plays: stats.plays + stats.recs })}</div>
 }
 
 const KIOSK = (() => { try { return new URLSearchParams(location.search).has('kiosk') } catch (e) { return false } })()
 
 export default function App() {
+  useLocale()   // 語系切換 → 重繪（本檔的文字用模組層 t()）
   const { connect, connectBle } = useMIDI()
   const raf = useRef(0)
   const last = useRef(performance.now())
@@ -111,7 +114,7 @@ export default function App() {
   const toggleAR = async () => {
     const st = useStore.getState()
     if (arOn) {
-      arStop(videoRef.current); setArOn(false); st.pushLog('out', 'AR 實景關閉')
+      arStop(videoRef.current); setArOn(false); st.pushLog('out', t('AR 實景關閉'))
       if (arPrev.current) { st.applyParams(arPrev.current); arPrev.current = null }   // 還原一般畫面的背景設定
     } else {
       const ok = await arStart(videoRef.current, () => { setArOn(false); if (arPrev.current) { useStore.getState().applyParams(arPrev.current); arPrev.current = null } })
@@ -121,8 +124,8 @@ export default function App() {
         arPrev.current = { bgBlur: st.params.bgBlur, bgClarity: st.params.bgClarity }
         if ((st.params.bgBlur ?? 0) < 0.05) st.applyParams({ bgBlur: 0.27 })
         if ((st.params.bgClarity ?? 1) > 0.9) st.applyParams({ bgClarity: 0.85 })
-        st.pushLog('out', 'AR 實景開啟（背景=相機）')
-      } else st.pushLog('out', 'AR 相機開啟失敗：' + (arState.err || '不支援'))
+        st.pushLog('out', t('AR 實景開啟（背景=相機）'))
+      } else st.pushLog('out', t('AR 相機開啟失敗：{err}', { err: arState.err || t('不支援') }))
     }
   }
   // 參數變動 → 同步到相機畫面的 CSS filter（AR 開啟時）
@@ -164,7 +167,7 @@ export default function App() {
       try {
         const on = await audioToggle()
         useStore.getState().setAudioOn(on)
-        if (on) useStore.getState().pushLog('out', '聲音自動開啟（第一次互動）· 可按「聲音」靜音')
+        if (on) useStore.getState().pushLog('out', t('聲音自動開啟（第一次互動）· 可按「聲音」靜音'))
         else { done = false; evs.forEach((ev) => window.addEventListener(ev, start, true)) } // 沒成功（例如手勢不算數）→ 下次再試
       } catch (err) { done = false; evs.forEach((ev) => window.addEventListener(ev, start, true)) }
     }
@@ -289,27 +292,27 @@ export default function App() {
 
   return (
     <div className={'app' + (stage ? ' stagemode' : '')} style={{ '--panel-w': panelW + 'px', '--monitor-h': monitorH + 'px', '--canvas-vh': canvasVh }}>
-      {stage && <button className="stage-exit" onClick={() => setStage(false)} title="離開演出模式（或按 H）">✕</button>}
+      {stage && <button className="stage-exit" onClick={() => setStage(false)} title={t('離開演出模式（或按 H）')}>✕</button>}
       <TopBar onConnect={connect} onBle={connectBle} onInfo={() => setShowInfo(true)} onVK={() => setShowVK((v) => !v)} vkOn={showVK}
               onMulti={() => setShowMulti((v) => !v)} multiOn={showMulti} onAR={toggleAR} arOn={arOn}
               onDevices={() => setShowDevices((v) => !v)} devicesOn={showDevices} />
       <main className="stage">
-        <div className={'canvas-wrap' + (arOn ? ' ar-on' : '')} onDoubleClick={() => setStage((s) => !s)} onWheel={onWheel} title="雙擊演出模式 · 滾輪縮放">
+        <div className={'canvas-wrap' + (arOn ? ' ar-on' : '')} onDoubleClick={() => setStage((s) => !s)} onWheel={onWheel} title={t('雙擊演出模式 · 滾輪縮放')}>
           <video ref={videoRef} className="ar-video" playsInline muted aria-hidden="true" />
-          <Suspense fallback={<div className="canvas-loading">載入海洋…</div>}><Scene3D /></Suspense>
+          <Suspense fallback={<div className="canvas-loading">{t('載入海洋…')}</div>}><Scene3D /></Suspense>
           {overlays.hud && <ParamHUD />}
           {overlays.hud && <TakeoverHint />}
           {overlays.hud && <DataHUD />}
           <DataBoard />
-          {overlays.hud && !audioOn && !stage && loadLS(LS.audio, null) !== 'off' && <div className="audio-hint">點一下畫面即開啟聲音</div>}
+          {overlays.hud && !audioOn && !stage && loadLS(LS.audio, null) !== 'off' && <div className="audio-hint">{t('點一下畫面即開啟聲音')}</div>}
           {arOn && overlays.hud && (
-            <div className="ar-ctrl" aria-label="AR 背景調整">
-              <label>模糊<input type="range" min="0" max="1" step="0.01" value={bgBlur ?? 0}
+            <div className="ar-ctrl" aria-label={t('AR 背景調整')}>
+              <label>{t('模糊')}<input type="range" min="0" max="1" step="0.01" value={bgBlur ?? 0}
                      onChange={(e) => useStore.getState().input('bgBlur', parseFloat(e.target.value))} /></label>
-              <label>清澈<input type="range" min="0" max="1" step="0.01" value={bgClarity ?? 1}
+              <label>{t('清澈')}<input type="range" min="0" max="1" step="0.01" value={bgClarity ?? 1}
                      onChange={(e) => useStore.getState().input('bgClarity', parseFloat(e.target.value))} /></label>
-              <label className="ar-auto" title="依相機畫面平均亮度自動調球體輝光（環境光感知）">
-                <input type="checkbox" defaultChecked={arState.autoGlow} onChange={(e) => { arState.autoGlow = e.target.checked }} />環境光自動調輝光
+              <label className="ar-auto" title={t('依相機畫面平均亮度自動調球體輝光（環境光感知）')}>
+                <input type="checkbox" defaultChecked={arState.autoGlow} onChange={(e) => { arState.autoGlow = e.target.checked }} />{t('環境光自動調輝光')}
               </label>
             </div>
           )}
@@ -317,7 +320,7 @@ export default function App() {
           {stage && overlays.qr && <StageStats />}
         </div>
         <Splitter axis="x" onDelta={(dx) => setPanelW((w) => clamp(w - dx, 260, 640))} />
-        <div className="sheet-handle" onPointerDown={sheetDrag} title="拖曳調整面板高度"><span /></div>
+        <div className="sheet-handle" onPointerDown={sheetDrag} title={t('拖曳調整面板高度')}><span /></div>
         <ParamPanel onVK={() => setShowVK(true)} />
       </main>
       <Splitter axis="y" onDelta={(dy) => setMonitorH((h) => clamp(h - dy, 60, 340))} />
@@ -329,8 +332,8 @@ export default function App() {
       {showDevices && <DevicesModal onClose={() => setShowDevices(false)} />}
       <Services />
       {updReady && (
-        <button className="upd-toast" onClick={() => location.reload()} title="部署了新版本">
-          有新版本 · 點此更新
+        <button className="upd-toast" onClick={() => location.reload()} title={t('部署了新版本')}>
+          {t('有新版本 · 點此更新')}
         </button>
       )}
     </div>

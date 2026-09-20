@@ -9,6 +9,9 @@ import { bumpStat } from './stats.js'
 import { SCENES } from '../timeline/scenes.js'
 import { seriesFromOption, seriesFromSurvey, seriesFromDust, seriesFromMoon, automationFor, fishParam } from '../lib/series.js'
 import { birdSeasonal, flockCount } from '../lib/birds.js'
+import { surveyMonthText } from '../lib/describe.js'
+import { t, T } from '../i18n/index.js'
+import { nameText } from '../i18n/data.js'
 
 // 資料播放中的「資料時刻」資訊（DataHUD / MoonSky 每幀讀取，非反應式）
 // 畫布上的資訊面板分三組，各自可關：board=資料看板、hud=播放 / 參數 / 待接管提示（含 AR 調整鈕、聲音提示）、qr=展場掃碼 QR 與統計。
@@ -74,7 +77,7 @@ export const useStore = create((set, get) => ({
   params: initialParams,
   bindings: loadBindings(),                     // cc(number) -> paramId
   learn: { active: false, target: null, seq: -1 },
-  midi: { connected: false, inputs: [], error: null, bleName: null },
+  midi: { connected: false, inputs: [], error: null, errorP: null, bleName: null },   // error＝中文 key（或瀏覽器原始訊息），errorP＝插值參數；顯示時才 t()
   log: [],
   rec: { mode: 'idle', playhead: 0, duration: (savedRec && savedRec.duration) || 0, playIndex: 0, count: recBuffer.length, speed: 1, loop: false },
   spawns: { whale: 0, dolphin: 0, turtle: 0, purify: 0 },   // 按鈕觸發計數（場景讀取後生成訪客 / 淨化波）
@@ -97,7 +100,7 @@ export const useStore = create((set, get) => ({
     if (any) { overlaysBeforeHide = { ...cur }; next = { board: false, hud: false, qr: false } }
     else next = overlaysBeforeHide && OVERLAY_KEYS.some((k) => overlaysBeforeHide[k]) ? overlaysBeforeHide : { board: true, hud: true, qr: true }
     saveLS(LS.overlays, next); set({ overlays: next })
-    get().pushLog('out', '畫面資訊面板：' + (any ? '隱藏' : '顯示'))
+    get().pushLog('out', any ? t('畫面資訊面板：隱藏') : t('畫面資訊面板：顯示'))
   },
 
   // ---- 參數 ----
@@ -145,7 +148,7 @@ export const useStore = create((set, get) => ({
       for (const k of Object.keys(b)) if (b[k] === ln.target) delete b[k]
       b[cc] = ln.target; saveBindings(b)
       set({ bindings: b, learn: { active: false, target: null, seq: -1 } })
-      st.pushLog('in', `CC ${cc} ⇄ 綁定 ${PARAMS[ln.target].label}`)
+      st.pushLog('in', t('CC {cc} ⇄ 綁定 {param}', { cc, param: t(PARAMS[ln.target].label) }))
       return
     }
     if (ln.active && ln.seq >= 0) {                          // 依序 Learn
@@ -157,7 +160,7 @@ export const useStore = create((set, get) => ({
         const next = ln.seq + 1
         const done = next >= PARAM_ORDER.length
         set({ bindings: b, learn: done ? { active: false, target: null, seq: -1 } : { active: true, target: null, seq: next } })
-        st.pushLog('in', `CC ${cc} ⇄ ${PARAMS[pid].label}${done ? '（依序完成）' : ''}`)
+        st.pushLog('in', done ? t('CC {cc} ⇄ {param}（依序完成）', { cc, param: t(PARAMS[pid].label) }) : `CC ${cc} ⇄ ${t(PARAMS[pid].label)}`)
       }
       return
     }
@@ -167,7 +170,7 @@ export const useStore = create((set, get) => ({
     if (action) { if (value01 > 0.5) { const fn = st[action]; if (fn) fn() } return }
 
     const pid = st.bindings[cc]
-    if (!pid) { st.pushLog('in', `CC ${cc} = ${Math.round(value01 * 127)}（未綁定）`); return }
+    if (!pid) { st.pushLog('in', t('CC {cc} = {v}（未綁定）', { cc, v: Math.round(value01 * 127) })); return }
 
     // soft-takeover：僅在「播放錄製」且此參數正被自動化驅動時啟用。
     if (st.rec.mode === 'playing' && recParamSet.has(pid)) {
@@ -183,14 +186,14 @@ export const useStore = create((set, get) => ({
           to.caught = true
         } else {
           to.last = value01
-          st.pushLog('in', `CC ${cc} 待接管 ${PARAMS[pid].label}（soft-takeover）`)
+          st.pushLog('in', t('CC {cc} 待接管 {param}（soft-takeover）', { cc, param: t(PARAMS[pid].label) }))
           return
         }
       }
     }
 
     st.input(pid, value01)
-    st.pushLog('in', `CC ${cc} = ${Math.round(value01 * 127)} → ${PARAMS[pid].label}`)
+    st.pushLog('in', `CC ${cc} = ${Math.round(value01 * 127)} → ${t(PARAMS[pid].label)}`)
   },
 
   // 打擊墊 → 資料事件（velocity = 強度）+ 音訊觸發
@@ -203,7 +206,7 @@ export const useStore = create((set, get) => ({
     const n = ((note % 64) + 64) % 64
     padEvents.push({ ev: n % 16, bank: Math.floor(n / 16), vel: vel01 })
     if (padEvents.length > 40) padEvents.shift()
-    st.pushLog('in', `Note ${note} vel ${Math.round(vel01 * 127)} → 事件`)
+    st.pushLog('in', t('Note {note} vel {vel} → 事件', { note, vel: Math.round(vel01 * 127) }))
     st.pushLog('out', `/viz pad note=${note} power=${vel01.toFixed(2)}`)
   },
 
@@ -228,12 +231,12 @@ export const useStore = create((set, get) => ({
     seriesMeta.active = false
     bumpStat('recs')
     set((s) => ({ rec: { ...s.rec, mode: 'recording', playhead: 0, duration: 0, playIndex: 0, count: recBuffer.length } }))
-    get().pushLog('out', '● 開始錄製')
+    get().pushLog('out', t('● 開始錄製'))
   },
   stopRecording: () => {
     const dur = get().rec.playhead
     saveLS(LS.recording, { events: recBuffer, duration: dur })
-    get().pushLog('out', `■ 錄製結束（${recBuffer.length} 事件）`)
+    get().pushLog('out', t('■ 錄製結束（{n} 事件）', { n: recBuffer.length }))
     set((s) => ({ rec: { ...s.rec, mode: 'idle', duration: dur, count: recBuffer.length } }))
   },
   advanceRec: (dt) => set((s) => ({ rec: { ...s.rec, playhead: s.rec.playhead + dt } })),
@@ -247,7 +250,7 @@ export const useStore = create((set, get) => ({
     if (loopSkip < 0) loopSkip = recBuffer.length
     bumpStat('plays')
     set((s) => ({ rec: { ...s.rec, mode: 'playing', playhead: 0, playIndex: 0 } }))
-    get().pushLog('out', '▶ 播放錄製')
+    get().pushLog('out', t('▶ 播放錄製'))
   },
   setRecSpeed: (v) => set((s) => ({ rec: { ...s.rec, speed: v } })),
   toggleRecLoop: () => set((s) => ({ rec: { ...s.rec, loop: !s.rec.loop } })),
@@ -280,7 +283,7 @@ export const useStore = create((set, get) => ({
   clearRec: () => {
     recBuffer = []; recParamSet = new Set(); takeover = {}; bufferKind = 'user'; stashedRec = null; removeLS(LS.recording)
     set((s) => ({ rec: { ...s.rec, mode: 'idle', playhead: 0, duration: 0, playIndex: 0, count: 0 } }))
-    get().pushLog('out', '⟲ 已清除錄製')
+    get().pushLog('out', t('⟲ 已清除錄製'))
   },
 
   // 場景預設（即時套用一組參數）。錄製中走 input 以便被錄進去；
@@ -292,12 +295,12 @@ export const useStore = create((set, get) => ({
   },
 
   // ---- 海洋動作（按鈕觸發）----
-  spawnWhale: () => { touch(); haptic(18); set((s) => ({ spawns: { ...s.spawns, whale: s.spawns.whale + 1 } })); get().pushLog('out', '鯨魚出現') },
-  spawnDolphin: () => { touch(); haptic(14); set((s) => ({ spawns: { ...s.spawns, dolphin: s.spawns.dolphin + 1 } })); get().pushLog('out', '海豚出現') },
-  spawnTurtle: () => { touch(); haptic(14); set((s) => ({ spawns: { ...s.spawns, turtle: s.spawns.turtle + 1 } })); get().pushLog('out', '海龜出現') },
+  spawnWhale: () => { touch(); haptic(18); set((s) => ({ spawns: { ...s.spawns, whale: s.spawns.whale + 1 } })); get().pushLog('out', t('鯨魚出現')) },
+  spawnDolphin: () => { touch(); haptic(14); set((s) => ({ spawns: { ...s.spawns, dolphin: s.spawns.dolphin + 1 } })); get().pushLog('out', t('海豚出現')) },
+  spawnTurtle: () => { touch(); haptic(14); set((s) => ({ spawns: { ...s.spawns, turtle: s.spawns.turtle + 1 } })); get().pushLog('out', t('海龜出現')) },
   // 淨化波：視覺（三環擴散 + 推開垃圾）與聲音（上行琶音）都以 spawns.purify 計數器 + purifyMeta.v 觸發
   purify: (v = 1) => { touch(); purifyMeta.v = Math.max(0.2, Math.min(1, v)); set((s) => ({ spawns: { ...s.spawns, purify: s.spawns.purify + 1 } })) },
-  clearTrash: () => { touch(); haptic(10); get().setParam('trashCount', 0); get().purify(1); get().pushLog('out', '清除垃圾 → 淨化波') },
+  clearTrash: () => { touch(); haptic(10); get().setParam('trashCount', 0); get().purify(1); get().pushLog('out', t('清除垃圾 → 淨化波')) },
 
   // ---- 走帶鍵（實體 transport）----
   transportPlay: () => { const m = get().rec.mode; if (m === 'playing') get().stopPlayback(); else if (m === 'idle') get().startPlayback() },
@@ -312,7 +315,7 @@ export const useStore = create((set, get) => ({
     const o = get().govOption()
     if (o && o.params) {
       get().applyParams(o.params)
-      get().pushLog('out', `套用海況：${o.name || '真實資料'}`)
+      get().pushLog('out', t('套用海況：{name}', { name: o.name ? nameText(o.name) : t('真實資料') }))
       get().applySurveyLinked()   // 鳥 / 魚數量：連動中的才由調查資料決定；已脫鉤（獨立控制）的保持使用者的值
     }
   },
@@ -336,8 +339,10 @@ export const useStore = create((set, get) => ({
     get().setParam(kind === 'birds' ? 'birdCount' : 'fishCount', sg.value)
     const l = { ...get().surveyLink, [kind]: true }
     saveLS(LS.surveyLink, l); set({ surveyLink: l })
-    const nm = kind === 'birds' ? '鳥群' : '魚群'
-    get().pushLog('out', `${nm} · ${sg.basin} ${sg.month + 1} 月${sg.season ? ` ${sg.season.value} 種${sg.season.interpolated ? '（內插）' : ''}` : ''} → ${nm}數量 ${sg.value.toFixed(2)}${sg.flocks != null ? `（${sg.flocks} 群）` : ''}`)
+    const P = { seg: surveyMonthText(sg.basin, sg.month, sg.season), val: sg.value.toFixed(2), n: sg.flocks }
+    get().pushLog('out', kind === 'birds'
+      ? (sg.flocks != null ? t('鳥群 · {seg} → 鳥群數量 {val}（{n} 群）', P) : t('鳥群 · {seg} → 鳥群數量 {val}', P))
+      : t('魚群 · {seg} → 魚群數量 {val}', P))
     return true
   },
   applySurveyLinked: () => { const l = get().surveyLink; for (const k of ['birds', 'fish']) if (l[k]) get().applySurvey(k) },
@@ -367,27 +372,28 @@ export const useStore = create((set, get) => ({
     })
     set((s) => ({ rec: { ...s.rec, mode: 'idle', playhead: 0, playIndex: 0, duration: spec.points.length * spec.step, count: recBuffer.length } }))
     get().startPlayback()
-    get().pushLog('out', `▶ 資料播放：${spec.name} ${spec.date || ''} ${spec.label}（${spec.points.length} 筆${spec.unit ? '，' + spec.unit : ''}）`)
+    const LP = { name: nameText(spec.name), date: spec.date || '', label: nameText(spec.label), n: spec.points.length, unit: nameText(spec.unit) }
+    get().pushLog('out', spec.unit ? t('▶ 資料播放：{name} {date} {label}（{n} 筆，{unit}）', LP) : t('▶ 資料播放：{name} {date} {label}（{n} 筆）', LP))
     return true
   },
   playGovSeries: () => { const o = get().govOption(); const spec = seriesFromOption(o); if (spec) get().playSeries(spec, o) },
   playSurvey: (kind) => { const o = get().govOption(); const spec = seriesFromSurvey(o, kind); if (spec) get().playSeries(spec, o) },
-  playDust: () => { const g = get().gov; const o = get().govOption(); const spec = seriesFromDust(g && g.dust, '揚塵'); if (spec) get().playSeries(spec, o) },
+  playDust: () => { const g = get().gov; const o = get().govOption(); const spec = seriesFromDust(g && g.dust, T('揚塵')); if (spec) get().playSeries(spec, o) },
   playMoon: () => { const g = get().gov; const o = get().govOption(); const spec = seriesFromMoon(g && g.moon); if (spec) get().playSeries(spec, o) },
 
   // ---- 場景切換 / Marker 快照（nanoKONTROL2 Track ◀▶ / Marker 鍵）----
   sceneIdx: 0,
   markers: loadLS(LS.markers, []),
   markerIdx: -1,
-  scenePrev: () => { const i = (get().sceneIdx - 1 + SCENES.length) % SCENES.length; set({ sceneIdx: i }); get().applyScene(SCENES[i].params); get().pushLog('out', `場景 ◀ ${SCENES[i].label}`) },
-  sceneNext: () => { const i = (get().sceneIdx + 1) % SCENES.length; set({ sceneIdx: i }); get().applyScene(SCENES[i].params); get().pushLog('out', `場景 ▶ ${SCENES[i].label}`) },
+  scenePrev: () => { const i = (get().sceneIdx - 1 + SCENES.length) % SCENES.length; set({ sceneIdx: i }); get().applyScene(SCENES[i].params); get().pushLog('out', t('場景 ◀ {label}', { label: t(SCENES[i].label) })) },
+  sceneNext: () => { const i = (get().sceneIdx + 1) % SCENES.length; set({ sceneIdx: i }); get().applyScene(SCENES[i].params); get().pushLog('out', t('場景 ▶ {label}', { label: t(SCENES[i].label) })) },
   markerSet: () => {
     const m = [...get().markers, { ...get().params }].slice(-8) // 最多 8 組
     saveLS(LS.markers, m); set({ markers: m, markerIdx: m.length - 1 })
-    touch(); get().pushLog('out', `Marker 快照 #${m.length}（共 ${m.length} 組）`)
+    touch(); get().pushLog('out', t('Marker 快照 #{n}（共 {total} 組）', { n: m.length, total: m.length }))
   },
-  markerPrev: () => { const m = get().markers; if (!m.length) return; const i = (get().markerIdx - 1 + m.length) % m.length; set({ markerIdx: i }); get().applyScene(m[i]); get().pushLog('out', `Marker ◀ 快照 #${i + 1}`) },
-  markerNext: () => { const m = get().markers; if (!m.length) return; const i = (get().markerIdx + 1) % m.length; set({ markerIdx: i }); get().applyScene(m[i]); get().pushLog('out', `Marker ▶ 快照 #${i + 1}`) },
+  markerPrev: () => { const m = get().markers; if (!m.length) return; const i = (get().markerIdx - 1 + m.length) % m.length; set({ markerIdx: i }); get().applyScene(m[i]); get().pushLog('out', t('Marker ◀ 快照 #{n}', { n: i + 1 })) },
+  markerNext: () => { const m = get().markers; if (!m.length) return; const i = (get().markerIdx + 1) % m.length; set({ markerIdx: i }); get().applyScene(m[i]); get().pushLog('out', t('Marker ▶ 快照 #{n}', { n: i + 1 })) },
 }))
 
 // LED 回饋用：目前「播放中且待接管（soft-takeover 尚未咬合）」的 CC 清單

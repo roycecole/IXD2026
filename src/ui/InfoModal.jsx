@@ -1,41 +1,31 @@
+import { useT, useLocale } from '../i18n/index.js'
+import InfoZh from './info/InfoZh.jsx'
+import InfoEn from './info/InfoEn.jsx'
+
 const EVENT_URL = 'https://ixda.kktix.cc/events/ixda-member-2026'
 
+// 說明視窗外殼（標題、關閉、隊伍資訊、開始探索）；正文依語系渲染 InfoZh / InfoEn（含行內標記，不逐句 t()）。
 export default function InfoModal({ onClose }) {
+  const t = useT()
+  const locale = useLocale()
+  const Body = locale === 'en' ? InfoEn : InfoZh
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <h2>MidiSea 資料導演台</h2>
-          <button onClick={onClose} aria-label="關閉">✕</button>
+          <h2>{t('MidiSea 資料導演台')}</h2>
+          <button onClick={onClose} aria-label={t('關閉')}>✕</button>
         </div>
-        <p className="modal-lead">用 MIDI 控制器（或滑鼠 / 鍵盤 / 手機觸控）演奏一顆透明球體裡的線稿海洋——調海水、召喚鯨豚海龜、清理海洋垃圾，還能錄下整段演出並回放。</p>
 
-        <h3>怎麼玩</h3>
-        <ul className="modal-list">
-          <li><b>滑鼠</b>：拖曳球體＝旋轉；右側滑桿調參數；點動作鈕召喚生物；<b>雙擊畫面</b>＝演出模式（隱藏介面）。</li>
-          <li><b>鍵盤</b>：<code>空白鍵</code> 播放 · <code>R</code> 錄製 · <code>1~4</code> 鯨魚 / 海豚 / 海龜 / 清垃圾 · <code>H</code> 演出模式 · <code>I</code> 顯示 / 隱藏畫面上的資訊面板（資料看板、播放與參數提示）· 虛擬控制器上點選後用<code>方向鍵</code>微調。</li>
-          <li><b>手機觸控</b>：上下滑＝海水高度 · 兩指縮放＝遠近 · 長按＝魚群聚集 · 傾斜＝水面晃動 · 搖晃＝攪動 · 點擊＝亮星。</li>
-          <li><b>MIDI</b>：接上 KORG nanoKONTROL2 按「連線 MIDI」自動對應（推桿 / 旋鈕 / 按鈕 / 走帶鍵＋LED 回饋）。<b>沒有實體裝置</b>可開頂部「控制器」用滑鼠鍵盤操作虛擬 nanoKONTROL2。</li>
-          <li><b>聲音</b>：<b>第一次點一下畫面就自動開啟</b>生成式背景音（海水高度＝根音頻率；瀏覽器規定要有手勢才能出聲）；按「聲音」可靜音（之後不再自動開）。「麥克風」對手機吹氣＝起風、拍手＝召喚海豚。</li>
-          <li><b>多人合奏</b>：按「多人」秀出 QR，手機掃碼變遙控器——每支手機分到一個聲部（海 / 生態 / 氛圍），滑桿即時跟主畫面同步；遙控頁可啟用感測器：<b>傾斜＝洋流方向、搖晃＝浪湧</b>。展場網址加 <code>?kiosk=1</code>，角落會常駐 QR。</li>
-          <li><b>藍牙 MIDI</b>：Chrome / Edge 可按「藍牙 MIDI」直接連 BLE-MIDI 控制器或鍵盤。iPad / iPhone 的 Safari 沒有藍牙 MIDI，請改用「多人」掃 QR。</li>
-          <li><b>背景模糊 / 清澈</b>：右側「VIEW」的滑桿——只作用在背景（星空、銀河、月亮；AR 時＝相機畫面），球體與生物保持清晰。</li>
-          <li><b>AR 實景</b>：按「實景」用相機當背景，球體浮在真實世界；可調背景模糊與清澈（只影響背景，球體不變）；「環境光自動」會依相機畫面亮度調整球體輝光。</li>
-          <li><b>Gamepad</b>：接上手把＝左桿洋流方向、右桿自轉 / 海水高度、A/B/X/Y 召喚；手機轉身（指北針）＝洋流轉向。</li>
-          <li><b>真實資料</b>：右側選水庫或「花蓮外海（潮汐）」；按「播放 24h 資料」讓球隨真實資料起伏（可倍速、循環，畫面上方顯示資料時刻）。滿庫 / 滿潮 ＝ 海水滿球、液體從球緣溢出。背景銀河濃度＝河川即時水位、球外鳥群＝該流域鳥類調查鳥種數（隨現實季節增減；資料卡的長條圖可預覽各月份，並可「套用 / 連動」或直接拖滑桿獨立控制）；資料卡的「畫面顯示」可分別開關畫布上的資料看板 / 播放與參數提示 / QR（頂部「資訊」或按 I 一次全部隱藏 / 顯示）；選「花蓮外海（潮汐）」背景會出現月亮，盈虧與位置對應當日月齡與時刻；選「月亮 · 花蓮」月亮會依 CWA 月出月沒表的真實方位與高度移動（可「播放月出月沒」逐日看）；選「揚塵 · 雲林縣」看水利署 IoW 揚塵感測站（PM10 感測器無效時改以風速驅動）；背景星座＝水利署 188 座河川流量測站的真實座標；魚群數量對應魚類調查。</li>
-          <li><b>分享</b>：「分享」複製帶參數連結、「分享星球」把此刻的海輸出成圖片分享。網址加 <code>?kiosk=1</code> 直接進展場演出模式；加 <code>&amp;hud=0</code> 不顯示資訊面板、<code>&amp;qr=0</code> 不顯示 QR。</li>
-        </ul>
-
-        <h3>海洋生態</h3>
-        <p className="modal-p">垃圾變多 → 海水混濁、生物變少、魚群主動繞開垃圾、聲音轉暗調；清除垃圾 → 淨化波擴散、海水清澈、生物回歸、聲音回到明亮的大調。背景還有極慢的晝夜呼吸。</p>
+        <Body />
 
         <div className="modal-about">
-          <div>本作品為 <b>IxDA Taiwan 2026 會員工作坊「AI 共生黑客鬆」</b></div>
-          <div>隊伍：<b>12組 卡加布列島</b></div>
-          <a href={EVENT_URL} target="_blank" rel="noopener noreferrer">前往活動頁面 ↗</a>
+          <div>{t('本作品為')} <b>{t('IxDA Taiwan 2026 會員工作坊「AI 共生黑客鬆」')}</b></div>
+          <div>{t('隊伍：')}<b>{t('12組 卡加布列島')}</b></div>
+          <a href={EVENT_URL} target="_blank" rel="noopener noreferrer">{t('前往活動頁面 ↗')}</a>
         </div>
 
-        <button className="modal-start" onClick={onClose}>開始探索</button>
+        <button className="modal-start" onClick={onClose}>{t('開始探索')}</button>
       </div>
     </div>
   )

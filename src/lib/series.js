@@ -4,6 +4,13 @@
 //   points：tide/inflow → {h,v}；dust → {t,v,pm,w,tp,rh}（v＝主變數：PM10 或風速）；survey → {t,v,n}；moon → {t,v,rise,riseAz,transit,alt,altDir,set,setAz}
 // 每一步由 automationFor() 轉成參數自動化事件，走既有的錄製/播放引擎（可倍速、循環、soft-takeover 接管）。
 import { flockCount } from './birds.js'
+import { t, T } from '../i18n/index.js'
+import { nameText, lunarLabelText, tideRangeText } from '../i18n/data.js'
+
+// 規格裡的 name / label / unit 一律存「中文原文」（用 T() 標記；資料本身的名稱也是中文），顯示時才翻：
+//   formatHud 內用 nameText()；UI 想顯示 spec.label / spec.name，請用 t(label) / nameText(name)。
+// 唯一例外：survey 的 date（「2005–2017 調查年表」）是建立當下的語系文字，只在建立當下寫進日誌。
+const HIGH_TIDE = T('滿潮'), LOW_TIDE = T('乾潮')   // 與 CWA 事件名（資料值）比對用
 
 const clamp01 = (v) => Math.max(0, Math.min(1, v))
 const round1 = (v) => Math.round(v * 10) / 10
@@ -35,15 +42,15 @@ export function seriesFromSurvey(o, kind) {
   if (!d || !d.yearly || d.yearly.length < 2) return null
   const points = d.yearly.map((y) => ({ t: String(y.y), v: y.s, n: y.n == null ? null : y.n }))
   return withStats({
-    kind: 'survey-' + kind, name: d.basin || o.name, label: kind === 'birds' ? '鳥種數' : '魚種數', unit: '種',
-    date: `${points[0].t}–${points[points.length - 1].t} 調查年表`, step: 1.4, points, target: kind === 'birds' ? 'birdCount' : 'fishCount',
+    kind: 'survey-' + kind, name: d.basin || o.name, label: kind === 'birds' ? T('鳥種數') : T('魚種數'), unit: T('種'),
+    date: `${points[0].t}–${points[points.length - 1].t} ${t('調查年表')}`, step: 1.4, points, target: kind === 'birds' ? 'birdCount' : 'fishCount',
     extra: { species: d.species },
   })
 }
 
 // 揚塵：CI 每 3 小時累積的最新值歷史（至少 2 筆有效才能播放；不足時回傳 null，UI 會顯示「累積中」）。
 // 主變數＝PM10；來源的 PM10 感測器常回傳哨兵值（4999.4，被腳本判為無效 → null），此時改用「風速」（風是揚塵的成因），仍可播放。
-export function seriesFromDust(dust, name = '揚塵') {
+export function seriesFromDust(dust, name = T('揚塵')) {
   const hist = dust && Array.isArray(dust.history) ? dust.history : []
   const n = (x) => (typeof x === 'number' && Number.isFinite(x) ? x : null)
   const withPm = hist.filter((x) => n(x && x.pm10) != null)
@@ -55,7 +62,7 @@ export function seriesFromDust(dust, name = '揚塵') {
   }))
   return withStats({
     kind: 'dust', name: `${name}${dust.county ? '（' + dust.county + '）' : ''}`,
-    label: metric === 'pm10' ? 'PM10' : '風速', unit: metric === 'pm10' ? 'μg/m³' : 'm/s',
+    label: metric === 'pm10' ? 'PM10' : T('風速'), unit: metric === 'pm10' ? 'μg/m³' : 'm/s',
     date: `${points[0].t} → ${points[points.length - 1].t}`, step: 0.7, points, target: metric === 'pm10' ? 'clarity' : 'current', extra: { metric },
   })
 }
@@ -68,7 +75,7 @@ export function seriesFromMoon(moon) {
     t: d[0], v: typeof d[4] === 'number' ? d[4] : 0, rise: d[1] || '', riseAz: d[2], transit: d[3] || '', alt: d[4], altDir: d[5] || '', set: d[6] || '', setAz: d[7],
   }))
   return withStats({
-    kind: 'moon', name: `月亮 · ${moon.county || ''}`, label: '中天仰角', unit: '°', date: `${moon.from} → ${moon.to}`, step: 0.25, points, target: 'seaLevel',
+    kind: 'moon', name: `${T('月亮')} · ${moon.county || ''}`, label: T('中天仰角'), unit: '°', date: `${moon.from} → ${moon.to}`, step: 0.25, points, target: 'seaLevel',
     extra: { days },
   })
 }
@@ -119,35 +126,37 @@ export function fishParam(species, rel) {
 }
 
 // HUD / 輸出顯示用的一行文字（不含倍速 / 循環）
+// meta.name / label / unit 是中文原文（資料名稱），這裡依當下語系翻譯；規格與執行期 seriesMeta 兩種形態都能讀。
 export function formatHud(meta, p, ctx = {}) {
   if (!meta || !p) return ''
+  const name = nameText(meta.name), label = nameText(meta.label)
   switch (meta.kind) {
     case 'tide': case 'inflow': {
       const hh = String(Math.floor(p.h)).padStart(2, '0'), mm = String(Math.round((p.h % 1) * 60)).padStart(2, '0')
-      let txt = `${meta.name} ${meta.date} ${hh}:${mm} · ${meta.label} ${p.v}${meta.unit}`
+      let txt = t('{name} {date} {time} · {label} {v}{unit}', { name, date: meta.date, time: `${hh}:${mm}`, label, v: p.v, unit: nameText(meta.unit) })
       if (meta.kind === 'tide') {
         const ex = meta.extra || meta                    // 規格（extra 內）與執行期 seriesMeta（同時展開在頂層）兩種形態都能讀
         const ev = (ex.events || []).find((e) => Math.abs(e.h - p.h) < 0.75)
-        if (ev) txt += ev.type === '滿潮' ? ' ↑滿潮' : ev.type === '乾潮' ? ' ↓乾潮' : ''
-        if (ex.lunarLabel) txt += ` · ${ex.lunarLabel}${ex.range ? ' ' + ex.range + '潮' : ''}`
+        if (ev) txt += ev.type === HIGH_TIDE ? ' ' + t('↑滿潮') : ev.type === LOW_TIDE ? ' ' + t('↓乾潮') : ''
+        if (ex.lunarLabel) txt += ' · ' + (ex.range ? t('{lunar} {range}', { lunar: lunarLabelText(ex.lunarLabel), range: tideRangeText(ex.range) }) : lunarLabelText(ex.lunarLabel))
         if (ctx.moonName) txt += ` · ${ctx.moonName}`
       }
       return txt
     }
     case 'dust': {
-      let txt = `${meta.name} ${p.t} · ${meta.label} ${p.v}${meta.unit}`
-      if (meta.label === 'PM10') { if (p.w != null) txt += ` · 風 ${p.w} m/s` }
+      let txt = t('{name} {time} · {label} {v}{unit}', { name, time: p.t, label, v: p.v, unit: nameText(meta.unit) })
+      if (meta.label === 'PM10') { if (p.w != null) txt += ' · ' + t('風 {v} m/s', { v: p.w }) }
       else if (p.pm != null) txt += ` · PM10 ${p.pm} μg/m³`
-      if (p.tp != null) txt += ` · 氣溫 ${p.tp}°C`
-      if (p.rh != null) txt += ` · 濕度 ${p.rh}%`
+      if (p.tp != null) txt += ' · ' + t('氣溫 {v}°C', { v: p.tp })
+      if (p.rh != null) txt += ' · ' + t('濕度 {v}%', { v: p.rh })
       return txt
     }
     case 'survey-birds': case 'survey-fish':
-      return `${meta.name} ${p.t} 年 · ${meta.label} ${p.v}${p.n != null ? ' · 隻次 ' + p.n : ''}`
+      return t('{name} {year} 年 · {label} {v}', { name, year: p.t, label, v: p.v }) + (p.n != null ? ' · ' + t('隻次 {n}', { n: p.n }) : '')
     case 'moon': {
       const d = (p.altDir ? `${p.alt}°${p.altDir}` : '—')
-      return `${meta.name} ${p.t} · 月出 ${p.rise || '—'} · 中天 ${p.transit || '—'}（仰角 ${d}）· 月沒 ${p.set || '—'}`
+      return t('{name} {date} · 月出 {rise} · 中天 {transit}（仰角 {alt}）· 月沒 {set}', { name, date: p.t, rise: p.rise || '—', transit: p.transit || '—', alt: d, set: p.set || '—' })
     }
-    default: return `${meta.name} ${p.t ?? p.h} · ${meta.label} ${p.v}${meta.unit || ''}`
+    default: return `${name} ${p.t ?? p.h} · ${label} ${p.v}${nameText(meta.unit || '')}`
   }
 }

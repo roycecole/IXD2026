@@ -5,6 +5,10 @@
 //   靜態表（例如 registry 的參數名）：用 T('海水高度') 標記（原樣回傳中文），顯示時再 t(label)
 //   插值：t('{n} 站', { n: 3 })；英文值可以是函式 (params) => string，處理單複數等
 //   找不到英文 → 退回中文原文（DEV 會在 console 記一次，window.__i18nMissing 可查）
+// 注意（新功能的實作者請務必遵守）：
+//   · 元件若呼叫「讀當下語系的純函式」（describeBoard、formatHud、moonPhaseName、buildTour…），必須自己 useT() / useLocale() 訂閱語系，否則切換語言不會重繪。
+//   · 常駐服務若持有「和語言有關的狀態」（例：語音辨識的 lang、導覽字幕、逐字快取），要監聽語系變化並重設（useLocaleStore.subscribe）。
+//   · 存進 store / 日誌的字串是「當下語系」的快照；要能跟著切換的內容，請存 { key, params } 顯示時再 t()。
 // Node（測試）沒有 window：預設 zh，字典可用 registerEn() 手動註冊。
 import { useCallback } from 'react'
 import { create } from 'zustand'
@@ -24,7 +28,11 @@ export function getEnDict() { return EN }
 
 function detect() {
   if (!HAS_WINDOW) return 'zh'
-  try { const q = new URLSearchParams(location.search).get('lang'); if (q === 'en' || q === 'zh') return q } catch (e) { /* ignore */ }
+  try {   // ?lang= 優先於偏好與瀏覽器語言；容忍大小寫與區域碼（?lang=EN、?lang=zh-TW、?lang=en-US）
+    const q = String(new URLSearchParams(location.search).get('lang') || '').toLowerCase()
+    if (/^en(-|_|$)/.test(q)) return 'en'
+    if (/^zh(-|_|$)/.test(q)) return 'zh'
+  } catch (e) { /* ignore */ }
   const saved = loadLS(LS.lang, null)
   if (saved === 'en' || saved === 'zh') return saved
   try { const nav = (navigator.languages && navigator.languages[0]) || navigator.language || ''; return /^zh/i.test(nav) ? 'zh' : 'en' } catch (e) { return 'zh' }
@@ -51,7 +59,14 @@ export function setLocale(loc) {
   if (loc !== 'zh' && loc !== 'en') return
   if (loc === getLocale()) return
   useLocaleStore.setState({ locale: loc })
-  if (HAS_WINDOW) saveLS(LS.lang, loc)
+  if (HAS_WINDOW) {
+    saveLS(LS.lang, loc)
+    // 網址若帶 ?lang=（展場網址 / 分享連結），切換後同步更新，否則重新整理又會被網址蓋回去
+    try {
+      const u = new URL(location.href)
+      if (u.searchParams.has('lang')) { u.searchParams.set('lang', loc); history.replaceState(history.state, '', u) }
+    } catch (e) { /* ignore */ }
+  }
   applyDocumentLocale(loc)
 }
 export function toggleLocale() { setLocale(getLocale() === 'zh' ? 'en' : 'zh'); return getLocale() }

@@ -1,4 +1,5 @@
 import { arFilter } from './ar.js'
+import { t } from '../i18n/index.js'
 
 export function downloadBlob(blob, name) {
   const a = document.createElement('a')
@@ -76,22 +77,22 @@ export function renderShareCard(opts = {}) {
   g.fillStyle = 'rgba(160,220,255,0.9)'; g.font = '400 26px system-ui, -apple-system, "Noto Sans TC", sans-serif'
   lines.forEach((t, i) => { g.fillText(t.length > 40 ? t.slice(0, 39) + '…' : t, 48, S - 150 - (lines.length - 1 - i) * 40 - 8) })
   g.fillStyle = '#eaf6ff'; g.font = '600 44px system-ui, -apple-system, "Noto Sans TC", sans-serif'
-  g.fillText('MidiSea 資料導演台', 48, S - 96)
+  g.fillText(t('MidiSea 資料導演台'), 48, S - 96)
   g.fillStyle = 'rgba(190,228,255,0.75)'; g.font = '400 30px system-ui, -apple-system, "Noto Sans TC", sans-serif'
-  g.fillText('midisea.shyetech.com · 台灣政府開放資料的一片海', 48, S - 44)
+  g.fillText(t('midisea.shyetech.com · 台灣政府開放資料的一片海'), 48, S - 44)
   return card
 }
 
 // 分享星球：擷取當下畫面（實景時連真實背景一起）→ 合成分享卡 → 手機走 Web Share、桌機下載 PNG。
 export async function shareSnapshot(opts = {}) {
   const card = renderShareCard(opts)
-  if (!card) return { ok: false, why: '找不到畫布' }
+  if (!card) return { ok: false, why: t('找不到畫布') }
   const blob = await new Promise((res) => card.toBlob(res, 'image/png'))
-  if (!blob) return { ok: false, why: '截圖失敗' }
+  if (!blob) return { ok: false, why: t('截圖失敗') }
   const file = new File([blob], 'midisea-star.png', { type: 'image/png' })
   try {
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      await navigator.share({ files: [file], title: 'MidiSea 資料導演台', text: '我在 MidiSea 演了一片海' })
+      await navigator.share({ files: [file], title: t('MidiSea 資料導演台'), text: t('我在 MidiSea 演了一片海') })
       return { ok: true, how: 'share' }
     }
   } catch (e) { if (e && e.name === 'AbortError') return { ok: true, how: 'cancel' } }
@@ -103,7 +104,7 @@ export async function shareSnapshot(opts = {}) {
 // 優先 MP4（Chrome 新版 / Safari 支援），否則退回 WebM。
 export function captureCanvas({ seconds = 10, onProgress, onDone, getAr } = {}) {
   const canvas = document.querySelector('.canvas-wrap canvas')
-  if (!canvas || !canvas.captureStream) { onDone && onDone(null, null, '找不到畫布或瀏覽器不支援 captureStream'); return null }
+  if (!canvas || !canvas.captureStream) { onDone && onDone(null, null, t('找不到畫布或瀏覽器不支援 captureStream')); return null }
 
   // 實景時：WebGL 畫布背景是透明的 → 每幀把（相機畫面 + 濾鏡 + 畫布）合成到離屏 2D canvas，錄這張合成畫布
   let source = canvas, comp = null, rafId = 0

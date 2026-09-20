@@ -1,30 +1,32 @@
+import { T } from '../i18n/index.js'
+
 // 參數登錄表：分組 + 預設值（皆 0..1），可被 MIDI Learn 綁定 CC。
 // 海洋主題：nanoKONTROL2 推桿/旋鈕控制連續參數；Solo 按鈕觸發動作（見 ACTION_BINDINGS）。
 
 export const GROUPS = [
   { id: 'OCEAN', label: 'OCEAN', params: [
-    { id: 'seaLevel', label: '海水高度', value: 0.55 },
-    { id: 'current',  label: '洋流速度', value: 0.45 },
-    { id: 'clarity',  label: '海水清澈', value: 0.60 },
-    { id: 'flowX',    label: '洋流向 X', value: 0.50 },
-    { id: 'flowY',    label: '洋流向 Y', value: 0.50 },
+    { id: 'seaLevel', label: T('海水高度'), value: 0.55 },
+    { id: 'current',  label: T('洋流速度'), value: 0.45 },
+    { id: 'clarity',  label: T('海水清澈'), value: 0.60 },
+    { id: 'flowX',    label: T('洋流向 X'), value: 0.50 },
+    { id: 'flowY',    label: T('洋流向 Y'), value: 0.50 },
   ]},
   { id: 'LIFE', label: 'LIFE', params: [
-    { id: 'jellyCount', label: '水母數量', value: 0.50 },
-    { id: 'fishCount',  label: '魚群數量', value: 0.55 },
-    { id: 'birdCount',  label: '鳥群數量', value: 0.40 }, // 球外鳥群（0=無、1=5 群）；可由鳥類調查資料「套用 / 連動」，也可獨立控制
-    { id: 'swimSpeed',  label: '游動速度', value: 0.50 },
+    { id: 'jellyCount', label: T('水母數量'), value: 0.50 },
+    { id: 'fishCount',  label: T('魚群數量'), value: 0.55 },
+    { id: 'birdCount',  label: T('鳥群數量'), value: 0.40 }, // 球外鳥群（0=無、1=5 群）；可由鳥類調查資料「套用 / 連動」，也可獨立控制
+    { id: 'swimSpeed',  label: T('游動速度'), value: 0.50 },
   ]},
   { id: 'IMPACT', label: 'IMPACT', params: [
-    { id: 'trashCount', label: '垃圾數量', value: 0.25 },
+    { id: 'trashCount', label: T('垃圾數量'), value: 0.25 },
   ]},
   { id: 'VIEW', label: 'VIEW', params: [
-    { id: 'spin', label: '旋轉海洋球', value: 0.30 },
-    { id: 'zoom', label: '視角遠近',   value: 0.50 },
-    { id: 'glow', label: '夢幻輝光',   value: 0.60 },
-    { id: 'hue',  label: '海色色相',   value: 0.50 }, // 場景配色：0 墨綠 ← 0.5 湛藍 → 1 紫粉
-    { id: 'bgBlur',    label: '背景模糊', value: 0.00 }, // 高斯模糊：只作用背景（星空 / 銀河 / 月亮；AR 時＝相機畫面），球體不受影響
-    { id: 'bgClarity', label: '背景清澈', value: 1.00 }, // 1=原樣；越低背景越暗、越朦朧
+    { id: 'spin', label: T('旋轉海洋球'), value: 0.30 },
+    { id: 'zoom', label: T('視角遠近'),   value: 0.50 },
+    { id: 'glow', label: T('夢幻輝光'),   value: 0.60 },
+    { id: 'hue',  label: T('海色色相'),   value: 0.50 }, // 場景配色：0 墨綠 ← 0.5 湛藍 → 1 紫粉
+    { id: 'bgBlur',    label: T('背景模糊'), value: 0.00 }, // 高斯模糊：只作用背景（星空 / 銀河 / 月亮；AR 時＝相機畫面），球體不受影響
+    { id: 'bgClarity', label: T('背景清澈'), value: 1.00 }, // 1=原樣；越低背景越暗、越朦朧
   ]},
 ]
 

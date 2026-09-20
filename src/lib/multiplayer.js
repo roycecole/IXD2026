@@ -6,6 +6,7 @@ import { useStore } from '../store/useStore.js'
 import { PARAM_ORDER } from '../params/registry.js'
 import { PEER_CONFIG } from './ice.js'
 import { bumpStat } from '../store/stats.js'
+import { t, T } from '../i18n/index.js'
 
 export const multiState = { on: false, id: null, count: 0 }
 
@@ -13,11 +14,12 @@ export const multiState = { on: false, id: null, count: 0 }
 if (import.meta.env.DEV) Object.defineProperty(window, '__peer', { get: () => peer, configurable: true })
 
 // 聲部分工：每支加入的手機輪流分到一個聲部（樂團感）；free = 全部
+// label 是中文 key（T 標記）：原樣經 wire 傳給遙控頁，由各端依自己的語系 t()（手機與主畫面語系可以不同）
 export const ROLES = [
-  { id: 'ocean', label: '海 · 水位/洋流/清澈', pids: ['seaLevel', 'current', 'clarity'] },
-  { id: 'life', label: '生態 · 水母/魚群/鳥群', pids: ['jellyCount', 'fishCount', 'birdCount', 'swimSpeed'] },
-  { id: 'mood', label: '氛圍 · 輝光/色相/背景', pids: ['glow', 'hue', 'trashCount', 'bgBlur', 'bgClarity'] },
-  { id: 'free', label: '自由 · 全部參數', pids: ['seaLevel', 'current', 'clarity', 'jellyCount', 'fishCount', 'birdCount', 'swimSpeed', 'glow', 'hue', 'trashCount', 'bgBlur', 'bgClarity'] },
+  { id: 'ocean', label: T('海 · 水位/洋流/清澈'), pids: ['seaLevel', 'current', 'clarity'] },
+  { id: 'life', label: T('生態 · 水母/魚群/鳥群'), pids: ['jellyCount', 'fishCount', 'birdCount', 'swimSpeed'] },
+  { id: 'mood', label: T('氛圍 · 輝光/色相/背景'), pids: ['glow', 'hue', 'trashCount', 'bgBlur', 'bgClarity'] },
+  { id: 'free', label: T('自由 · 全部參數'), pids: ['seaLevel', 'current', 'clarity', 'jellyCount', 'fishCount', 'birdCount', 'swimSpeed', 'glow', 'hue', 'trashCount', 'bgBlur', 'bgClarity'] },
 ]
 let roleIdx = 0
 let syncIv = null
@@ -75,7 +77,7 @@ function wire(p) {
       const role = ROLES[roleIdx++ % ROLES.length]        // 輪流分聲部
       try { c.send({ t: 'role', id: role.id, label: role.label, pids: role.pids }) } catch (e) {}
       notify()
-      useStore.getState().pushLog('in', `遙控器加入 · 聲部「${role.label.split(' ')[0]}」（${multiState.count} 人連線）`)
+      useStore.getState().pushLog('in', t('遙控器加入 · 聲部「{part}」（{n} 人連線）', { part: t(role.label).split(' ')[0], n: multiState.count }))
     })
     c.on('data', (m) => dispatch(m, c.peer))
     const drop = () => { conns = conns.filter((x) => x !== c); multiState.count = conns.filter((x) => x.open).length; notify() }
@@ -121,7 +123,7 @@ export function startHost() {
       try {
         const p = await new Promise((resolve, reject) => {
           const np = new Peer(id, PEER_CONFIG)
-          const to = setTimeout(() => { try { np.destroy() } catch (e) {} reject(new Error('連線逾時')) }, 12000)
+          const to = setTimeout(() => { try { np.destroy() } catch (e) {} reject(new Error(t('連線逾時'))) }, 12000)
           const onErr = (e) => { clearTimeout(to); try { np.destroy() } catch (x) {} reject(e) }
           np.on('error', onErr)
           np.on('open', () => { clearTimeout(to); np.off('error', onErr); resolve(np) })
@@ -135,7 +137,7 @@ export function startHost() {
         if (!(e && e.type === 'unavailable-id')) await new Promise((r) => setTimeout(r, 1200 * (attempt + 1))) // 撞號立刻換；其他錯誤退避
       }
     }
-    throw lastErr || new Error('無法啟動')
+    throw lastErr || new Error(t('無法啟動'))
   })()
   starting.catch(() => { starting = null })
   return starting

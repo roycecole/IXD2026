@@ -1,6 +1,7 @@
 import React, { Suspense, lazy } from 'react'
 import { createRoot } from 'react-dom/client'
 import { useStore } from './store/useStore.js'
+import { t } from './i18n/index.js'
 import './styles.css'
 
 // 開發輔助：主控台可用 window.__store 驅動測試（無實體 MIDI 時模擬 handleCC 等）
@@ -23,7 +24,7 @@ const RemoteApp = lazy(() => import('./remote/RemoteApp.jsx'))
 
 createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <Suspense fallback={<div className="canvas-loading">載入中…</div>}>
+    <Suspense fallback={<div className="canvas-loading">{t('載入中…')}</div>}>
       {remoteMatch ? <RemoteApp hostId={decodeURIComponent(remoteMatch[1])} /> : <App />}
     </Suspense>
   </React.StrictMode>,

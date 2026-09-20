@@ -1,3 +1,5 @@
+import { t } from '../i18n/index.js'
+
 // AR 實景背景：網頁相機（getUserMedia）鋪在畫布後面，球體照常渲染（Canvas 透明）。
 // 模糊 / 清澈只作用在背景 <video>（CSS filter，GPU 加速），不影響球體本身。
 export const arState = { on: false, err: null, autoGlow: true, luma: 0, video: null }  // 模糊 / 清澈已改為共用參數 bgBlur / bgClarity（一般畫面與 AR 同一組）
@@ -39,7 +41,7 @@ export async function arStart(video, onEnd) {
     arState.on = true; arState.err = null
     return true
   } catch (e) {
-    arState.err = (e && (e.name === 'NotAllowedError' ? '未授權相機' : e.message)) || String(e)
+    arState.err = (e && (e.name === 'NotAllowedError' ? t('未授權相機') : e.message)) || String(e)
     return false
   }
 }

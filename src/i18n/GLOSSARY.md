@@ -6,7 +6,7 @@
 | 中文 | English | 備註 |
 |---|---|---|
 | 資料導演台 | Data Director | 產品名 MidiSea Data Director |
-| 海洋球 / 星球 | globe / sphere | 「分享星球」= "Share image"（按鈕用 "Snapshot"） |
+| 海洋球 / 星球 / 球體 | sphere | 全站統一用 "sphere"（不混用 globe）；「分享星球」= "Share image"（按鈕用 "Snapshot"） |
 | 海水高度 / 洋流速度 / 海水清澈 | Sea level / Current speed / Water clarity | |
 | 洋流向 X / 洋流向 Y | Current dir X / Current dir Y | |
 | 水母數量 / 魚群數量 / 鳥群數量 / 游動速度 | Jellyfish / Fish schools / Bird flocks / Swim speed | |
@@ -20,7 +20,7 @@
 | 遙控器 / 聲部 | Remote / Part | 聲部：Ocean / Life / Mood / Free |
 | 實景 | AR view | |
 | 資訊（畫布面板開關） | Info | |
-| 控制器 | Pads | 虛擬 nanoKONTROL2 = "virtual nanoKONTROL2"；按鈕用 "Controller" 亦可，全站一致即可 |
+| 控制器 | Controller | 工具列鈕與面板標籤共用同一個 key，所以用 "Controller"（不用 "Pads"：面板那一列顯示的是 MIDI 裝置名）；虛擬 nanoKONTROL2 = "virtual controller"。「打擊墊」（nanoPAD2 / 遙控頁）才是 "Pads" |
 | 說明 | Help | |
 | 聲音 / 麥克風 | Sound / Mic | 麥克風＝風："Mic = wind" |
 | 匯出LOG | Export log | |
@@ -46,3 +46,15 @@
 
 日誌（OUT / IN）：短句、現在式，如 "AR view on"、"Sound on (first interaction)"；資料播放行維持 "DATA …" 前綴。
 測站名、河川名（如「景美溪」）是政府資料的專有名詞：英文版維持原文，不翻。
+
+## 審查補充（英文譯文品質檢查後統一的用詞）
+| 中文 | English | 備註 |
+|---|---|---|
+| 浪湧 | Surge | 打擊墊與手機搖晃（"shake = surge"）用同一個詞，不用 swell |
+| 連線 MIDI / ● MIDI 已連線 | Connect MIDI / ● MIDI on | 「Connect MIDI」12 字元，寬度與中文「連線 MIDI」相當，是唯一超過 10 字元的固定工具列鈕 |
+| 藍牙 MIDI（按鈕） | BLE MIDI | 按鈕受長度限制；說明文與日誌用 "Bluetooth MIDI" |
+| 錄影（失敗 / 完成的日誌） | Video recording failed / Video recorded | 避免與走帶的 "Recording" 混淆 |
+| 豪雨 / 大豪雨 / 超大豪雨 | extremely heavy rain / torrential rain / extremely torrential rain | 依 CWA 英文用語；大雨 = heavy rain |
+| 資料播放按鈕 | Play 24h data ({label}) | 序列標籤（Tide level / Inflow…）是首字大寫的名詞，放括號裡避免句中大寫 |
+| 排程累積（CI） | scheduled job | 使用者看得到的文字不出現 "CI" |
+| 點擊 | click / select / "click or tap" | 桌面與觸控都會遇到的提示用 "Click or tap"；按鈕鈕面用中性動詞（"update now"） |
