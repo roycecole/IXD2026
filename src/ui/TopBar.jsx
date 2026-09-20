@@ -6,6 +6,8 @@ import { captureCanvas, downloadBlob, shareSnapshot } from '../lib/capture.js'
 import { audioToggle, audioState } from '../audio/engine.js'
 import { micToggle } from '../audio/mic.js'
 import { bleSupported } from '../lib/blemidi.js'
+import { describeBoard } from '../lib/describe.js'
+import { LS, saveLS } from '../lib/persist.js'
 
 function fmt(t) {
   const m = Math.floor(t / 60), s = Math.floor(t % 60)
@@ -25,7 +27,8 @@ export default function TopBar({ onConnect, onBle, onInfo, onVK, vkOn, onMulti, 
 
   const [shareMsg, setShareMsg] = useState('')
   const [capPct, setCapPct] = useState(-1)
-  const [audioOn, setAudioOn] = useState(false)
+  const audioOn = useStore((s) => s.audioOn)
+  const setAudioOn = useStore((s) => s.setAudioOn)
   const [micOn, setMicOn] = useState(false)
   const [hz, setHz] = useState(0)
 
@@ -72,7 +75,9 @@ export default function TopBar({ onConnect, onBle, onInfo, onVK, vkOn, onMulti, 
   }
 
   const doShareImage = async () => {
-    const r = await shareSnapshot()
+    const st = useStore.getState()
+    const rows = describeBoard(st.gov, st.govOption())          // 分享圖帶上目前海況的資料列
+    const r = await shareSnapshot({ lines: rows.slice(0, 3).map((x) => `${x.k}｜${x.v}`) })
     if (!r.ok) { setShareMsg('分享失敗：' + r.why); pushLog('out', '分享星球失敗：' + r.why) }
     else if (r.how === 'download') { setShareMsg('已下載分享圖'); pushLog('out', '分享星球 → 下載 PNG') }
     else if (r.how === 'share') pushLog('out', '分享星球 → 系統分享')
@@ -100,6 +105,7 @@ export default function TopBar({ onConnect, onBle, onInfo, onVK, vkOn, onMulti, 
         ))}
       </div>
 
+      <div className="toolstrip">
       <div className="tools">
         <button onClick={doShare} title="複製分享連結（帶目前參數）">分享</button>
         <button onClick={doShareImage} title="分享星球：擷取此刻的海 → 分享 / 下載圖片">分享星球</button>
@@ -111,8 +117,8 @@ export default function TopBar({ onConnect, onBle, onInfo, onVK, vkOn, onMulti, 
         <button onClick={doExportLog} title="匯出 IN/OUT LOG 供除錯">匯出LOG</button>
         <button className={'conn' + (vkOn ? ' on' : '')} onClick={onVK} title="虛擬 nanoKONTROL2：無實體裝置也能用滑鼠 / 鍵盤操作">控制器</button>
         <button onClick={onInfo} title="操作說明 / 關於本專案">說明</button>
-        <button className={'conn' + (audioOn ? ' on' : '')}
-                onClick={async () => { const on = await audioToggle(); setAudioOn(on); useStore.getState().pushLog('out', on ? `聲音開啟（根音 ${audioState.rootHz}Hz）` : '聲音靜音') }}
+        <button className={'conn' + (audioOn ? ' on' : '')} data-audio-btn
+                onClick={async () => { const on = await audioToggle(); setAudioOn(on); saveLS(LS.audio, on ? 'on' : 'off'); useStore.getState().pushLog('out', on ? `聲音開啟（根音 ${audioState.rootHz}Hz）` : '聲音靜音（之後不再自動開啟）') }}
                 title="舒適背景音（Tone.js）：海水高度=根音Hz、清澈=明亮度、洋流=浪速、輝光=空間感、垃圾=失諧、打擊墊=音階">
           {audioOn ? `聲音 ${hz || audioState.rootHz}Hz` : '聲音'}
         </button>
@@ -133,6 +139,7 @@ export default function TopBar({ onConnect, onBle, onInfo, onVK, vkOn, onMulti, 
           {midi.bleName ? '● 藍牙 ' + midi.bleName.slice(0, 12) : '藍牙 MIDI'}
         </button>
       )}
+      </div>
     </header>
   )
 }

@@ -1,6 +1,6 @@
 // AR 實景背景：網頁相機（getUserMedia）鋪在畫布後面，球體照常渲染（Canvas 透明）。
 // 模糊 / 清澈只作用在背景 <video>（CSS filter，GPU 加速），不影響球體本身。
-export const arState = { on: false, blur: 6, clarity: 0.85, err: null, autoGlow: true, luma: 0 }
+export const arState = { on: false, err: null, autoGlow: true, luma: 0 }  // 模糊 / 清澈已改為共用參數 bgBlur / bgClarity（一般畫面與 AR 同一組）
 
 // 環境光感知：把 <video> 縮成 16×9 取平均亮度（0..1，Rec.709 權重）。太小不影響效能（約 144 像素）。
 export function createLumaSampler() {
@@ -50,7 +50,9 @@ export function arStop(video) {
   arState.on = false
 }
 
-// 背景濾鏡：模糊=高斯模糊 px；清澈=亮度+飽和（低=朦朧暗、高=清亮）
-export function arFilter() {
-  return `blur(${arState.blur}px) brightness(${(0.35 + arState.clarity * 0.75).toFixed(2)}) saturate(${(0.5 + arState.clarity * 0.7).toFixed(2)})`
+// 背景濾鏡：模糊＝高斯模糊 0..22px（bgBlur 0..1）；清澈＝亮度+飽和（bgClarity：低=朦朧暗、高=清亮）。只作用在相機畫面。
+export function arFilter(blur01 = 0.27, clarity01 = 0.85) {
+  const px = Math.max(0, Math.min(1, blur01)) * 22
+  const c = Math.max(0, Math.min(1, clarity01))
+  return `blur(${px.toFixed(1)}px) brightness(${(0.35 + c * 0.75).toFixed(2)}) saturate(${(0.5 + c * 0.7).toFixed(2)})`
 }

@@ -11,15 +11,18 @@ import ParamHUD from './ui/ParamHUD.jsx'
 import TakeoverHint from './ui/TakeoverHint.jsx'
 import DataHUD from './ui/DataHUD.jsx'
 import KioskQR from './ui/KioskQR.jsx'
+import DataBoard from './ui/DataBoard.jsx'
 import { arState, arStart, arStop, arFilter, createLumaSampler, glowForLuma } from './lib/ar.js'
 import { stats } from './store/stats.js'
 import { multiState } from './lib/multiplayer.js'
 import { useMIDI } from './hooks/useMIDI.js'
-import { useStore } from './store/useStore.js'
+import { useStore, seriesMeta } from './store/useStore.js'
 import { decodeParams } from './lib/share.js'
 import { loadOceanData } from './lib/govdata.js'
 import { LS, loadLS, saveLS } from './lib/persist.js'
-import { audioUpdate } from './audio/engine.js'
+import { audioUpdate, audioToggle } from './audio/engine.js'
+import { formatHud } from './lib/series.js'
+import { describeForLog } from './lib/describe.js'
 import { activity } from './store/activity.js'
 import { SCENES } from './timeline/scenes.js'
 
@@ -64,7 +67,8 @@ export default function App() {
   const savedSizes = loadLS(LS.sizes, { panelW: 340, monitorH: 84, canvasVh: 46 })
   const [panelW, setPanelW] = useState(savedSizes.panelW || 340)
   const [monitorH, setMonitorH] = useState(savedSizes.monitorH || 84)
-  const [canvasVh, setCanvasVh] = useState(savedSizes.canvasVh || 46) // 手機：畫布高度(vh)，面板可拉高
+  // 手機：畫布高度(vh)，面板可拉高。手機預設縮到 40%（舊預設值 46 視為「沒調整過」），把空間讓給控制面板
+  const [canvasVh, setCanvasVh] = useState(() => { const v = savedSizes.canvasVh; const narrow = typeof window !== 'undefined' && window.innerWidth <= 820; return narrow && (!v || v === 46) ? 40 : v || 46 })
   const [stage, setStage] = useState(KIOSK) // 演出模式：隱藏全部 UI，只留球體；?kiosk=1 直接進場
   const [showVK, setShowVK] = useState(false) // 虛擬控制器
   const [showInfo, setShowInfo] = useState(() => { if (KIOSK) return false; try { return !localStorage.getItem('ixd2026.seen') } catch (e) { return true } })
@@ -95,23 +99,31 @@ export default function App() {
     try { await e.prompt() } catch (err) {}
   }
 
-  // AR 實景背景：相機鋪在畫布後，模糊/清澈只影響背景
+  // AR 實景背景：相機鋪在畫布後。模糊 / 清澈與一般畫面共用同一組參數（背景模糊 / 背景清澈，只影響背景，球體不變）。
   const videoRef = useRef(null)
   const [arOn, setArOn] = useState(false)
+  const arPrev = useRef(null)
+  const bgBlur = useStore((s) => s.params.bgBlur)
+  const bgClarity = useStore((s) => s.params.bgClarity)
   const toggleAR = async () => {
     const st = useStore.getState()
-    if (arOn) { arStop(videoRef.current); setArOn(false); st.pushLog('out', 'AR 實景關閉') }
-    else {
-      const ok = await arStart(videoRef.current, () => setArOn(false))
+    if (arOn) {
+      arStop(videoRef.current); setArOn(false); st.pushLog('out', 'AR 實景關閉')
+      if (arPrev.current) { st.applyParams(arPrev.current); arPrev.current = null }   // 還原一般畫面的背景設定
+    } else {
+      const ok = await arStart(videoRef.current, () => { setArOn(false); if (arPrev.current) { useStore.getState().applyParams(arPrev.current); arPrev.current = null } })
       setArOn(ok)
-      if (ok) { if (videoRef.current) videoRef.current.style.filter = arFilter(); st.pushLog('out', 'AR 實景開啟（背景=相機）') }
-      else st.pushLog('out', 'AR 相機開啟失敗：' + (arState.err || '不支援'))
+      if (ok) {
+        // 實景預設：背景稍微模糊、略暗，球體才浮得出來（離開 AR 時還原原本的設定）
+        arPrev.current = { bgBlur: st.params.bgBlur, bgClarity: st.params.bgClarity }
+        if ((st.params.bgBlur ?? 0) < 0.05) st.applyParams({ bgBlur: 0.27 })
+        if ((st.params.bgClarity ?? 1) > 0.9) st.applyParams({ bgClarity: 0.85 })
+        st.pushLog('out', 'AR 實景開啟（背景=相機）')
+      } else st.pushLog('out', 'AR 相機開啟失敗：' + (arState.err || '不支援'))
     }
   }
-  const onArTune = (key, v) => {
-    arState[key] = v
-    if (videoRef.current) videoRef.current.style.filter = arFilter()
-  }
+  // 參數變動 → 同步到相機畫面的 CSS filter（AR 開啟時）
+  useEffect(() => { if (arOn && videoRef.current) videoRef.current.style.filter = arFilter(bgBlur, bgClarity) }, [arOn, bgBlur, bgClarity])
 
   // 環境光感知：AR 開啟時每 0.6 秒取相機平均亮度 → 自動調球體輝光（環境亮 → 輝光強、暗 → 收斂）。
   // 用 setParam（不進錄製、不閃 HUD）；使用者剛手動調過輝光（旋鈕 / 滑桿 / 遙控）→ 暫停自動 8 秒。
@@ -125,13 +137,36 @@ export default function App() {
       if (L == null) return
       arState.luma = L
       if (performance.now() - activity.glowAt < 8000) return // 使用者剛手動調過輝光 → 暫停自動
-      const target = glowForLuma(L, arState.clarity)
-      smooth = smooth == null ? target : smooth + (target - smooth) * 0.35
       const st = useStore.getState()
+      const target = glowForLuma(L, st.params.bgClarity ?? 1)
+      smooth = smooth == null ? target : smooth + (target - smooth) * 0.35
       if (Math.abs((st.params.glow ?? 0) - smooth) > 0.01) st.setParam('glow', smooth)
     }, 600)
     return () => clearInterval(iv)
   }, [arOn])
+
+  // 預設聲音開啟：瀏覽器規定音訊必須在使用者手勢後才能啟動，所以「預設開啟」＝第一次點 / 觸碰 / 按鍵時自動啟動；
+  // 使用者按「聲音」靜音後會記住（下次不再自動開）。第一下若剛好點在「聲音」鈕上，交給按鈕自己處理，避免先開又關。
+  const audioOn = useStore((s) => s.audioOn)
+  useEffect(() => {
+    if (loadLS(LS.audio, null) === 'off') return
+    const evs = ['pointerup', 'touchend', 'keydown', 'click']
+    let done = false
+    const cleanup = () => evs.forEach((ev) => window.removeEventListener(ev, start, true))
+    async function start(e) {
+      if (done) return
+      if (e && e.target && e.target.closest && e.target.closest('[data-audio-btn]')) return
+      done = true; cleanup()
+      try {
+        const on = await audioToggle()
+        useStore.getState().setAudioOn(on)
+        if (on) useStore.getState().pushLog('out', '聲音自動開啟（第一次互動）· 可按「聲音」靜音')
+        else { done = false; evs.forEach((ev) => window.addEventListener(ev, start, true)) } // 沒成功（例如手勢不算數）→ 下次再試
+      } catch (err) { done = false; evs.forEach((ev) => window.addEventListener(ev, start, true)) }
+    }
+    evs.forEach((ev) => window.addEventListener(ev, start, true))
+    return cleanup
+  }, [])
 
   // 全域鍵盤：H 演出模式、空白鍵播放、R 錄製、1-4 召喚生物、? 說明（輸入/按鈕聚焦時放行原生行為）
   useEffect(() => {
@@ -184,6 +219,9 @@ export default function App() {
       const firstVisit = (() => { try { return !localStorage.getItem('ixd2026.seen') } catch (e) { return false } })()
       const hasShare = (() => { try { return !!new URLSearchParams(location.search).get('s') } catch (e) { return false } })()
       if (firstVisit && !hasShare) st.applyGov()
+      else if (!hasShare) st.applySurveyLinked()   // 回訪：連動中的鳥 / 魚數量用最新資料（已脫鉤 = 獨立控制的保持不動）
+      const o = st.govOption()
+      if (o) describeForLog(d, o).forEach((l) => st.pushLog('out', l))   // 輸出顯示資料：目前海況背後的資料列
     })
   }, [])
 
@@ -192,6 +230,7 @@ export default function App() {
 
   // 主迴圈：推進錄製/播放 + 定期把參數 / log 寫進 storage + 閒置吸引模式
   const attract = useRef({ on: false, at: 0, idx: 0 })
+  const stepLog = useRef({ idx: -1, name: '' })
   useEffect(() => {
     let n = 0
     const IDLE = 30000, STEP = 11000
@@ -207,6 +246,14 @@ export default function App() {
         if (!a.on) { a.on = true; a.at = now - STEP; a.idx = 0 }
         if (now - a.at > STEP) { a.at = now; st.applyScene(SCENES[a.idx % SCENES.length].params); a.idx++ }
       } else if (a.on) a.on = false
+      // 資料播放：每換一步就把「現在這筆資料」寫進 OUT 監看（輸出顯示資料）
+      if (seriesMeta.active && st.rec.mode === 'playing' && seriesMeta.points.length) {
+        const idx = Math.max(0, Math.min(seriesMeta.points.length - 1, Math.floor(st.rec.playhead / seriesMeta.step)))
+        if (idx !== stepLog.current.idx || seriesMeta.name !== stepLog.current.name) {
+          stepLog.current = { idx, name: seriesMeta.name }
+          st.pushLog('out', 'DATA ' + formatHud(seriesMeta, seriesMeta.points[idx]))
+        }
+      } else if (stepLog.current.idx !== -1) stepLog.current = { idx: -1, name: '' }
       n++
       if (n % 2 === 0) pollGamepad(st) // Gamepad 搖桿 / 按鈕（未接手把時為 no-op）
       if (n % 6 === 0) audioUpdate()   // 背景音引擎（未開啟時為 no-op）
@@ -247,12 +294,14 @@ export default function App() {
           <ParamHUD />
           <TakeoverHint />
           <DataHUD />
+          <DataBoard />
+          {!audioOn && !stage && loadLS(LS.audio, null) !== 'off' && <div className="audio-hint">點一下畫面即開啟聲音</div>}
           {arOn && (
             <div className="ar-ctrl" aria-label="AR 背景調整">
-              <label>模糊<input type="range" min="0" max="22" step="1" defaultValue={arState.blur}
-                     onInput={(e) => onArTune('blur', parseFloat(e.target.value))} /></label>
-              <label>清澈<input type="range" min="0" max="1" step="0.01" defaultValue={arState.clarity}
-                     onInput={(e) => onArTune('clarity', parseFloat(e.target.value))} /></label>
+              <label>模糊<input type="range" min="0" max="1" step="0.01" value={bgBlur ?? 0}
+                     onChange={(e) => useStore.getState().input('bgBlur', parseFloat(e.target.value))} /></label>
+              <label>清澈<input type="range" min="0" max="1" step="0.01" value={bgClarity ?? 1}
+                     onChange={(e) => useStore.getState().input('bgClarity', parseFloat(e.target.value))} /></label>
               <label className="ar-auto" title="依相機畫面平均亮度自動調球體輝光（環境光感知）">
                 <input type="checkbox" defaultChecked={arState.autoGlow} onChange={(e) => { arState.autoGlow = e.target.checked }} />環境光自動調輝光
               </label>

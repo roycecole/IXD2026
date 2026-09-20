@@ -4,8 +4,7 @@ import * as THREE from 'three'
 import * as CANNON from 'cannon-es'
 import { arState } from '../lib/ar.js'
 import { useStore, seriesMeta } from '../store/useStore.js'
-import { birdSeasonal, flockCount } from '../lib/birds.js'
-import { ageFromLunar, moonAge, moonPhaseAngle, moonIllum, moonSky, dateAtHour } from '../lib/moon.js'
+import { ageFromLunar, moonAge, moonPhaseAngle, moonIllum, moonSky, dateAtHour, moonAltAz, moonScreenFromAltAz } from '../lib/moon.js'
 import { chime, setCreaturePan } from '../audio/engine.js'
 import { micState } from '../audio/mic.js'
 import { padEvents, purifyMeta } from '../store/events.js'
@@ -22,6 +21,7 @@ const YAXIS = new THREE.Vector3(0, 1, 0)
 const bioNodes = []   // 生物節點（供 BioNetwork 科技連線）
 const _cl = new THREE.Vector3()
 const poke = { dir: new THREE.Vector3(0, 0, 1), str: 0, target: 0, vel: 0 } // 果凍壓凹（球殼柔軟壓回）
+const BG_LAYER = 1     // 背景層（星空 / 銀河 / 流星 / 月亮）；球體、生物、水體、鳥群在預設層 0
 const REDUCED = (() => { try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches } catch (e) { return false } })()
 
 // ---- 手感 / 感測 ----
@@ -962,6 +962,7 @@ function Stars() {
     g.setAttribute('color', new THREE.BufferAttribute(c, 3))
     const m = new THREE.Points(g, new THREE.PointsMaterial({ map: dotTex(), size: 0.38, sizeAttenuation: true, transparent: true, opacity: 0.9, depthWrite: false, fog: false, blending: THREE.AdditiveBlending, vertexColors: true }))
     m.frustumCulled = false
+    m.layers.set(BG_LAYER) // 背景層：可被「背景模糊 / 清澈」單獨處理
     return { pts: m, phases: ph }
   }, [])
   const grp = useRef()
@@ -981,7 +982,7 @@ function Stars() {
 
 // 背景動畫 2：偶發流星（拖尾漸淡）
 function ShootingStars() {
-  const batch = useMemo(() => makeBatch(VIS.shootingStars * 2), [])
+  const batch = useMemo(() => { const b = makeBatch(VIS.shootingStars * 2); b.lines.layers.set(BG_LAYER); return b }, [])
   const slots = useMemo(() => Array.from({ length: VIS.shootingStars }, () => ({
     active: false, x: 0, y: 0, z: 0, vx: 0, vy: 0, life: 0, next: 2 + Math.random() * 6,
   })), [])
@@ -1136,7 +1137,7 @@ function Galaxy() {
     g.setAttribute('position', new THREE.BufferAttribute(a, 3))
     g.setAttribute('color', new THREE.BufferAttribute(c, 3))
     const m = new THREE.Points(g, new THREE.PointsMaterial({ map: dotTex(), size: 0.3, sizeAttenuation: true, transparent: true, opacity: 0, depthWrite: false, fog: false, blending: THREE.AdditiveBlending, vertexColors: true }))
-    m.frustumCulled = false; return m
+    m.frustumCulled = false; m.layers.set(BG_LAYER); return m
   }, [])
   const grp = useRef()
   useFrame((_, dt) => {
@@ -1186,6 +1187,7 @@ function MoonSky() {
   const haloMat = useMemo(() => new THREE.SpriteMaterial({ map: dotTex(), color: '#dfe8ff', transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, fog: false }), [])
   const s = useRef({ alpha: 0, x: -MOON_R, y: 0.6, phase: 0, init: false })
   const { camera, size } = useThree()
+  useEffect(() => { if (mesh.current) mesh.current.layers.set(BG_LAYER); if (halo.current) halo.current.layers.set(BG_LAYER) }, [])
   useFrame((_, dt) => {
     const st = useStore.getState()
     // 依相機可視範圍夾住月亮（側邊面板 / 手機直式時畫布較窄，不能被切掉）
@@ -1195,31 +1197,44 @@ function MoonSky() {
     const xr = Math.max(2, Math.min(MOON_R, halfW - 1.6))
     const ymax = Math.max(1.5, halfH - 1.6)
     const o = st.govOption && st.govOption()
-    const tide = o && o.kind === 'tide' && o.series
+    const tide = o && o.kind === 'tide' && o.series          // 潮汐海況：月亮盈虧 = 當日農曆（CWA），位置 = 月中天 × 時刻
+    const moonMode = !!(o && o.kind === 'moon')              // 月亮海況：閒置時同上（天文公式），播放時用 CWA 月出月沒真實資料
     const S = s.current
     let wantAlpha = 0, tx = S.x, ty = S.y, tPhase = S.phase
-    if (tide && !arState.on) {
-      const playing = seriesMeta.active && st.rec.mode === 'playing' && seriesMeta.points.length > 0
-      let hour
-      if (playing) {                                     // 序列時刻（相鄰兩點間平滑內插）
-        const pts = seriesMeta.points
-        const f = Math.max(0, st.rec.playhead / seriesMeta.step)
-        const i0 = Math.min(pts.length - 1, Math.floor(f)), i1 = Math.min(pts.length - 1, i0 + 1)
-        hour = pts[i0].h + (pts[i1].h - pts[i0].h) * (f - Math.floor(f))
-      } else { const d = new Date(); hour = d.getHours() + d.getMinutes() / 60 }
-      // 月齡：資料播放（時刻屬於序列那一天）或資料日期＝今天 → 用 CWA 農曆日期推；資料檔已過期則退回天文公式（永遠是當下）
-      const now = new Date()
-      const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
-      const fromLunar = (playing || tide.date === todayStr) ? ageFromLunar(tide.lunar, hour) : null
-      const age = fromLunar != null ? fromLunar : moonAge(playing ? dateAtHour(tide.date, hour) : now)
-      const sky = moonSky(age, hour)
-      tPhase = moonPhaseAngle(age)
-      if (sky.up > 0.05) {                               // 在地平線上：沿弧線劃過（東升左 → 西落右）
-        tx = Math.sin(sky.H) * xr; ty = Math.min(ymax, 0.6 + sky.up * 3.4)
-        wantAlpha = playing ? Math.min(1, (sky.up - 0.05) / 0.25) : 1
-      } else if (!playing) {                             // 靜止且尚在地平線下：貼在將升起 / 剛落下的那一側，半透明
-        tx = (sky.H < 0 ? -1 : 1) * xr; ty = 0.6; wantAlpha = 0.5
-      }                                                  // 播放中位於地平線下 → 淡出（月落 / 月出前）
+    const realPlay = seriesMeta.active && seriesMeta.kind === 'moon' && st.rec.mode === 'playing' && seriesMeta.points.length > 0 && seriesMeta.extra && seriesMeta.extra.days
+    if ((tide || moonMode) && !arState.on) {
+      if (realPlay) {
+        // 真實資料：每一步＝一天。用當日（含前後日）月出 / 中天 / 月沒時刻、方位與中天仰角，推「當晚 21:00」月亮的方位與仰角；
+        // 月相用該日期的天文月齡（月出月沒表本身不含月相）。21:00 在地平線下 → 貼著將升起 / 剛落下的一側淡淡地掛著。
+        const days = seriesMeta.extra.days
+        const idx = Math.max(0, Math.min(days.length - 1, Math.floor(st.rec.playhead / seriesMeta.step)))
+        const r = moonAltAz(days, idx, 21)
+        tPhase = moonPhaseAngle(moonAge(dateAtHour(days[idx][0], 21)))
+        if (r.up) { const pos = moonScreenFromAltAz(r.az, r.alt, xr); tx = pos.x; ty = Math.min(ymax, pos.y); wantAlpha = 1 }
+        else { tx = (r.az < 180 ? -1 : 1) * xr; ty = 0.6; wantAlpha = 0.3 }
+      } else {
+        const playing = !!(tide && seriesMeta.active && seriesMeta.kind === 'tide' && st.rec.mode === 'playing' && seriesMeta.points.length > 0)
+        let hour
+        if (playing) {                                     // 序列時刻（相鄰兩點間平滑內插）
+          const pts = seriesMeta.points
+          const f = Math.max(0, st.rec.playhead / seriesMeta.step)
+          const i0 = Math.min(pts.length - 1, Math.floor(f)), i1 = Math.min(pts.length - 1, i0 + 1)
+          hour = pts[i0].h + (pts[i1].h - pts[i0].h) * (f - Math.floor(f))
+        } else { const d = new Date(); hour = d.getHours() + d.getMinutes() / 60 }
+        // 月齡：資料播放（時刻屬於序列那一天）或資料日期＝今天 → 用 CWA 農曆日期推；資料檔已過期 / 月亮海況則退回天文公式（永遠是當下）
+        const now = new Date()
+        const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+        const fromLunar = tide && (playing || tide.date === todayStr) ? ageFromLunar(tide.lunar, hour) : null
+        const age = fromLunar != null ? fromLunar : moonAge(playing ? dateAtHour(tide.date, hour) : now)
+        const sky = moonSky(age, hour)
+        tPhase = moonPhaseAngle(age)
+        if (sky.up > 0.05) {                               // 在地平線上：沿弧線劃過（東升左 → 西落右）
+          tx = Math.sin(sky.H) * xr; ty = Math.min(ymax, 0.6 + sky.up * 3.4)
+          wantAlpha = playing ? Math.min(1, (sky.up - 0.05) / 0.25) : 1
+        } else if (!playing) {                             // 靜止且尚在地平線下：貼在將升起 / 剛落下的那一側，半透明
+          tx = (sky.H < 0 ? -1 : 1) * xr; ty = 0.6; wantAlpha = 0.5
+        }                                                  // 播放中位於地平線下 → 淡出（月落 / 月出前）
+      }
     }
     const k = Math.min(1, dt * 3)
     if (!S.init) { S.init = true; S.x = tx; S.y = ty; S.phase = tPhase }
@@ -1250,6 +1265,91 @@ function MoonSky() {
   )
 }
 
+// 河川流量測站星座：水利署 188 座流量測站依真實座標排成台灣外形的星座（背景層，可被背景模糊處理）。
+// 現存 = 亮星、已廢 = 暗星（亮度另隨集水面積）；同一條河的測站用細線串起來 = 「河川星座」。資料：河川流量測站站況。
+const STN_Z = -10.5, STN_S = 5.4
+function StationStars() {
+  const { camera, size } = useThree()
+  const grp = useRef()
+  const cache = useMemo(() => ({ key: '', pts: null, lines: null, n: 0, base: null, ph: null, alpha: 0 }), [])
+  useEffect(() => () => { if (cache.pts) { cache.pts.geometry.dispose(); cache.pts.material.dispose() } if (cache.lines) { cache.lines.geometry.dispose(); cache.lines.material.dispose() } }, [cache])
+
+  const build = (list) => {
+    if (grp.current) { grp.current.clear() }
+    if (cache.pts) { cache.pts.geometry.dispose(); cache.pts.material.dispose() }
+    if (cache.lines) { cache.lines.geometry.dispose(); cache.lines.material.dispose() }
+    const n = list.length
+    const pos = new Float32Array(n * 3), col = new Float32Array(n * 3), base = new Float32Array(n), ph = new Float32Array(n)
+    let amax = 1
+    list.forEach((q) => { if (typeof q.a === 'number' && q.a > amax) amax = q.a })
+    list.forEach((q, i) => {
+      pos[i * 3] = q.x * STN_S; pos[i * 3 + 1] = q.y * STN_S; pos[i * 3 + 2] = 0
+      const big = typeof q.a === 'number' && q.a > 0 ? Math.min(1, Math.log10(1 + q.a) / Math.log10(1 + amax)) : 0.25   // 集水面積（對數）→ 亮度
+      base[i] = q.s ? 0.55 + 0.45 * big : 0.16 + 0.1 * big                                                              // 現存亮、已廢暗
+      ph[i] = Math.random() * Math.PI * 2
+    })
+    const g = new THREE.BufferGeometry()
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3))
+    const pts = new THREE.Points(g, new THREE.PointsMaterial({ map: dotTex(), size: 0.2, sizeAttenuation: true, transparent: true, opacity: 0, depthWrite: false, fog: false, blending: THREE.AdditiveBlending, vertexColors: true }))
+    pts.frustumCulled = false; pts.layers.set(BG_LAYER)
+    // 河川星座線：同一條河的測站沿主軸排序後相連（距離過遠者不連，避免不同河段被誤接）
+    const byRiver = new Map()
+    list.forEach((q, i) => { if (q.r) { if (!byRiver.has(q.r)) byRiver.set(q.r, []); byRiver.get(q.r).push(i) } })
+    const seg = []
+    for (const idxs of byRiver.values()) {
+      if (idxs.length < 2) continue
+      const xs = idxs.map((i) => list[i].x), ys = idxs.map((i) => list[i].y)
+      const useY = Math.max(...ys) - Math.min(...ys) >= Math.max(...xs) - Math.min(...xs)
+      idxs.sort((a, b) => (useY ? list[b].y - list[a].y : list[a].x - list[b].x))
+      for (let k = 0; k < idxs.length - 1; k++) {
+        const a = list[idxs[k]], b = list[idxs[k + 1]]
+        if (Math.hypot(a.x - b.x, a.y - b.y) < 0.2) seg.push(a.x * STN_S, a.y * STN_S, 0, b.x * STN_S, b.y * STN_S, 0, a.s && b.s ? 1 : 0.35)
+      }
+    }
+    const lp = new Float32Array((seg.length / 7) * 6), lc = new Float32Array((seg.length / 7) * 6)
+    for (let i = 0, j = 0; i < seg.length; i += 7, j += 6) {
+      lp.set(seg.slice(i, i + 6), j)
+      const b = seg[i + 6]
+      lc[j] = lc[j + 3] = 0.55 * b; lc[j + 1] = lc[j + 4] = 0.8 * b; lc[j + 2] = lc[j + 5] = 1.0 * b
+    }
+    const lg = new THREE.BufferGeometry()
+    lg.setAttribute('position', new THREE.BufferAttribute(lp, 3)); lg.setAttribute('color', new THREE.BufferAttribute(lc, 3))
+    const lines = new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }))
+    lines.frustumCulled = false; lines.layers.set(BG_LAYER)
+    grp.current.add(lines); grp.current.add(pts)
+    Object.assign(cache, { pts, lines, n, base, ph })
+  }
+
+  useFrame((state, dt) => {
+    const gov = useStore.getState().gov
+    const list = gov && gov.stations && gov.stations.list
+    const on = !!(list && list.length) && !arState.on
+    cache.alpha += ((on ? 1 : 0) - cache.alpha) * Math.min(1, dt * 2)
+    if (grp.current) grp.current.visible = cache.alpha > 0.01
+    if (!list || !list.length || !grp.current) return
+    const key = list.length + ':' + list[0].n
+    if (cache.key !== key) { cache.key = key; build(list) }
+    // 位置：右側；依可視範圍夾取，窄畫面（手機直式）往中間靠
+    const dist = Math.max(4, camera.position.z - STN_Z)
+    const halfH = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * dist
+    const halfW = halfH * (size.width / Math.max(1, size.height))
+    const sphereR = 2.02 * (dist / Math.max(3, camera.position.z))                  // 球體在此深度平面的投影半徑：星座要排在球體右側之外才看得出台灣輪廓
+    grp.current.position.set(Math.max(2.4, Math.min(halfW - 1.5, sphereR + 1.4)), -0.3, STN_Z)
+    grp.current.rotation.y = Math.sin(state.clock.elapsedTime * 0.05) * 0.08   // 極慢的視差擺動
+    const col = cache.pts.geometry.attributes.color.array, t = state.clock.elapsedTime
+    for (let i = 0; i < cache.n; i++) {
+      const tw = 0.8 + 0.2 * Math.sin(t * 0.8 + cache.ph[i]) // 輕微閃爍
+      const v = cache.base[i] * tw
+      col[i * 3] = 0.7 * v; col[i * 3 + 1] = 0.92 * v; col[i * 3 + 2] = v
+    }
+    cache.pts.geometry.attributes.color.needsUpdate = true
+    cache.pts.material.opacity = 0.9 * cache.alpha
+    cache.lines.material.opacity = 0.55 * cache.alpha
+  })
+  return <group ref={grp} />
+}
+
 // 球外生態：鳥群線稿（V 隊形、拍翅）繞球飛行；群數由鳥類調查資料（該海況流域鳥種數 × 現實季節）驅動
 function BirdFlocks() {
   const batch = useMemo(() => makeBatch(240), [])
@@ -1262,18 +1362,12 @@ function BirdFlocks() {
   useFrame((state, dt) => {
     const t = state.clock.elapsedTime
     bBegin(batch)
-    // 群數 = 該流域年度鳥種數的基準 × 現實季節（鳥類調查逐月鳥種數；birdMonth 可手動預覽其他月份）。每 0.5 秒重算即可。
+    // 群數 = 「鳥群數量」參數（0..1 → 0..5 群）。它可由鳥類調查資料「套用 / 連動」（換海況、換月份時自動寫入），
+    // 也可被使用者獨立控制（滑桿 / MIDI / 手機遙控）；這裡只讀參數，不關心它是怎麼來的。
     acc.current += dt
-    if (acc.current > 0.5) {
+    if (acc.current > 0.25) {
       acc.current = 0
-      const st = useStore.getState()
-      const o = st.govOption && st.govOption()
-      const bd = o && o.birds
-      if (bd) {
-        const mo = st.birdMonth != null ? st.birdMonth : new Date().getMonth()
-        const s = birdSeasonal(bd.monthly, mo)
-        flockTarget.current = flockCount(bd.species, s ? s.rel : 1)
-      } else flockTarget.current = 2
+      flockTarget.current = Math.max(0, Math.min(5, Math.round((useStore.getState().params.birdCount ?? 0.4) * 5)))
     }
     const flockActive = flockTarget.current
     flocks.forEach((f, i) => {
@@ -1347,6 +1441,95 @@ function JellyController() {
   return null
 }
 
+// 背景模糊 / 清澈（一般畫面）：只作用在背景層（layer 1），球體與生物（layer 0）照常清晰。
+// 管線：背景層畫到螢幕 → 複製畫面成貼圖 → Kawase 雙濾波（多層降採樣 + 升採樣，近似高斯、無稀疏星點被大步距取樣拆成重影的問題）
+//       → 蓋回螢幕（含清澈度：越低越暗、越朦朧）→ 前景層疊上去。全程在螢幕原本的編碼空間運算，所以 blur=0 時與原畫面一致。
+// 只在「背景模糊 / 背景清澈」偏離預設（0 / 1）且非 AR 時啟用；預設走單次繪製，零額外成本。
+// （AR 時背景是相機畫面，由 CSS filter 處理，見 App.jsx。）
+const _fxSize = new THREE.Vector2(), _fxZero = new THREE.Vector2(0, 0)
+function BackdropFX() {
+  const { gl, scene, camera } = useThree()
+  const fx = useMemo(() => {
+    const postScene = new THREE.Scene()
+    const postCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)
+    const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2))
+    quad.frustumCulled = false
+    postScene.add(quad)
+    const vert = 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }'
+    const mk = (uniforms, frag) => new THREE.ShaderMaterial({ uniforms, vertexShader: vert, fragmentShader: frag, depthTest: false, depthWrite: false })
+    const down = mk({ t: { value: null }, uHalf: { value: new THREE.Vector2() } },
+      'varying vec2 vUv; uniform sampler2D t; uniform vec2 uHalf; void main(){ vec4 s = texture2D(t, vUv) * 4.0; s += texture2D(t, vUv - uHalf); s += texture2D(t, vUv + uHalf); s += texture2D(t, vUv + vec2(uHalf.x, -uHalf.y)); s += texture2D(t, vUv - vec2(uHalf.x, -uHalf.y)); gl_FragColor = s / 8.0; }')
+    const up = mk({ t: { value: null }, uHalf: { value: new THREE.Vector2() } },
+      'varying vec2 vUv; uniform sampler2D t; uniform vec2 uHalf; void main(){ vec2 o = uHalf; vec4 s = texture2D(t, vUv + vec2(-o.x * 2.0, 0.0)); s += texture2D(t, vUv + vec2(-o.x, o.y)) * 2.0; s += texture2D(t, vUv + vec2(0.0, o.y * 2.0)); s += texture2D(t, vUv + vec2(o.x, o.y)) * 2.0; s += texture2D(t, vUv + vec2(o.x * 2.0, 0.0)); s += texture2D(t, vUv + vec2(o.x, -o.y)) * 2.0; s += texture2D(t, vUv + vec2(0.0, -o.y * 2.0)); s += texture2D(t, vUv + vec2(-o.x, -o.y)) * 2.0; gl_FragColor = s / 12.0; }')
+    const comp = mk({ tSharp: { value: null }, tBlur: { value: null }, uMix: { value: 1 }, uClarity: { value: 1 }, uHaze: { value: new THREE.Color('#6f86a8') } },
+      'varying vec2 vUv; uniform sampler2D tSharp; uniform sampler2D tBlur; uniform float uMix; uniform float uClarity; uniform vec3 uHaze; void main(){ vec3 c = mix(texture2D(tSharp, vUv).rgb, texture2D(tBlur, vUv).rgb, uMix); c = c * (0.22 + 0.78 * uClarity) + uHaze * (1.0 - uClarity) * 0.14; gl_FragColor = vec4(c, 1.0); }')
+    return { postScene, postCam, quad, down, up, comp, fb: null, lv: [], w: 0, h: 0 }
+  }, [])
+  useEffect(() => () => { fx.fb && fx.fb.dispose(); fx.lv.forEach((r) => r.dispose()); fx.down.dispose(); fx.up.dispose(); fx.comp.dispose() }, [fx])
+
+  const ensure = (w, h) => {
+    if (fx.fb && fx.w === w && fx.h === h) return
+    fx.fb && fx.fb.dispose(); fx.lv.forEach((r) => r.dispose())
+    fx.fb = new THREE.FramebufferTexture(w, h)
+    fx.fb.minFilter = THREE.LinearFilter; fx.fb.magFilter = THREE.LinearFilter
+    fx.lv = [1, 2, 3, 4].map((i) => new THREE.WebGLRenderTarget(Math.max(2, w >> i), Math.max(2, h >> i), { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, depthBuffer: false, stencilBuffer: false }))
+    fx.w = w; fx.h = h
+  }
+  const pass = (mat, srcTex, srcW, srcH, spread, target) => {
+    fx.quad.material = mat
+    mat.uniforms.t.value = srcTex
+    mat.uniforms.uHalf.value.set((0.5 * spread) / srcW, (0.5 * spread) / srcH)
+    gl.setRenderTarget(target); gl.render(fx.postScene, fx.postCam)
+  }
+
+  const plain = () => { camera.layers.enableAll(); gl.setRenderTarget(null); gl.autoClear = true; gl.render(scene, camera) }
+  useFrame(() => {
+    const p = useStore.getState().params
+    const blur = p.bgBlur ?? 0, clar = p.bgClarity ?? 1
+    const need = !fx.broken && !arState.on && (blur > 0.02 || clar < 0.985)
+    if (!need) { plain(); return }
+
+    const bg = scene.background
+    try {
+      gl.getDrawingBufferSize(_fxSize)
+      const W = Math.max(4, Math.floor(_fxSize.x)), H = Math.max(4, Math.floor(_fxSize.y))
+      ensure(W, H)
+      // 1) 背景層畫到螢幕（含背景色）→ 2) 複製整個畫面成貼圖
+      camera.layers.set(BG_LAYER)
+      gl.setRenderTarget(null); gl.autoClear = true
+      gl.render(scene, camera)
+      gl.copyFramebufferToTexture(_fxZero, fx.fb)
+      // 3) Kawase 雙濾波：降採樣 n 層 → 升採樣回第 1 層。n 與 spread 由 blur 連續決定（層數加一 = 半徑約 ×2，spread 2 ≈ 下一層 spread 1，所以拉動時無跳變）
+      const t = Math.min(0.999, blur) * 3
+      const n = 1 + Math.floor(t), spread = 1 + (t - Math.floor(t))
+      let srcTex = fx.fb, sw = W, sh = H
+      for (let i = 0; i < n; i++) { const r = fx.lv[i]; pass(fx.down, srcTex, sw, sh, spread, r); srcTex = r.texture; sw = r.width; sh = r.height }
+      for (let i = n - 2; i >= 0; i--) { const r = fx.lv[i]; pass(fx.up, srcTex, sw, sh, spread, r); srcTex = r.texture; sw = r.width; sh = r.height }
+      // 4) 蓋回螢幕（清澈度：越低越暗、越朦朧，霧色隨海色）
+      fx.quad.material = fx.comp
+      fx.comp.uniforms.tSharp.value = fx.fb
+      fx.comp.uniforms.tBlur.value = srcTex
+      fx.comp.uniforms.uMix.value = Math.min(1, blur / 0.06)  // 剛離開 0 時由清晰漸入模糊，避免一拉就跳
+      fx.comp.uniforms.uClarity.value = clar
+      fx.comp.uniforms.uHaze.value.setHSL(waterHue(), 0.25, 0.55)
+      gl.setRenderTarget(null); gl.autoClear = true
+      gl.render(fx.postScene, fx.postCam)
+      // 5) 前景層（球體 / 生物 / 水體…）疊上去：不清畫面、不畫背景色
+      scene.background = null; gl.autoClear = false
+      camera.layers.set(0)
+      gl.render(scene, camera)
+    } catch (e) {
+      // 這張 GPU / 瀏覽器不支援此管線（例如 copyFramebufferToTexture 失敗）→ 永久降級為單次繪製，背景模糊 / 清澈不生效但畫面不能壞
+      fx.broken = true
+      console.warn('BackdropFX 已停用（背景模糊 / 清澈不可用）:', e && e.message)
+    } finally {
+      scene.background = bg; gl.autoClear = true; camera.layers.enableAll(); gl.setRenderTarget(null)
+    }
+    if (fx.broken) plain()                                  // 這一幀補畫一次完整畫面，避免閃黑
+  }, 1)
+  return null
+}
+
 function CameraRig() {
   const { camera } = useThree()
   const tmp = useMemo(() => new THREE.Vector3(), [])
@@ -1363,6 +1546,7 @@ export default function Scene3D() {
       <Stars />
       <ShootingStars />
       <MoonSky />
+      <StationStars />
       <BirdFlocks />
       <ambientLight intensity={0.6} />
       <Ocean />
@@ -1374,6 +1558,7 @@ export default function Scene3D() {
       <StarBursts />
       <JellyController />
       <CameraRig />
+      <BackdropFX />
     </Canvas>
   )
 }

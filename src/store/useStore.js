@@ -7,9 +7,11 @@ import { setHud } from './hud.js'
 import { touch, touchGlow } from './activity.js'
 import { bumpStat } from './stats.js'
 import { SCENES } from '../timeline/scenes.js'
+import { seriesFromOption, seriesFromSurvey, seriesFromDust, seriesFromMoon, automationFor, fishParam } from '../lib/series.js'
+import { birdSeasonal, flockCount } from '../lib/birds.js'
 
 // 資料播放中的「資料時刻」資訊（DataHUD / MoonSky 每幀讀取，非反應式）
-export const seriesMeta = { active: false, name: '', label: '', unit: '', date: '', step: 1.1, points: [], target: '', lunar: '', lunarLabel: '', range: '', events: [] }
+export const seriesMeta = { active: false, kind: '', name: '', label: '', unit: '', date: '', step: 1.1, points: [], target: '', extra: {}, lunar: '', lunarLabel: '', range: '', events: [] }
 
 const haptic = (ms) => { try { navigator.vibrate && navigator.vibrate(ms) } catch (e) {} }
 
@@ -59,8 +61,12 @@ export const useStore = create((set, get) => ({
   spawns: { whale: 0, dolphin: 0, turtle: 0, purify: 0 },   // 按鈕觸發計數（場景讀取後生成訪客 / 淨化波）
   gov: null,                                     // 真實海況資料快照（public/data/ocean.json）
   govOptionId: null,                             // 目前選擇的水庫海況
-  birdMonth: null,                               // 球外鳥群的季節：null=現實月份，0..11=手動預覽該月（展場示範用）
-  setBirdMonth: (m) => set({ birdMonth: m }),
+  surveyMonth: null,                             // 鳥 / 魚調查的季節：null=現實月份，0..11=手動預覽該月（展場示範用）
+  surveyLink: { birds: true, fish: false, ...loadLS(LS.surveyLink, {}) }, // 鳥 / 魚數量參數是否「連動」調查資料（手動調參數會自動脫鉤 = 獨立控制）
+  audioOn: false,                                // 背景音是否開啟（預設：第一次使用者手勢時自動開；使用者靜音後記住）
+  setAudioOn: (on) => set({ audioOn: !!on }),
+  showBoard: (() => { const v = loadLS(LS.board, null); return v == null ? (typeof window !== 'undefined' && window.innerWidth > 820) : !!v })(), // 資料看板（畫布上顯示目前資料）
+  setShowBoard: (v) => { saveLS(LS.board, !!v); set({ showBoard: !!v }) },
 
   // ---- 參數 ----
   setParam: (pid, v) => set((s) => ({ params: { ...s.params, [pid]: clamp01(v) } })),
@@ -81,6 +87,10 @@ export const useStore = create((set, get) => ({
     st.setParam(pid, v)
     setHud(pid, clamp01(v)); touch()   // 參數 HUD + 活動時間戳
     if (pid === 'glow') touchGlow()    // 手動調輝光 → AR 環境光自動調輝光暫停 8 秒
+    if (pid === 'birdCount' || pid === 'fishCount') {   // 手動調鳥 / 魚數量 → 脫鉤（獨立控制），要再連動請按「套用 / 連動」
+      const k = pid === 'birdCount' ? 'birds' : 'fish'
+      if (st.surveyLink[k]) { const l = { ...st.surveyLink, [k]: false }; saveLS(LS.surveyLink, l); set({ surveyLink: l }) }
+    }
     if (st.rec.mode === 'recording') recBuffer.push({ t: st.rec.playhead, pid, value: clamp01(v) })
   },
 
@@ -262,50 +272,76 @@ export const useStore = create((set, get) => ({
   transportStop: () => { const m = get().rec.mode; if (m === 'recording') get().stopRecording(); else if (m === 'playing') get().stopPlayback() },
   transportRecord: () => { const m = get().rec.mode; if (m === 'recording') get().stopRecording(); else if (m === 'idle') get().startRecording() },
 
-  // ---- 真實海況（政府開放資料 · 多水庫可選）----
+  // ---- 真實海況（政府開放資料 · 多海況可選）----
   setGov: (d) => set({ gov: d, govOptionId: d && (d.defaultOption || (d.options && d.options[0] && d.options[0].id)) }),
   govOption: () => { const g = get().gov; if (!g) return null; if (g.options) return g.options.find((o) => o.id === get().govOptionId) || g.options[0]; return { params: g.params, name: g.sourceShort } },
   setGovOption: (id) => { set({ govOptionId: id }); get().applyGov() },
-  applyGov: () => { const o = get().govOption(); if (o && o.params) { get().applyParams(o.params); get().pushLog('out', `套用海況：${o.name || '真實資料'}`) } },
+  applyGov: () => {
+    const o = get().govOption()
+    if (o && o.params) {
+      get().applyParams(o.params)
+      get().pushLog('out', `套用海況：${o.name || '真實資料'}`)
+      get().applySurveyLinked()   // 鳥 / 魚數量：連動中的才由調查資料決定；已脫鉤（獨立控制）的保持使用者的值
+    }
+  },
 
-  // 資料播放：把該水庫的真實時間序列（24h 進流量）轉成自動化事件 → 走既有播放引擎。
-  // 進流量→洋流速度 + 魚群聚集；播放中一樣支援 soft-takeover 即時接手。
-  playGovSeries: () => {
+  // ---- 鳥 / 魚調查資料（水利署）：資料建議值、套用、連動 ----
+  // 建議值＝該流域年度物種數基準 × 現實（或預覽）月份的相對豐度；不寫入。UI 用它顯示「資料 → 建議」並提供「套用」。
+  surveySuggest: (kind) => {
+    const o = get().govOption()
+    const d = o && o[kind]
+    if (!d) return null
+    const mo = get().surveyMonth != null ? get().surveyMonth : new Date().getMonth()
+    const season = birdSeasonal(d.monthly, mo)
+    const rel = season ? season.rel : 1
+    const flocks = kind === 'birds' ? flockCount(d.species, rel) : null
+    const value = kind === 'birds' ? flocks / 5 : fishParam(d.species, rel)
+    return { kind, month: mo, season, basin: d.basin, species: d.species, flocks, value: Math.round(value * 100) / 100 }
+  },
+  applySurvey: (kind) => {
+    const sg = get().surveySuggest(kind)
+    if (!sg) return false
+    get().setParam(kind === 'birds' ? 'birdCount' : 'fishCount', sg.value)
+    const l = { ...get().surveyLink, [kind]: true }
+    saveLS(LS.surveyLink, l); set({ surveyLink: l })
+    const nm = kind === 'birds' ? '鳥群' : '魚群'
+    get().pushLog('out', `${nm} · ${sg.basin} ${sg.month + 1} 月${sg.season ? ` ${sg.season.value} 種${sg.season.interpolated ? '（內插）' : ''}` : ''} → ${nm}數量 ${sg.value.toFixed(2)}${sg.flocks != null ? `（${sg.flocks} 群）` : ''}`)
+    return true
+  },
+  applySurveyLinked: () => { const l = get().surveyLink; for (const k of ['birds', 'fish']) if (l[k]) get().applySurvey(k) },
+  setSurveyLink: (kind, on) => {
+    if (on) { get().applySurvey(kind); return }        // 開啟連動 = 立刻套用資料值
+    const l = { ...get().surveyLink, [kind]: false }; saveLS(LS.surveyLink, l); set({ surveyLink: l })
+  },
+  setSurveyMonth: (m) => { set({ surveyMonth: m }); get().applySurveyLinked() },
+
+  // ---- 資料播放：把時間序列（進流量 / 潮汐 / 揚塵歷史 / 魚鳥調查年表 / 月出月沒）轉成自動化事件 → 走既有播放引擎 ----
+  // 播放中一樣支援倍速 / 循環 / soft-takeover 即時接手；結束後自動還原使用者原本的錄製。
+  playSeries: (spec, o) => {
     const st = get()
-    if (st.rec.mode !== 'idle') return
-    const o = st.govOption()
-    const pts = o && o.series && o.series.points
-    if (!pts || !pts.length) return
-    if (o.params) st.applyParams(o.params) // 先落在該海況基準
+    if (st.rec.mode !== 'idle' || !spec || !spec.points || !spec.points.length) return false
+    if (o && o.params) st.applyParams(o.params) // 先落在該海況基準
     if (bufferKind === 'user' && recBuffer.length) stashedRec = { events: recBuffer, duration: st.rec.duration } // 暫存使用者錄製，播完還原
     bufferKind = 'series'
-    const STEP = 1.1
-    const vmax = Math.max(...pts.map((p) => p.v)) || 1
-    const vmin = Math.min(...pts.map((p) => p.v))
     recBuffer = PARAM_ORDER.map((pid) => ({ t: 0, pid, value: get().params[pid] }))
-    pts.forEach((p, i) => {
-      const t = i * STEP + 0.001
-      if (o.series.target === 'seaLevel') {
-        // 潮汐：潮高 → 海水高度（滿潮映到 1.0 → 觸發外緣溢流），並帶一點浪
-        const n = vmax > vmin ? (p.v - vmin) / (vmax - vmin) : 0.5
-        recBuffer.push({ t, pid: 'seaLevel', value: clamp01(0.45 + n * 0.55) })
-        recBuffer.push({ t, pid: 'current', value: clamp01(0.25 + n * 0.35) })
-      } else {
-        const n = clamp01(p.v / vmax)
-        recBuffer.push({ t, pid: 'current', value: clamp01(0.15 + n * 0.8) })
-        recBuffer.push({ t, pid: 'fishCount', value: clamp01(0.3 + n * 0.6) })
-        recBuffer.push({ t, pid: 'swimSpeed', value: clamp01(0.35 + n * 0.5) })
-      }
+    spec.points.forEach((p, i) => {
+      const t = i * spec.step + 0.001
+      for (const [pid, value] of automationFor(spec, i)) recBuffer.push({ t, pid, value })
     })
-    const dur = pts.length * STEP
+    const ex = spec.extra || {}
     Object.assign(seriesMeta, {
-      active: true, name: o.name, label: o.series.label, unit: o.series.unit || '', date: o.series.date || '', step: STEP, points: pts,
-      target: o.series.target || '', lunar: o.series.lunar || '', lunarLabel: o.series.lunarLabel || '', range: o.series.range || '', events: o.series.events || [],
+      active: true, kind: spec.kind, name: spec.name, label: spec.label, unit: spec.unit || '', date: spec.date || '', step: spec.step, points: spec.points,
+      target: spec.target || '', extra: ex, lunar: ex.lunar || '', lunarLabel: ex.lunarLabel || '', range: ex.range || '', events: ex.events || [],
     })
-    set((s) => ({ rec: { ...s.rec, mode: 'idle', playhead: 0, playIndex: 0, duration: dur, count: recBuffer.length } }))
+    set((s) => ({ rec: { ...s.rec, mode: 'idle', playhead: 0, playIndex: 0, duration: spec.points.length * spec.step, count: recBuffer.length } }))
     get().startPlayback()
-    get().pushLog('out', `▶ 資料播放：${o.name} ${o.series.date || ''} ${o.series.label}（${pts.length} 筆，${o.series.unit}）`)
+    get().pushLog('out', `▶ 資料播放：${spec.name} ${spec.date || ''} ${spec.label}（${spec.points.length} 筆${spec.unit ? '，' + spec.unit : ''}）`)
+    return true
   },
+  playGovSeries: () => { const o = get().govOption(); const spec = seriesFromOption(o); if (spec) get().playSeries(spec, o) },
+  playSurvey: (kind) => { const o = get().govOption(); const spec = seriesFromSurvey(o, kind); if (spec) get().playSeries(spec, o) },
+  playDust: () => { const g = get().gov; const o = get().govOption(); const spec = seriesFromDust(g && g.dust, '揚塵'); if (spec) get().playSeries(spec, o) },
+  playMoon: () => { const g = get().gov; const o = get().govOption(); const spec = seriesFromMoon(g && g.moon); if (spec) get().playSeries(spec, o) },
 
   // ---- 場景切換 / Marker 快照（nanoKONTROL2 Track ◀▶ / Marker 鍵）----
   sceneIdx: 0,

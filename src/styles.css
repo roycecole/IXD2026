@@ -359,3 +359,169 @@ input[type="range"] { accent-color: var(--accent); width: 100%; height: 16px; }
 .gov-moon { color: #f0e6c0; }
 .gov-birds { margin-top: 4px; }
 .gov-month { margin-top: 4px; font-size: 11px; }
+
+/* ---- 鳥 / 魚調查卡（逐月長條 + 套用 / 連動 / 獨立控制）---- */
+.survey-card { margin-top: 9px; padding: 9px 10px 10px; border: 1px solid var(--line2); border-radius: 9px; background: #0d1018; }
+.survey-card.linked { border-color: #2a5a49; }
+.survey-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 7px; }
+.survey-title { font-size: 12px; color: var(--text); }
+.survey-state { font-size: 10px; padding: 1px 8px; border-radius: 9px; border: 1px solid var(--line2); color: var(--muted); white-space: nowrap; }
+.survey-state.linked { color: var(--accent); border-color: var(--accent); }
+.survey-bars { display: grid; grid-template-columns: repeat(12, 1fr); gap: 3px; height: 46px; align-items: end; }
+.sbar { position: relative; height: 100%; padding: 0; border: none; background: transparent; cursor: pointer; border-radius: 3px; min-width: 0; }
+.sbar:hover { background: transparent; }
+.sbar i { position: absolute; left: 0; right: 0; bottom: 0; height: var(--h); background: #3f7fa8; border-radius: 3px 3px 1px 1px; transition: height .25s, background .2s; }
+.sbar.interp i { background: repeating-linear-gradient(45deg, #34617f, #34617f 3px, #2b4f68 3px, #2b4f68 6px); opacity: .8; }
+.sbar.sel i { background: var(--accent); }
+.sbar.now::after { content: ''; position: absolute; left: 25%; right: 25%; bottom: -6px; height: 2px; background: var(--muted); border-radius: 1px; }
+.sbar:hover i { filter: brightness(1.3); }
+.survey-axis { display: flex; justify-content: space-between; font-size: 9px; color: var(--dim); margin-top: 8px; }
+.survey-line { font-size: 11.5px; color: #c8cbd8; margin-top: 5px; line-height: 1.5; }
+.survey-suggest { color: var(--accent); }
+.survey-slider { display: grid; grid-template-columns: 62px 1fr 44px; gap: 8px; align-items: center; margin-top: 7px; font-size: 12px; color: #b9bccb; }
+.survey-slider .pval { text-align: right; }
+.survey-actions { display: flex; gap: 6px; margin-top: 8px; }
+.survey-actions button { flex: 1 1 0; font-size: 11px; padding: 6px 4px; white-space: nowrap; }
+.survey-actions button.on { color: var(--accent); border-color: var(--accent); background: #0f2a22; }
+.survey-card .gov-series { margin-top: 8px; }
+.gov-plays { display: flex; flex-direction: column; gap: 6px; margin-top: 9px; }
+.gov-plays .gov-series { margin-top: 0; }
+.gov-board { display: flex; align-items: center; gap: 7px; margin-top: 10px; font-size: 11.5px; color: var(--muted); cursor: pointer; }
+.gov-board input { width: auto; accent-color: var(--accent); }
+.gov-wait { margin: 2px 0 0; line-height: 1.5; }
+.gov-dust { color: #e6d79a; }
+
+/* ---- 資料看板（畫布左上）/ 聲音提示 ---- */
+.data-board {
+  position: absolute; left: 10px; top: 10px; z-index: 4; max-width: min(50%, 400px);
+  background: rgba(8, 12, 22, 0.5); backdrop-filter: blur(4px); border: 1px solid var(--line2); border-radius: 10px;
+  padding: 7px 10px 8px; font-size: 11px; line-height: 1.55; pointer-events: none;
+}
+.data-board-title { color: var(--accent); font-size: 11.5px; margin-bottom: 3px; letter-spacing: .04em; }
+.data-board-row { display: grid; grid-template-columns: 34px 1fr; gap: 8px; color: #c8cbd8; }
+.data-board-row .k { color: var(--muted); }
+.audio-hint {
+  position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 4; pointer-events: none;
+  background: rgba(8, 12, 22, 0.6); border: 1px solid var(--line2); border-radius: 16px; padding: 5px 14px;
+  font-size: 12px; color: var(--muted); animation: hintPulse 2.4s ease-in-out infinite;
+}
+@keyframes hintPulse { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+
+/* =====================================================================
+   手機 UI（≤820px 或觸控裝置）：按鈕不折行不破版、觸控目標 ≥40px、工具列橫向捲動、參數列兩行式
+   ===================================================================== */
+/* 桌面：工具鈕放進自己的 flex:1 區塊，按鈕不折行；一行放不下時「區塊內」自動換行（先前按鈕多了會被擠成文字直排） */
+.topbar { height: auto; min-height: 50px; padding-top: 6px; padding-bottom: 6px; }
+.toolstrip { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; flex: 1 1 0; min-width: 0; }
+.toolstrip .tools { display: contents; }
+.toolstrip button, .transport button { white-space: nowrap; }
+.scenes { margin-left: 0; }
+html, body { overscroll-behavior: none; }
+.app { height: 100vh; height: 100dvh; } /* 手機瀏覽器網址列伸縮時不留白 */
+.footer { padding-bottom: env(safe-area-inset-bottom); }
+
+@media (max-width: 820px) {
+  .topbar { display: grid; grid-template-columns: 1fr; gap: 6px; padding: 8px 10px 8px; height: auto; }
+  .transport { display: flex; align-items: center; gap: 6px; }
+  .transport button { flex: 1 1 0; min-height: 42px; padding: 0 8px; white-space: nowrap; font-size: 13px; }
+  .transport .time { flex: 0 0 auto; margin-left: 4px; font-size: 11.5px; }
+  .scenes { margin-left: 0; display: flex; align-items: center; gap: 6px; }
+  .scenes-label { font-size: 12px; margin-right: 2px; }
+  .scene { flex: 1 1 0; width: auto; min-height: 36px; padding: 0; }
+  /* 工具列：單列橫向捲動；右緣漸層提示「還能往右滑」 */
+  .toolstrip {
+    display: flex; flex-wrap: nowrap; justify-content: flex-start; flex: none; align-items: center; gap: 6px; overflow-x: auto; -webkit-overflow-scrolling: touch;
+    scroll-snap-type: x proximity; padding: 2px 18px 4px 0; scrollbar-width: none;
+    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 26px), transparent);
+    mask-image: linear-gradient(90deg, #000 calc(100% - 26px), transparent);
+  }
+  .toolstrip::-webkit-scrollbar { display: none; }
+  .toolstrip .tools { display: contents; }
+  .toolstrip button, .toolstrip .conn { flex: 0 0 auto; white-space: nowrap; min-height: 40px; padding: 0 14px; font-size: 13px; scroll-snap-align: start; }
+  .toolstrip .toast { flex: 0 0 auto; white-space: nowrap; }
+  /* 手機上的按鈕優先序：聲音（預設開啟、最常要靜音）→ 分享 → 多人 → 實景 → 分享星球 → 錄影 → 麥克風 → 說明 → 控制器 → 匯出LOG → MIDI / 藍牙 */
+  .toolstrip [data-audio-btn] { order: -10; }
+  .toolstrip .tools > button:nth-child(1) { order: -9; }   /* 分享 */
+  .toolstrip .tools > button:nth-child(3) { order: -8; }   /* 多人 */
+  .toolstrip .tools > button:nth-child(4) { order: -7; }   /* 實景 */
+  .toolstrip .tools > button:nth-child(2) { order: -6; }   /* 分享星球 */
+  .toolstrip .tools > button:nth-child(5) { order: -5; }   /* 錄影 */
+  .toolstrip .tools > button:nth-child(10) { order: -4; }  /* 麥克風 */
+  .toolstrip .tools > button:nth-child(8) { order: -3; }   /* 說明 */
+  .toolstrip .tools > button:nth-child(7) { order: -2; }   /* 控制器 */
+  .toolstrip .tools > button:nth-child(6) { order: -1; }   /* 匯出LOG */
+
+  /* 主區：畫布在上、面板在下（可拖把手拉高） */
+  .stage { flex-direction: column; }
+  .sheet-handle { padding: 12px 0 10px; }
+  .sheet-handle span { width: 56px; height: 5px; }
+  .panel { padding: 10px 12px 18px; }
+  .panel-head { flex-wrap: wrap; }
+
+  /* 參數列：標籤 + 數值 + CC 在第一行，滑桿獨佔第二行（原本 64px 滑桿在手機上根本抓不到） */
+  .param { grid-template-columns: 1fr auto auto; grid-template-areas: "l v c" "s s s"; gap: 0 8px; padding: 4px 0 10px; align-items: center; }
+  .param .plabel { grid-area: l; font-size: 13.5px; }
+  .param input[type='range'] { grid-area: s; width: 100%; }
+  .param .pval { grid-area: v; font-size: 12px; }
+  .param .cc { grid-area: c; }
+  .group-title { margin-top: 4px; }
+
+  /* 動作鈕 2×2、資料卡按鈕加大 */
+  .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .actions button { min-height: 44px; font-size: 14px; }
+  .learn-btn { min-height: 44px; }
+  .gov-select, .gov-month { font-size: 16px; min-height: 44px; } /* iOS：select/input 字級 <16px 聚焦時會自動放大整頁 */
+  .gov-apply { min-height: 44px; font-size: 14px; }
+  .gov-spd { min-height: 38px; font-size: 12px; }
+  .survey-actions button { min-height: 40px; font-size: 12px; }
+  .survey-bars { height: 56px; }
+  .sbar { min-width: 0; }
+  .survey-slider { grid-template-columns: 64px 1fr 48px; }
+
+  /* 疊層：資料 HUD 允許換行、資料看板縮小、監看區限高 */
+  .data-hud { white-space: normal; text-align: center; border-radius: 12px; max-width: 94%; top: 8px; font-size: 11px; }
+  .data-board { max-width: 62%; font-size: 10px; top: 46px; }
+  .stage-stats { font-size: 11px; }
+  /* 底部監看：手機只留 OUT（IN 是給 MIDI 硬體的），限高，把垂直空間還給控制面板 */
+  .monitor { grid-template-columns: 1fr; max-height: 84px; overflow: hidden; }
+  .monitor .mcol:first-child { display: none; }
+  .mcol { padding: 5px 12px; }
+  .mhead { margin-bottom: 2px; }
+  .mline { font-size: 10.5px; line-height: 1.5; }
+  .footer { height: auto; min-height: 30px; }
+
+  /* 彈窗 / 虛擬控制器：撐滿寬度、可捲動 */
+  .modal { padding: 16px 14px; max-height: 92vh; max-height: 92dvh; }
+  .modal-backdrop { padding: 10px; }
+  .vk { max-height: 62dvh; overflow: auto; background: #10121b; box-shadow: 0 -8px 24px rgba(0,0,0,.55); } /* 不透明：否則後面面板文字會透出來 */
+  .kiosk-qr canvas { width: 104px; height: 104px; }
+}
+
+/* 觸控裝置：大顆滑桿（原生滑桿的圓點只有 ~16px，手指抓不到） */
+@media (pointer: coarse), (max-width: 820px) {
+  input[type='range'] { -webkit-appearance: none; appearance: none; height: 34px; background: transparent; margin: 0; }
+  input[type='range']::-webkit-slider-runnable-track { height: 6px; border-radius: 3px; background: #2a3042; }
+  input[type='range']::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 26px; height: 26px; margin-top: -10px; border-radius: 50%; background: var(--accent); border: 2px solid #062018; box-shadow: 0 1px 4px rgba(0,0,0,.5); }
+  input[type='range']::-moz-range-track { height: 6px; border-radius: 3px; background: #2a3042; }
+  input[type='range']::-moz-range-thumb { width: 22px; height: 22px; border-radius: 50%; background: var(--accent); border: 2px solid #062018; }
+  input[type='range']:disabled::-webkit-slider-thumb { background: #4a5266; }
+  button { min-height: 38px; }
+}
+
+/* 很窄的手機（<380px）再收一點 */
+@media (max-width: 380px) {
+  .transport button { font-size: 12px; padding: 0 4px; }
+  .toolstrip button, .toolstrip .conn { padding: 0 11px; font-size: 12.5px; }
+}
+.survey-hint { font-size: 10.5px; color: var(--dim); line-height: 1.5; margin: -2px 0 7px; }
+.plink { font-style: normal; font-size: 9px; margin-left: 6px; padding: 0 5px; border: 1px solid var(--accent); color: var(--accent); border-radius: 8px; vertical-align: middle; }
+
+/* 桌面窄一點（821–1400px）：收緊間距，盡量讓頂部列維持單行 */
+@media (min-width: 821px) and (max-width: 1400px) {
+  .topbar { gap: 10px; padding-left: 10px; padding-right: 10px; }
+  .scenes-label { display: none; }
+  .transport { gap: 5px; }
+  .transport button { padding: 6px 9px; }
+  .toolstrip { gap: 4px; }
+  .toolstrip button { padding: 6px 8px; font-size: 12px; }
+}

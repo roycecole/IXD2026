@@ -1,7 +1,7 @@
 // PWA service worker
 // - HTML 導覽 + JSON 資料：network-first（部署後立即拿到新版，離線才用快取）→ 避免舊版白屏
 // - 帶 hash 的靜態資產：stale-while-revalidate（秒開 + 背景更新）
-const CACHE = 'midisea-v4'
+const CACHE = 'midisea-v5'
 
 self.addEventListener('install', () => self.skipWaiting())
 

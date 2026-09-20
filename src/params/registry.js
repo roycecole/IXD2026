@@ -12,6 +12,7 @@ export const GROUPS = [
   { id: 'LIFE', label: 'LIFE', params: [
     { id: 'jellyCount', label: '水母數量', value: 0.50 },
     { id: 'fishCount',  label: '魚群數量', value: 0.55 },
+    { id: 'birdCount',  label: '鳥群數量', value: 0.40 }, // 球外鳥群（0=無、1=5 群）；可由鳥類調查資料「套用 / 連動」，也可獨立控制
     { id: 'swimSpeed',  label: '游動速度', value: 0.50 },
   ]},
   { id: 'IMPACT', label: 'IMPACT', params: [
@@ -22,12 +23,18 @@ export const GROUPS = [
     { id: 'zoom', label: '視角遠近',   value: 0.50 },
     { id: 'glow', label: '夢幻輝光',   value: 0.60 },
     { id: 'hue',  label: '海色色相',   value: 0.50 }, // 場景配色：0 墨綠 ← 0.5 湛藍 → 1 紫粉
+    { id: 'bgBlur',    label: '背景模糊', value: 0.00 }, // 高斯模糊：只作用背景（星空 / 銀河 / 月亮；AR 時＝相機畫面），球體不受影響
+    { id: 'bgClarity', label: '背景清澈', value: 1.00 }, // 1=原樣；越低背景越暗、越朦朧
   ]},
 ]
 
 export const PARAMS = {}
 GROUPS.forEach((g) => g.params.forEach((p) => { PARAMS[p.id] = { ...p, group: g.id } }))
-export const PARAM_ORDER = Object.keys(PARAMS)
+
+// 「編碼順序」與「面板顯示順序」分開：分享連結（share.js）是位置編碼、錄製存檔與依序 Learn 也依此順序，
+// 舊參數的相對位置絕對不能動，否則舊連結全部錯位。新增參數只能附加在尾端（GROUPS 想放哪就放哪，不影響編碼）。
+const LEGACY_ORDER = ['seaLevel', 'current', 'clarity', 'flowX', 'flowY', 'jellyCount', 'fishCount', 'swimSpeed', 'trashCount', 'spin', 'zoom', 'glow', 'hue']
+export const PARAM_ORDER = [...LEGACY_ORDER, ...Object.keys(PARAMS).filter((k) => !LEGACY_ORDER.includes(k))]
 
 // 推桿 Slider 1-6 (CC0-5) + 旋鈕 Knob 1-2 (CC16-17)，依使用者規格。可經 MIDI Learn 重綁。
 export const DEFAULT_BINDINGS = {

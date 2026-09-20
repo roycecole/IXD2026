@@ -8,7 +8,7 @@ export function downloadBlob(blob, name) {
 }
 
 // 分享星球：擷取當下球體畫面 → 合成分享卡（標題 + 網址）→ 手機走 Web Share、桌機下載 PNG。
-export async function shareSnapshot() {
+export async function shareSnapshot(opts = {}) {
   const canvas = document.querySelector('.canvas-wrap canvas')
   if (!canvas) return { ok: false, why: '找不到畫布' }
   const S = 1080
@@ -21,9 +21,13 @@ export async function shareSnapshot() {
   const side = Math.min(sw, sh)
   g.drawImage(canvas, (sw - side) / 2, (sh - side) / 2, side, side, 0, 0, S, S)
   // 下緣漸層 + 文案
-  const grd = g.createLinearGradient(0, S - 220, 0, S)
+  const lines = (opts.lines || []).slice(0, 3)           // 目前海況背後的資料列（輸出顯示資料）
+  const gh = 220 + lines.length * 42
+  const grd = g.createLinearGradient(0, S - gh, 0, S)
   grd.addColorStop(0, 'rgba(5,16,28,0)'); grd.addColorStop(1, 'rgba(5,16,28,0.92)')
-  g.fillStyle = grd; g.fillRect(0, S - 220, S, 220)
+  g.fillStyle = grd; g.fillRect(0, S - gh, S, gh)
+  g.fillStyle = 'rgba(160,220,255,0.9)'; g.font = '400 26px system-ui, -apple-system, "Noto Sans TC", sans-serif'
+  lines.forEach((t, i) => { g.fillText(t.length > 40 ? t.slice(0, 39) + '…' : t, 48, S - 150 - (lines.length - 1 - i) * 40 - 8) })
   g.fillStyle = '#eaf6ff'; g.font = '600 44px system-ui, -apple-system, "Noto Sans TC", sans-serif'
   g.fillText('MidiSea 資料導演台', 48, S - 96)
   g.fillStyle = 'rgba(190,228,255,0.75)'; g.font = '400 30px system-ui, -apple-system, "Noto Sans TC", sans-serif'
