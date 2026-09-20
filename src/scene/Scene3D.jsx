@@ -1,5 +1,5 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
-import { useRef, useMemo, useEffect } from 'react'
+import { useRef, useMemo, useEffect, useState } from 'react'
 import * as THREE from 'three'
 import * as CANNON from 'cannon-es'
 import { arState } from '../lib/ar.js'
@@ -1076,7 +1076,7 @@ function FogDriver() {
   useEffect(() => { scene.fog = fog; scene.background = bgc; return () => { scene.fog = null; scene.background = null } }, [scene, fog, bgc])
   useFrame((_, dt) => {
     dayT += dt
-    if (arState.on) {                       // AR 實景：背景透明、關霧，讓相機畫面透出
+    if (arState.on || gl.xr.isPresenting) {  // AR 實景 / WebXR 桌面放置：背景透明、關霧，讓相機畫面（passthrough）透出
       if (scene.background) scene.background = null
       if (scene.fog) scene.fog = null
       gl.setClearAlpha(0)
@@ -1601,7 +1601,7 @@ function PenFlow() {
 // 只在「背景模糊 / 背景清澈」偏離預設（0 / 1）且非 AR 時啟用；預設走單次繪製，零額外成本。
 // （AR 時背景是相機畫面，由 CSS filter 處理，見 App.jsx。）
 const _fxSize = new THREE.Vector2(), _fxZero = new THREE.Vector2(0, 0)
-function BackdropFX() {
+function BackdropFX({ hide }) {
   const { gl, scene, camera } = useThree()
   const fx = useMemo(() => {
     const postScene = new THREE.Scene()
@@ -1670,7 +1670,25 @@ function BackdropFX() {
     }
     if (fx.broken) plain()
   }
+  // WebXR 桌面放置：標準 XR 渲染。渲染目標與相機由 three 的 XR manager 接管，所以這裡不能 setRenderTarget(null)、不做任何全螢幕後處理（模糊 / 清澈都不套用）；
+  // 只把背景層與太空裝飾（hide 這幾組 ref）藏起來、畫一次。R3F 見到有 priority > 0 的 useFrame 就不再自動渲染，所以 XR 也一定要在這裡 gl.render。
+  // 連續 3 幀畫失敗 → 結束 XR session 回一般畫面（不讓使用者卡在壞掉的 AR）。
+  const xrRender = () => {
+    const hidden = fx.hidden || (fx.hidden = [])
+    hidden.length = 0
+    if (hide) for (const r of hide) { const o = r && r.current; if (o && o.visible) { o.visible = false; hidden.push(o) } }
+    try {
+      gl.render(scene, camera)
+      fx.xrFails = 0
+    } catch (e) {
+      fx.xrFails = (fx.xrFails || 0) + 1
+      if (fx.xrFails === 3) { console.warn('XR 渲染連續失敗，結束 AR:', e && e.message); try { gl.xr.getSession().end() } catch (e2) { /* ignore */ } }
+    } finally {
+      for (const o of hidden) o.visible = true
+    }
+  }
   useFrame(() => {
+    if (gl.xr && gl.xr.isPresenting) { xrRender(); return }
     const p = useStore.getState().params
     const blur = p.bgBlur ?? 0, clar = p.bgClarity ?? 1
     const need = !fx.broken && !arState.on && (blur > 0.02 || clar < 0.985)
@@ -1719,38 +1737,78 @@ function BackdropFX() {
 }
 
 function CameraRig() {
-  const { camera } = useThree()
+  const { camera, gl } = useThree()
   const tmp = useMemo(() => new THREE.Vector3(), [])
-  useFrame(() => { const p = useStore.getState().params; const dist = 4.6 + (1 - (p.zoom ?? 0.5)) * 4; tmp.set(0, 0.4, dist); camera.position.lerp(tmp, 0.06); camera.lookAt(0, 0, 0) })
+  // WebXR 桌面放置時相機由 XR（手機姿態）控制，這裡不能動；結束後由 XrRuntime 還原相機再交回這裡
+  useFrame(() => { if (gl.xr.isPresenting) return; const p = useStore.getState().params; const dist = 4.6 + (1 - (p.zoom ?? 0.5)) * 4; tmp.set(0, 0.4, dist); camera.position.lerp(tmp, 0.06); camera.lookAt(0, 0, 0) })
   return null
+}
+
+// ---- WebXR 桌面放置（immersive-ar；控制器在 lib/xr.js、執行層在 scene/XrRuntime.jsx、疊加層在 ui/XrOverlay.jsx）----
+// 只有瀏覽器有 navigator.xr 時才動態載入控制器（iOS Safari 等：這裡什麼都不做、不下載任何 XR 程式碼、不掛任何監聽 / useFrame）。
+// 使用者在「裝置」面板按鈕、控制器拿到 session 之後，才動態載入執行層並把它掛進 Canvas；session 結束 → 卸載，執行層的清理會還原 2D 狀態。
+// 執行層 chunk 載入失敗（離線 / 部署更新）→ 控制器退場（fail），回一般畫面，不會讓 Canvas 的錯誤邊界把整個 App 帶垮。
+function useXrRuntime() {
+  const [Rt, setRt] = useState(null)
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !('xr' in navigator)) return undefined
+    let dead = false, unsub = null, loading = false, Comp = null
+    const sync = (c) => {
+      if (!c.getState().session) { setRt(null); return }
+      if (Comp) { setRt(() => Comp); return }
+      if (loading) return
+      loading = true
+      import('./XrRuntime.jsx')
+        .then((m) => { Comp = m.default; if (!dead && c.getState().session) setRt(() => Comp) })
+        .catch((e) => { c.fail('chunk', e && e.message) })
+        .finally(() => { loading = false })
+    }
+    import('../lib/xr.js').then((m) => {
+      if (dead) return
+      const c = m.getXrController()
+      unsub = c.subscribe(() => sync(c))
+      sync(c)
+    }).catch(() => { /* 沒有 XR 控制器 = 沒有這個功能，一般畫面完全不受影響 */ })
+    return () => { dead = true; if (unsub) unsub() }
+  }, [])
+  return Rt
 }
 
 export default function Scene3D() {
   const tier = useQualityStore((s) => s.tier)   // 自動畫質：等級決定 dpr 上限（high [1,2] = 現況；medium [1,1.5]；low [1,1]）。Canvas 每次 render 都會依 dpr 重新校正，所以用 prop 而不是一次性的 setDpr
+  const decoRef = useRef(), spaceRef = useRef(), worldRef = useRef()
+  const XrRt = useXrRuntime()
   return (
     <Canvas camera={{ position: [0, 0.4, 7], fov: 45 }} dpr={dprRange(tier)} gl={{ preserveDrawingBuffer: true, antialias: true, alpha: true }}>
       <QualityDriver />
       <EnvDriver />
       <FogDriver />
-      <Galaxy />
-      <Stars />
-      <ShootingStars />
-      <MoonSky />
-      <StationStars />
-      <BirdFlocks />
-      <ambientLight intensity={0.6} />
-      <Ocean />
-      <GlassShell />
-      <OverflowFx />
-      <ScanHalo />
-      <AtmosphereGlow />
-      <SpaceNetwork />
-      <StarBursts />
+      {/* 背景層（星空 / 銀河 / 流星 / 月亮 / 測站星座）：一般畫面是恆等 group，完全不影響；WebXR 桌面放置時整組不畫（BackdropFX 的 XR 分支） */}
+      <group ref={decoRef}>
+        <Galaxy />
+        <Stars />
+        <ShootingStars />
+        <MoonSky />
+        <StationStars />
+      </group>
+      {/* 世界根：一般畫面是恆等 group；WebXR 桌面放置時縮放到桌面尺度（直徑約 28 cm）並擺到使用者點的位置 */}
+      <group ref={worldRef}>
+        <BirdFlocks />
+        <ambientLight intensity={0.6} />
+        <Ocean />
+        <GlassShell />
+        <OverflowFx />
+        <ScanHalo />
+        <AtmosphereGlow />
+        <group ref={spaceRef}><SpaceNetwork /></group>
+        <StarBursts />
+      </group>
       <JellyController />
       <InspectPicker />
       <PenFlow />
       <CameraRig />
-      <BackdropFX />
+      {XrRt && <XrRt worldRef={worldRef} shell={SHELL} />}
+      <BackdropFX hide={[decoRef, spaceRef]} />
     </Canvas>
   )
 }
