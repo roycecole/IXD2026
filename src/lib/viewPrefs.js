@@ -6,8 +6,14 @@
 //   其他值 / 沒有這個參數 → 沒有覆寫（自動取景照常開，模式取偏好）。網址只覆寫「這一次」，永遠不寫入偏好；
 //   使用者在面板選一個模式 = 明確的選擇：立刻生效、存成偏好、並解除網址的 full / fill 覆寫（?fit=0 是除錯開關，維持關閉，選擇只存成偏好）。
 // 倍率的算法在 lib/cameraFit.js（fitScale 的 mode 參數）；這裡只決定「用哪個模式」。
+//
+// 觀眾視窗（雙螢幕，見 lib/audience.js）：主視窗經鏡像切片 'view' 把「目前生效的模式」送過來，觀眾視窗只在記憶體裡跟著換（applyMirror），
+// 不寫偏好、不改自己的網址覆寫；優先序變成：這個視窗自己的網址 ?fit= > 主視窗送來的 > 本機偏好 > 預設。
+// 收到的更新照常通知一般訂閱者（CameraRig 每幀讀 get().mode，下一幀就用新的目標倍率、相機平滑移過去），
+// 但不通知「本機造成的模式改變」訂閱者（subscribeMode，鏡像切片用的）——觀眾視窗不會把收到的值又送回去。
 import { LS, loadLS, saveLS } from './persist.js'
 import { fitEnabled, fitScale, aspectOf, FIT_MODES, DEFAULT_FIT_MODE } from './cameraFit.js'
+import { registerMirror } from './mirror.js'
 
 export const VIEW_MODES = FIT_MODES            // ['full', 'fill']
 export const DEFAULT_VIEW = DEFAULT_FIT_MODE   // 'full'
@@ -60,31 +66,47 @@ export function viewMattersAt(aspect) {
 //   affects：目前畫布的長寬比下兩種取景是否不同（null = 還沒量到畫布 / ?fit=0 時為 false）。
 // setMode(m)：使用者的選擇 → 立即生效 + 存偏好 + 解除網址 full / fill 覆寫；回傳是否接受（非法值 → false，狀態不變）。
 // setCanvas(w, h)：CameraRig 每幀呼叫；只有「兩種取景有沒有差別」改變時才通知訂閱者（拖曳分隔線不會每幀重繪面板）。
+// applyMirror(m)：觀眾視窗套用主視窗送來的生效模式——只改記憶體（不存偏好、不動 pref / 網址覆寫）；網址覆寫仍優先；非法值 → false、狀態不變。
+//   生效模式真的變了才通知一般訂閱者（快照換新）；不通知 subscribeMode。使用者自己在這個視窗選模式（setMode）會清掉它。
+// subscribeMode(cb)：只在「本機造成的」生效模式改變時通知（setMode）；setCanvas / applyMirror 不會觸發。回傳取消訂閱函式。
 export function createViewState({ search, load, save } = {}) {
   const q = search !== undefined ? search : (typeof location !== 'undefined' ? location.search : '')
   const r = resolveView({ search: q, pref: readViewPref(load) })
   let pref = r.pref, urlMode = r.override === 'full' || r.override === 'fill' ? r.override : null
   const off = r.override === 'off', param = r.param
+  let mirrored = null   // 觀眾視窗：主視窗送來的生效模式（只在記憶體，永遠不寫偏好）
   let matters = null, lastW = -1, lastH = -1
-  const subs = new Set()
+  const subs = new Set(), modeSubs = new Set()
   const build = () => Object.freeze({
-    mode: urlMode || pref, pref, enabled: !off, override: off ? 'off' : urlMode, param,
+    mode: urlMode || mirrored || pref, pref, enabled: !off, override: off ? 'off' : urlMode, param,
     affects: off ? false : matters,
   })
   let snap = build()
-  const emit = () => {
+  const fire = (set) => { for (const cb of Array.from(set)) { try { cb() } catch (e) { /* 一個訂閱者壞了不影響其他人 */ } } }
+  const emit = (local = false) => {
+    const before = snap.mode
     snap = build()
-    for (const cb of Array.from(subs)) { try { cb() } catch (e) { /* 一個訂閱者壞了不影響其他人 */ } }
+    fire(subs)
+    if (local && snap.mode !== before) fire(modeSubs)
   }
   return {
     get: () => snap,
     subscribe(cb) { subs.add(cb); return () => { subs.delete(cb) } },
+    subscribeMode(cb) { modeSubs.add(cb); return () => { modeSubs.delete(cb) } },
     setMode(m) {
       if (!isViewMode(m)) return false
-      const changed = pref !== m || urlMode !== null
-      pref = m; urlMode = null
+      const changed = pref !== m || urlMode !== null || mirrored !== null
+      pref = m; urlMode = null; mirrored = null
       saveViewPref(m, save)
-      if (changed) emit()
+      if (changed) emit(true)
+      return true
+    },
+    applyMirror(m) {
+      if (!isViewMode(m)) return false
+      if (mirrored === m) return true
+      const before = snap.mode
+      mirrored = m
+      if ((urlMode || m) !== before) emit(false)   // 網址覆寫在的時候，生效模式不變 → 不必換快照
       return true
     },
     setCanvas(width, height) {
@@ -99,3 +121,19 @@ export function createViewState({ search, load, save } = {}) {
 // 全站共用的那一份（Scene3D 的 CameraRig 與 ViewSection 讀同一個）：第一次用到才建立——import 時不碰 location / localStorage。
 let shared = null
 export function getViewState() { return shared || (shared = createViewState()) }
+
+// ---- 鏡像切片 'view'：主視窗的生效取景模式 → 觀眾視窗（投影機）----
+// getView 可注入（測試傳自己建的狀態；預設是全站共用的那一份，第一次 get / apply / subscribe 時才建立）。
+//   get()          目前生效的模式 'full' | 'fill'（主視窗端）；觀眾視窗端沒人呼叫它
+//   apply(v)       觀眾視窗端：只改記憶體中的生效模式（不落地：不寫 localStorage、不觸發偏好儲存）；非法值（不是 'full' / 'fill'）一律忽略
+//   subscribe(cb)  主視窗端：本機造成的生效模式改變才通知；apply 造成的不通知（回送防護：收到的值不會再被送出去）
+export function createViewMirror(getView = getViewState) {
+  return {
+    hz: 5,
+    get: () => getView().get().mode,
+    apply: (v) => { if (isViewMode(v)) getView().applyMirror(v) },
+    subscribe: (cb) => getView().subscribeMode(cb),
+  }
+}
+// 模組頂層註冊（比照 lib/tour.js；兩個視窗載入時都會執行）。只放進註冊表，不建立狀態、不碰瀏覽器 API。
+registerMirror('view', createViewMirror())

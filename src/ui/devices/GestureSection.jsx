@@ -1,14 +1,19 @@
 // 「裝置」面板的一節：相機手勢（張手＝海面平靜、捏合＝召喚鯨魚、資料導覽中揮手＝換站）。
 // 只負責開關與狀態顯示；背後的相機 / 模型 / 偵測在 services/GestureService.jsx（useHandsStore 是兩邊共用的狀態）。
 // 「揮手換站」是獨立的開關（預設開；只在相機手勢已啟用、且資料導覽進行中才有作用），狀態列會說明現在是待命還是就緒。
+// 這個開關會記住使用者的選擇（localStorage，見 lib/wavePrefs.js；重新整理後維持；沒存過 = 開）。存過的選擇由 services/GestureService.jsx 掛載時套進狀態。
 import { useMemo } from 'react'
 import { useT } from '../../i18n/index.js'
 import { useHandsStore, setGestureEnabled, setWaveNav, gestureSupport, stateLabel, waveLabel, errorKey } from '../../lib/hands.js'
 import { useTourStore } from '../../lib/tour.js'
+import { saveWavePref, defaultWaveStorage } from '../../lib/wavePrefs.js'
 import '../../styles/gestures.css'
 import '../../styles/guidecmd.css'
 
 const DETAIL_CODES = ['load', 'detect', 'camera', 'busy']   // 這幾種錯誤附上瀏覽器給的原始訊息，方便除錯
+
+// 使用者切換「揮手換站」：立即生效 + 記住（storage 被擋時只是重新整理後不保留，這次照常生效）
+const chooseWaveNav = (on) => { setWaveNav(on); saveWavePref(defaultWaveStorage(), !!on) }
 
 export default function GestureSection() {
   const t = useT()
@@ -57,7 +62,7 @@ export default function GestureSection() {
         </p>
         <div className="gesture-wave">
           <label className="gesture-toggle">
-            <input type="checkbox" checked={!!waveNav} onChange={(e) => setWaveNav(e.target.checked)} />
+            <input type="checkbox" checked={!!waveNav} onChange={(e) => chooseWaveNav(e.target.checked)} />
             {t('揮手換站')}
           </label>
           <p className={'gesture-wave-status ' + waveCls} role="status" aria-live="polite">{waveMsg}</p>

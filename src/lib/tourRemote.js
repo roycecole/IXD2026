@@ -9,6 +9,9 @@
 //                   { t:'tour', running, paused, index, total, stops:[{ id, note? }], speak?, canSpeak?, ready? }
 //                                                                    導覽狀態（狀態變化即推、每 2 秒補一次）。speak / canSpeak / ready 是選用的附加欄位
 //                                                                    （旁白偏好 / 這台有沒有語音合成 / 主畫面海況資料是否已載入，遙控頁據此顯示「開始導覽」是否可按）。
+//                                                                    另有選用欄位 remainMs（這一站還剩多少毫秒；暫停時凍結）與 stopMs（這一站的總長）：遙控頁據此顯示倒數與細進度條
+//                                                                    （收到後以本機時鐘內插，每次收到新推送就重新校準）。不必每次都推：換站 / 暫停 / 繼續時即時推，其餘靠每 2 秒的補推帶著。
+//                                                                    舊版主畫面沒有這兩個欄位 → 遙控頁整段倒數 / 下一站預告不顯示，其餘照舊；舊版遙控頁不認得就忽略（往前 / 往後相容）。
 // 安全：導覽員權限只授予「操控導覽」。token 由 host 每個 session 隨機產生（存記憶體），驗證相符的連線才收導覽員指令；
 //   一般遙控連線送來的導覽員指令一律靜默忽略；驗證失敗次數過多的連線會被關閉（擋暴力猜測）。
 //   導覽員指令呼叫 touchGuide()（只記時間、不中止導覽）與 noteActivity()（遙控「有人在」），絕不呼叫 touch()（否則導覽會把它當成輸入而自己中止）。
@@ -22,6 +25,7 @@ export const GUIDE_STOP_OTHER = 'other'            // 不在白名單的站 id�
 export const GUIDE_CMDS = ['next', 'prev', 'pause', 'resume', 'toggle', 'start', 'stop', 'goto', 'speak']
 export const GUIDE_NOTE_MAX = 120                  // 每站備註的字數上限
 export const GUIDE_MAX_STOPS = 32                  // 站數上限（防止異常訊息撐大狀態）
+export const GUIDE_MAX_STOP_MS = 3600000            // remainMs / stopMs 的上限（1 小時；防止異常訊息）
 export const GUIDE_MIN_GAP_MS = 150                // 同一連線、同一指令的最短間隔：手機連點 / 網路重送不會造成連續跳站
 export const GUIDE_PUSH_MS = 2000                  // 狀態補推的間隔（丟包保險）
 export const GUIDE_HELLO_WAIT_MS = 6000            // 遙控頁送出 hello 後等回覆的時間：逾時就當作沒有導覽員權限（例如主畫面是舊版）
@@ -33,6 +37,7 @@ const TOKEN_RE = /^[0-9a-z]{6,32}$/
 const noop = () => {}
 const isObj = (m) => !!m && typeof m === 'object' && !Array.isArray(m)
 const clampInt = (v, hi) => (Number.isFinite(v) ? Math.max(0, Math.min(hi, Math.trunc(v))) : 0)
+const msField = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.min(GUIDE_MAX_STOP_MS, Math.round(v)) : null)   // 毫秒欄位：有限的非負數 → 四捨五入的整數（夾上限）；否則 null
 const clip = (s, n) => { const a = Array.from(String(s)); return a.length > n ? a.slice(0, n).join('') : String(s) }   // 以字元（非 UTF-16 單元）為單位，不切斷代理對
 
 // ---------------------------------------------------------------------------------------------
@@ -114,7 +119,8 @@ export function parseGuideCmd(m) {
 }
 
 // 狀態酬載：由 useTourStore 的狀態（running / paused / index / total / stopList）組出。
-// stops 只有站 id（白名單）與備註（stopList[i].caption.p.note；沒有 / 空白就省略，最多 120 字）。extra：{ speak, canSpeak, ready }（只收 boolean）。
+// stops 只有站 id（白名單）與備註（stopList[i].caption.p.note；沒有 / 空白就省略，最多 120 字）。extra：{ speak, canSpeak, ready }（只收 boolean）
+//   與 { remainMs, stopMs }（只收有限的非負數、只在導覽進行中才帶；remainMs = 這一站還剩多少毫秒、暫停時是凍結的值；stopMs = 這一站的總長，> 0 才帶）。
 export function tourPayload(state, extra) {
   const s = isObj(state) ? state : {}
   const list = Array.isArray(s.stopList) ? s.stopList.slice(0, GUIDE_MAX_STOPS) : []
@@ -128,7 +134,28 @@ export function tourPayload(state, extra) {
   const m = { t: 'tour', running: !!s.running, paused: !!s.paused, index: clampInt(s.index, GUIDE_MAX_STOPS), total: clampInt(s.total, GUIDE_MAX_STOPS), stops }
   const e = isObj(extra) ? extra : {}
   for (const k of ['speak', 'canSpeak', 'ready']) if (typeof e[k] === 'boolean') m[k] = e[k]
+  if (m.running) {
+    const rem = msField(e.remainMs), tot = msField(e.stopMs)
+    if (rem !== null) m.remainMs = rem
+    if (tot !== null && tot > 0) m.stopMs = tot
+  }
   return m
+}
+
+// 導覽執行器 → 狀態酬載的倒數欄位 { remainMs, stopMs }（給 createGuideHost 的 getExtra 用）。
+//   remainMs = runner.remainingMs()（這一站還剩多少毫秒；暫停時凍結）、stopMs = runner.current().stop.durationMs（這一站的總長）。
+//   沒在跑 / 執行器沒有 remainingMs（舊版）/ 取不到 / 丟例外 → {}（不帶這兩個欄位；不能影響狀態推送）。永遠以方法呼叫 runner。
+export function countdownExtra(runner) {
+  try {
+    if (!runner || typeof runner.remainingMs !== 'function') return {}
+    const rem = runner.remainingMs()
+    if (typeof rem !== 'number' || !Number.isFinite(rem)) return {}
+    const out = { remainMs: rem }
+    const cur = typeof runner.current === 'function' ? runner.current() : null
+    const total = cur && cur.stop ? cur.stop.durationMs : null
+    if (typeof total === 'number' && total > 0) out.stopMs = total
+    return out
+  } catch (e) { return {} }
 }
 
 // 遙控頁收到的 { t:'tour' }：驗證並正規化；格式錯誤 → null（沿用舊狀態）
@@ -146,6 +173,11 @@ export function parseTourPayload(m) {
   }
   const out = { running: m.running, paused: m.paused, index: m.index, total: m.total, stops }
   for (const k of ['speak', 'canSpeak', 'ready']) if (typeof m[k] === 'boolean') out[k] = m[k]
+  if (out.running) {                                   // 倒數欄位是選用的：缺 / 格式不對就當沒有（不因此拒絕整則狀態）
+    const rem = msField(m.remainMs), tot = msField(m.stopMs)
+    if (rem !== null) out.remainMs = rem
+    if (tot !== null && tot > 0) out.stopMs = tot
+  }
   return out
 }
 
@@ -170,7 +202,15 @@ export function reduceGuideMsg(state, m) {
   return st
 }
 
+// 「下一站」預告：stops[index + 1]（站 id + 備註）；已經是最後一站 → { last: true }
+function nextStopOf(stops, index) {
+  const s = stops[index + 1]
+  return s ? { last: false, id: s.id, index: index + 1, note: s.note || '' } : { last: true, id: null, index: index + 1, note: '' }
+}
+
 // 遙控頁導覽員區塊的檢視模型（純函式）：按鈕能不能按、目前站、備註、站 chips、要顯示哪種提示。connected = 與主畫面的連線是否可用。
+// 倒數（選用）：timed = 主畫面有帶 remainMs（導覽進行中）；remainMs / stopMs 是「收到那一刻」的值（內插用 countdownView）；next = 下一站預告。
+//   舊版主畫面（沒有 remainMs）→ timed:false、next:null，畫面上整段不顯示。
 export function guideView(tour, connected) {
   const on = !!connected
   const tr = isObj(tour) ? tour : null
@@ -179,6 +219,7 @@ export function guideView(tour, connected) {
   const index = tr ? tr.index : 0
   const cur = running ? stops[index] || null : null
   const noData = !!tr && !running && tr.ready === false        // 主畫面還沒載入海況資料（沒有東西可導覽）
+  const timed = running && typeof tr.remainMs === 'number' && Number.isFinite(tr.remainMs)
   return {
     connected: on,
     known: !!tr,                                                // 收到過主畫面的導覽狀態
@@ -195,7 +236,22 @@ export function guideView(tour, connected) {
     canStop: on && running,
     showSpeak: !!tr && tr.canSpeak !== false,
     speak: !!(tr && tr.speak),
+    timed,
+    remainMs: timed ? tr.remainMs : null,
+    stopMs: timed && typeof tr.stopMs === 'number' && tr.stopMs > 0 ? tr.stopMs : null,
+    next: timed && cur ? nextStopOf(stops, index) : null,
   }
+}
+
+// 倒數的本機內插（純函式）：v = guideView(...)；at = 收到那則狀態時的本機時間（與 now 同一個時鐘）。
+//   進行中：剩餘 = remainMs − (now − at)（不會小於 0）；暫停：凍結在 remainMs（不動）。每次收到新推送 at 與 remainMs 一起換掉 = 重新校準，不會累積漂移。
+//   → null（舊版主畫面 / 沒在跑）| { remainMs, secs（進位到整秒）, frac（這一站已過的比例 0~1；不知道總長 → null）, paused }
+export function countdownView(v, at, now) {
+  if (!v || !v.timed || !Number.isFinite(v.remainMs)) return null
+  const elapsed = !v.paused && Number.isFinite(at) && Number.isFinite(now) ? Math.max(0, now - at) : 0
+  const remain = Math.max(0, v.remainMs - elapsed)
+  const total = Number.isFinite(v.stopMs) && v.stopMs > 0 ? v.stopMs : 0
+  return { remainMs: remain, secs: Math.ceil(remain / 1000), frac: total > 0 ? Math.max(0, Math.min(1, 1 - remain / total)) : null, paused: !!v.paused }
 }
 
 // 展場 QR 的快速鍵：G（大小寫、Shift / CapsLock 皆可）。忽略修飾鍵（ctrl / meta / alt）、輸入法組字、按住不放，以及輸入元件與彈窗內（判斷函式由呼叫端注入）。
@@ -251,12 +307,24 @@ export function createGuideHost(deps = {}) {
     return true
   }
 
+  // 同一支手機（同一個 peer id）以新連線取代舊連線（鎖屏 / 換網路後自動重連）：舊連線在主畫面這邊常要等 ICE 逾時才會關，先把它移出集合並關掉，
+  //   集合裡不會有同一支手機的兩條連線（人數不會重複算、狀態不會推兩份）。集合是以「連線物件」為單位管理的：舊連線之後才發的 close 事件只會移除它自己，動不到新連線。
+  function replaceStale(conn) {
+    const pid = conn && conn.peer
+    if (typeof pid !== 'string' || !pid) return
+    for (const other of [...guides.keys()]) {
+      if (other === conn || other.peer !== pid) continue
+      guides.delete(other)
+      try { other.close() } catch (e) { /* 舊連線可能已經壞了 */ }
+    }
+  }
+
   function hello(conn, m) {
     const tok = getToken()
     const ok = isGuideToken(tok) && isGuideToken(m.guide) && safeEqual(tok, m.guide)
     if (ok) {
       const isNew = !guides.has(conn)
-      if (isNew) guides.set(conn, { last: new Map() })   // 重複 hello：冪等（不重複加入、不重複記錄），仍回 ok 並補推一次狀態
+      if (isNew) { replaceStale(conn); guides.set(conn, { last: new Map() }) }   // 重複 hello：冪等（不重複加入、不重複記錄），仍回 ok 並補推一次狀態
       sendTo(conn, { t: 'guide', ok: true })
       sendTo(conn, payload())                            // 通過驗證的當下立刻推一次
       if (isNew) { changed(); try { log('join', guides.size) } catch (e) { /* ignore */ } }

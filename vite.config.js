@@ -6,9 +6,11 @@ import { join, relative, sep, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 // 供測試（scripts/vite-config.test.mjs）：node_modules 路徑 → chunk 名稱（其餘交給 Rollup 自動分塊）
+// 例外：英文字典（src/i18n/en/*.js 與彙整它們的 src/i18n/en-all.js）全部歸同一個 chunk「i18n-en」——它只被 src/i18n/index.js 的 loadEnglish() 動態 import，
+// 中文使用者與手機遙控頁的中文模式完全不下載；不能有任何靜態依賴指向它（src/i18n/data.js 用自己的 data-tables.js，不 import ./en/）。
 export function manualChunk(id) {
   const p = String(id).replace(/\\/g, '/')
-  if (!p.includes('/node_modules/')) return undefined
+  if (!p.includes('/node_modules/')) return /\/src\/i18n\/(en\/[^/]+\.js|en-all\.js)(\?.*)?$/.test(p) ? 'i18n-en' : undefined
   if (/\/node_modules\/@react-three\//.test(p)) return 'r3f'
   if (/\/node_modules\/three\//.test(p)) return 'three'
   if (/\/node_modules\/(react|react-dom|scheduler|use-sync-external-store|zustand)\//.test(p)) return 'react'

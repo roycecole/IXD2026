@@ -22,6 +22,16 @@ export default {
   '演奏控制': 'Play controls',
   '操作會中止導覽': 'Touching these stops the tour',
 
+  // ---- 遙控頁：自動重連 / 螢幕保持喚醒 / 倒數與下一站預告 ----
+  '重新連線中…（第 {n} 次）': 'Reconnecting… (attempt {n})',
+  '連線中斷 · 回到這個畫面會自動重連': 'Disconnected · will reconnect when you come back to this screen',
+  '主畫面已重新載入，請重新掃描 QR': 'The main screen was reloaded. Please scan the QR code again',
+  '螢幕保持喚醒中': 'Screen kept awake',
+  '此瀏覽器無法保持喚醒（請把手機的自動鎖定調長）': 'This browser cannot keep the screen awake (set your phone’s auto-lock to a longer time)',
+  '剩 {n} 秒': ({ n }) => `${n} s left`,
+  '下一站：{name}': 'Up next: {name}',
+  '最後一站': 'Last stop',
+
   // ---- 站名（遙控頁依自己的語系顯示；host 只送站 id）----
   '今日水庫': 'Reservoir today',
   '鳥群調查': 'Bird survey',
@@ -49,4 +59,7 @@ export default {
   // ---- IN 日誌 ----
   '導覽員遙控器已連線（{n} 支）': ({ n }) => `Guide remote connected (${n} online)`,
   '導覽員遙控器已離線（剩 {n} 支）': ({ n }) => `Guide remote disconnected (${n} left)`,
+
+  // ---- IN 日誌：同一支手機自動重連 ----
+  '遙控器重新連線 · 聲部「{part}」（{n} 人連線）': 'Remote reconnected · part "{part}" ({n} connected)',
 }

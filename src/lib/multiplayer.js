@@ -6,6 +6,7 @@ import { useStore } from '../store/useStore.js'
 import { dispatch } from './remoteDispatch.js'
 import { PEER_CONFIG } from './ice.js'
 import { makeGuideToken, buildRemoteUrl } from './tourRemote.js'
+import { createPeerMemory, staleConns } from './remoteReconnect.js'
 import { bumpStat } from '../store/stats.js'
 import { t, T } from '../i18n/index.js'
 
@@ -28,6 +29,7 @@ let syncIv = null
 let peer = null
 let conns = []
 let starting = null
+const peerRoles = createPeerMemory()   // peer id → 聲部：同一支手機（同一個 peer id）自動重連時沿用原本的聲部；host 重建時清空
 
 // 多訂閱者：MultiModal / KioskQR 各自訂閱 host 狀態變化
 const listeners = new Set()
@@ -63,12 +65,22 @@ function wire(p) {
     c.__t0 = Date.now()
     conns.push(c)
     c.on('open', () => {
+      // 同一支手機（同一個 peer id）以新連線取代舊連線（手機鎖屏 / 換網路後自動重連）：主畫面這邊的舊連線常要等 ICE 逾時才會關，
+      //   先把它們移出集合並關掉（人數不重複算、導覽員集合不會有同一支手機的兩條連線）；連線是以物件為單位管理的，舊連線之後才發的 close 只會移除它自己，動不到新連線。
+      const again = !!c.peer && peerRoles.has(c.peer)
+      for (const old of staleConns(conns, c)) {
+        if (guideHost) { try { guideHost.remove(old) } catch (e) {} }
+        conns = conns.filter((x) => x !== old)
+        try { old.close() } catch (e) {}
+      }
       multiState.count = conns.filter((x) => x.open).length
-      bumpStat('joins')
-      const role = ROLES[roleIdx++ % ROLES.length]        // 輪流分聲部
+      if (!again) bumpStat('joins')                        // 重連不算新加入（展場角落的加入人數統計不要灌水）
+      let role = c.peer ? peerRoles.get(c.peer) : null
+      if (!role) { role = ROLES[roleIdx++ % ROLES.length]; peerRoles.set(c.peer, role) }   // 第一次加入：輪流分聲部；重連：沿用
       try { c.send({ t: 'role', id: role.id, label: role.label, pids: role.pids }) } catch (e) {}
       notify()
-      useStore.getState().pushLog('in', t('遙控器加入 · 聲部「{part}」（{n} 人連線）', { part: t(role.label).split(' ')[0], n: multiState.count }))
+      const part = t(role.label).split(' ')[0]
+      useStore.getState().pushLog('in', again ? t('遙控器重新連線 · 聲部「{part}」（{n} 人連線）', { part, n: multiState.count }) : t('遙控器加入 · 聲部「{part}」（{n} 人連線）', { part, n: multiState.count }))
     })
     c.on('data', (m) => { if (guideHost && guideHost.handle(c, m)) return; dispatch(m, c.peer) })   // hello / 導覽員指令由 guideHost 處理，其餘照舊走 dispatch
     const drop = () => { if (guideHost) { try { guideHost.remove(c) } catch (e) {} } conns = conns.filter((x) => x !== c); multiState.count = conns.filter((x) => x.open).length; notify() }
@@ -81,6 +93,7 @@ function wire(p) {
   p.on('close', () => {
     if (peer !== p) return
     peer = null; multiState.on = false; multiState.id = null; conns = []; multiState.count = 0; starting = null
+    peerRoles.clear()         // host session 結束：手機的 peer id 不再有意義（下一個 session 重新分聲部）
     multiState.guide = null   // host session 結束：token 失效（下一個 session 換新，舊的導覽員 QR 作廢）
     if (guideHost) { try { guideHost.clear() } catch (e) {} }
     multiState.guides = 0

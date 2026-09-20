@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import { PEER_CONFIG } from '../lib/ice.js'
 import { askSensorPermission, startTilt, startShake } from '../lib/sensors.js'
 import { useT, useLocale, T, translate, toggleLocale } from '../i18n/index.js'
-import { helloMsg, guideCmd, guideView, reduceGuideMsg, GUIDE_HELLO_WAIT_MS } from '../lib/tourRemote.js'
+import { helloMsg, guideCmd, guideView, countdownView, reduceGuideMsg, GUIDE_HELLO_WAIT_MS } from '../lib/tourRemote.js'
+import { createRemoteLink } from '../lib/remoteReconnect.js'
+import { holdScreenAwake } from '../lib/wakeLockLite.js'
 import '../styles/guide.css'
 
 // 手機遙控頁（#remote=<hostId>）：輕量、不載 three。滑桿 / 按鈕 / 打擊墊
@@ -11,6 +13,11 @@ import '../styles/guide.css'
 // 導覽員模式（#remote=<hostId>&guide=<token>，導覽員 QR）：連上後送 hello 驗證 token；通過後最上方多一個「導覽員」區塊
 //   （上一站 / 暫停 / 下一站、開始 / 結束導覽、站 chips、念出字幕），原本的演奏控制收進預設收合的「演奏控制」（演奏操作會中止導覽，別不小心碰到）。
 //   只能操控資料導覽；驗證失敗 / 主畫面沒有回應 → 維持一般遙控。協定與邏輯在 lib/tourRemote.js（本頁不 import three / store / tour.js）。
+// 自動重連（導覽員與一般遙控都適用）：手機鎖屏 / 切到背景 / 換網路 → 連線斷了不必重新整理頁面，頁面可見時用退避（1、2、4、8、15 秒）自動重連到同一個主畫面；
+//   回到前景立刻重試一次；主畫面已重新載入（host id 已換）連續失敗約 6 次 → 停止並請重新掃描 QR。邏輯在 lib/remoteReconnect.js（可注入、Node 可測）。
+//   重連期間按鈕維持停用並顯示「重新連線中…（第 n 次）」；感測器（本頁的監聽）不受連線影響，重連後照原樣繼續送。
+// 導覽員模式且已連線時：螢幕保持喚醒（lib/wakeLockLite.js；一般遙控不啟用），並顯示這一站的倒數 / 進度條與「下一站」預告
+//   （主畫面每 2 秒補推一次剩餘時間，兩次推送之間用本機時鐘內插，收到新推送就重新校準；舊版主畫面沒有這些欄位 → 整段不顯示）。
 
 // 靜態表的中文名用 T() 標記，顯示處再 t()
 const ALL_SLIDERS = {
@@ -32,56 +39,128 @@ const STOP_NAMES = {
   reservoir: T('今日水庫'), tide: T('潮汐'), moon: T('月亮'), dust: T('揚塵'),
   air: T('空氣品質'), birds: T('鳥群調查'), fish: T('魚群調查'), stations: T('河川測站'),
 }
+const SLOW_HINT_MS = 15000   // 第一次連線超過這麼久還沒連上：提示場地 Wi-Fi 可能擋 P2P
 
 // 按鈕回饋：功能偵測、以方法呼叫（不脫離 navigator）、任何例外都吞掉
 function buzz(ms = 12) { try { if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') navigator.vibrate(ms) } catch (e) { /* 不支援 / 被擋 */ } }
 
-// 模組級連線單例（StrictMode 雙掛載安全）：狀態放這裡，元件只訂閱。
-// status 存「中文 key（T 標記）＋ statusP 插值參數」，畫面上才 t()，所以連線中途切語系也會跟著換。
-// guide：'none'（網址沒有 token）| 'pending'（已送 hello 等回覆）| 'ok' | 'denied'（token 不符 / 主畫面沒回應）；tour：主畫面推來的導覽狀態
-let boot = null
-function ensurePeer(hostId, guideToken) {
-  if (boot) return boot
-  const b = (boot = { peer: null, conn: null, subs: new Set(), status: T('連線中…'), statusP: null, ok: false, role: null, syncParams: null, guide: guideToken ? 'pending' : 'none', tour: null, helloTimer: null })
-  const emit = () => b.subs.forEach((f) => { try { f() } catch (e) {} })
-  if (import.meta.env.DEV) window.__remoteBoot = b   // 開發輔助：預覽面板擋 WebRTC，主控台可直接改 b.ok / b.guide / b.tour 再呼叫 b.subs.forEach((f) => f()) 驗畫面（正式建置會被移除）
-  const setStatus = (key, params = null) => { b.status = key; b.statusP = params }
-  const stopHelloTimer = () => { if (b.helloTimer !== null) { clearTimeout(b.helloTimer); b.helloTimer = null } }
-  import('peerjs').then(({ default: Peer }) => {
-    const peer = (b.peer = new Peer(PEER_CONFIG))
-    peer.on('open', () => {
-      const conn = (b.conn = peer.connect(hostId, { reliable: true }))
-      conn.on('open', () => {
-        b.ok = true; setStatus(T('已連上主畫面 · 一起合奏'))
-        if (guideToken) {                                     // 導覽員模式：送 hello 驗證 token；逾時沒回應（主畫面是舊版 / 沒有導覽員功能）就當作一般遙控
-          try { conn.send(helloMsg(guideToken)) } catch (e) {}
-          stopHelloTimer()
-          b.helloTimer = setTimeout(() => { b.helloTimer = null; if (b.guide === 'pending') { b.guide = 'denied'; emit() } }, GUIDE_HELLO_WAIT_MS)
+// 本機單調時鐘（倒數內插用；狀態的「收到時間」與畫面的「現在」必須是同一個時鐘）
+const nowMs = () => (typeof performance !== 'undefined' && performance && typeof performance.now === 'function' ? performance.now() : Date.now())
+
+// 連線層狀態（lib/remoteReconnect.js 的 snapshot）→ 畫面上的狀態文字：回傳「中文 key（T 標記）＋ 插值參數」，畫面上才 t()，所以連線中途切語系也會跟著換。
+//   ls = { phase, n, unavailable, reason, detail, ever }；slow = 第一次連線已經等很久（只在「從沒連上過」時才提示 Wi-Fi 問題）
+export function statusForLink(ls, { slow = false } = {}) {
+  const s = ls && typeof ls === 'object' ? ls : {}
+  if (s.phase === 'connected') return { key: T('已連上主畫面 · 一起合奏'), params: null }
+  if (s.phase === 'gaveup') {
+    if (s.reason === 'unavailable') return { key: T('主畫面已重新載入，請重新掃描 QR'), params: null }
+    if (s.reason === 'load') return { key: T('載入失敗：{msg}'), params: { msg: s.detail || '' } }
+    return { key: T('無法連線：{e}'), params: { e: s.detail || '' } }
+  }
+  if (s.phase === 'paused') return { key: T('連線中斷 · 回到這個畫面會自動重連'), params: null }
+  if (!s.ever && slow && !(s.unavailable > 0)) return { key: T('連線偏慢…場地 Wi-Fi 可能擋 P2P，建議手機開熱點再掃一次'), params: null }   // 從沒連上過、拖很久、而且不是「主畫面不存在」（那個是 peer-unavailable，與 Wi-Fi 無關）
+  if (s.n > 0) return { key: T('重新連線中…（第 {n} 次）'), params: { n: s.n } }
+  return { key: T('連線中…'), params: null }
+}
+
+// 連線狀態（StrictMode 雙掛載安全的模組級單例）：狀態放這裡，元件只訂閱。
+// status 存「中文 key（T 標記）＋ statusP 插值參數」；ls = 連線層的狀態；ok = 與主畫面的資料通道可用。
+// guide：'none'（網址沒有 token）| 'pending'（已送 hello 等回覆）| 'ok' | 'denied'（token 不符 / 主畫面沒有回應）；tour：主畫面推來的導覽狀態；tourAt：收到它的本機時間（倒數內插的基準）
+// 連線掉了不再清掉單例：連線層（createRemoteLink）自己退避重連、重複使用同一個 Peer，每次只留一條連線；每次連線 open（含重連）都重送 hello。
+// deps（測試用）：{ makePeer, env, setTimer, clearTimer }
+export function createBoot(hostId, guideToken, deps = {}) {
+  const setTimer = typeof deps.setTimer === 'function' ? deps.setTimer : (fn, ms) => setTimeout(fn, ms)
+  const clearTimer = typeof deps.clearTimer === 'function' ? deps.clearTimer : (id) => clearTimeout(id)
+  const makePeer = typeof deps.makePeer === 'function' ? deps.makePeer : () => import('peerjs').then(({ default: Peer }) => new Peer(PEER_CONFIG))
+  const b = { hostId, guideToken, link: null, subs: new Set(), status: T('連線中…'), statusP: null, ls: null, ok: false, role: null, syncParams: null, guide: guideToken ? 'pending' : 'none', tour: null, tourAt: 0, helloTimer: null, slowTimer: null, slow: false, teardown: null, setTimer, clearTimer }
+  const emit = () => b.subs.forEach((f) => { try { f() } catch (e) { /* 訂閱者出錯不影響連線 */ } })
+  const stopHelloTimer = () => { if (b.helloTimer !== null) { clearTimer(b.helloTimer); b.helloTimer = null } }
+  const stopSlowTimer = () => { if (b.slowTimer !== null) { clearTimer(b.slowTimer); b.slowTimer = null } }
+  const refresh = () => {   // 連線層狀態 → 畫面狀態
+    b.ok = !!b.ls && b.ls.phase === 'connected'
+    const s = statusForLink(b.ls, { slow: b.slow })
+    b.status = s.key; b.statusP = s.params
+    if (!b.ok) stopHelloTimer()
+  }
+  b.link = createRemoteLink({
+    hostId, makePeer, env: deps.env, setTimer, clearTimer,
+    onChange: (ls) => { b.ls = ls; refresh(); emit() },
+    onOpen: (conn, { reconnect }) => {
+      stopSlowTimer()
+      if (reconnect) b.tour = null                          // 重連：舊的導覽狀態已過時，等主畫面的新狀態（通過 hello 後主畫面立刻推一次）
+      if (guideToken) {                                     // 導覽員模式：送 hello 驗證 token（每次連線 open 都送，含重連）；逾時沒回應（主畫面是舊版 / 沒有導覽員功能）就當作一般遙控
+        try { conn.send(helloMsg(guideToken)) } catch (e) {}
+        stopHelloTimer()
+        b.helloTimer = setTimer(() => { b.helloTimer = null; if (b.guide === 'pending') { b.guide = 'denied'; emit() } }, GUIDE_HELLO_WAIT_MS)
+      }
+      emit()
+    },
+    onData: (m) => {
+      if (!m || typeof m !== 'object') return
+      if (m.t === 'role') { b.role = m; emit() }
+      else if (m.t === 'sync' && m.params) { b.syncParams = m.params; emit() }
+      else if (m.t === 'guide' || m.t === 'tour') {
+        const cur = { guide: b.guide, tour: b.tour }
+        const next = reduceGuideMsg(cur, m)
+        if (next.guide !== cur.guide || next.tour !== cur.tour) {
+          if (next.tour !== cur.tour) b.tourAt = nowMs()   // 倒數以「收到這一刻」為基準內插；每次收到新的推送就重新校準（不累積漂移）
+          b.guide = next.guide; b.tour = next.tour; if (b.guide !== 'pending') stopHelloTimer(); emit()
         }
-        emit()
-      })
-      conn.on('data', (m) => {
-        if (!m || typeof m !== 'object') return
-        if (m.t === 'role') { b.role = m; emit() }
-        else if (m.t === 'sync' && m.params) { b.syncParams = m.params; emit() }
-        else if (m.t === 'guide' || m.t === 'tour') {
-          const cur = { guide: b.guide, tour: b.tour }
-          const next = reduceGuideMsg(cur, m)
-          if (next.guide !== cur.guide || next.tour !== cur.tour) { b.guide = next.guide; b.tour = next.tour; if (b.guide !== 'pending') stopHelloTimer(); emit() }
-        }
-      })
-      conn.on('close', () => { stopHelloTimer(); b.ok = false; setStatus(T('連線中斷')); emit(); boot = null }) // 清單例 → 重連可重建
-      conn.on('error', () => { stopHelloTimer(); b.ok = false; setStatus(T('連線失敗')); emit(); boot = null })
-    })
-    peer.on('error', (e) => { stopHelloTimer(); b.ok = false; setStatus(T('無法連線：{e}'), { e: e.type || e.message || '' }); emit(); boot = null })
-    setTimeout(() => { if (!b.ok && b.status === T('連線中…')) { setStatus(T('連線偏慢…場地 Wi-Fi 可能擋 P2P，建議手機開熱點再掃一次')); emit() } }, 15000)
-  }).catch((e) => { setStatus(T('載入失敗：{msg}'), { msg: e.message }); emit() })
+      }
+    },
+  })
+  b.slowTimer = setTimer(() => { b.slowTimer = null; b.slow = true; refresh(); emit() }, SLOW_HINT_MS)
+  // 完整拆除：停連線層（Peer / 連線 / 監聽 / 計時器全部收掉）與這裡的計時器
+  b.destroy = () => {
+    if (b.teardown !== null) { clearTimer(b.teardown); b.teardown = null }
+    stopHelloTimer(); stopSlowTimer()
+    b.link.stop()
+    b.subs.clear()
+  }
   return b
 }
 
+let boot = null
+export function ensurePeer(hostId, guideToken, deps) {
+  if (boot && (boot.hostId !== hostId || boot.guideToken !== guideToken)) { boot.destroy(); boot = null }   // 網址換了（理論上整頁會重載）：不沿用舊連線
+  if (boot) { if (boot.teardown !== null) { boot.clearTimer(boot.teardown); boot.teardown = null }; return boot }   // StrictMode 的第二次掛載：取消尚未執行的拆除，沿用同一條連線
+  const b = (boot = createBoot(hostId, guideToken, deps))
+  try { if (import.meta.env.DEV) window.__remoteBoot = b } catch (e) { /* Node 測試沒有 import.meta.env */ }   // 開發輔助：預覽面板擋 WebRTC，主控台可直接改 b.ok / b.guide / b.tour / b.tourAt（= performance.now()）再呼叫 b.subs.forEach((f) => f()) 驗畫面（正式建置會被移除）
+  b.link.start()
+  return b
+}
+// 元件卸載（或 StrictMode 模擬卸載）時呼叫：沒有訂閱者了 → 下一個 macrotask 才真的拆除（StrictMode 會在同一個 tick 內立刻重新掛載並取消這次拆除；真的卸載才會拆）
+export function releasePeer(b) {
+  if (!b || b.subs.size > 0 || b.teardown !== null) return
+  b.teardown = b.setTimer(() => { b.teardown = null; if (b.subs.size === 0) { b.destroy(); if (boot === b) boot = null } }, 0)
+}
+
+// 這一站的倒數 + 細進度條：文字與進度以「主畫面推來的剩餘時間 − 本機經過時間」內插（暫停時不動）。
+//   自己有一個計時器（每 250ms 重繪這一小塊，不牽動整個頁面）；now 有給（測試）就不計時、以它為「現在」。role="timer" 隱含 aria-live=off：不會每秒吵螢幕閱讀器。
+export function GuideCountdown({ v, at = 0, now: nowProp, t }) {
+  const fixed = typeof nowProp === 'number'
+  const [tick, setTick] = useState(() => (fixed ? nowProp : nowMs()))
+  const live = !fixed && !v.paused && v.remainMs > 0
+  useEffect(() => {
+    if (!live) return undefined
+    setTick(nowMs())
+    const id = setInterval(() => setTick(nowMs()), 250)
+    return () => clearInterval(id)
+  }, [live, at])
+  const c = countdownView(v, at, fixed ? nowProp : tick)
+  if (!c) return null
+  return (
+    <div className={'guide-time' + (c.paused ? ' is-paused' : '')}>
+      {c.frac !== null && <div className="guide-bar" aria-hidden="true"><i key={v.index} style={{ transform: `scaleX(${c.frac.toFixed(3)})` }} /></div>}
+      <span className="guide-left" role="timer" aria-live="off">{t('剩 {n} 秒', { n: c.secs })}</span>
+    </div>
+  )
+}
+
 // 導覽員區塊（純展示：資料來自 lib/tourRemote.js 的 guideView，按鈕一律呼叫 cmd(指令, 參數)；可用 SSR 測試標記）
-//   v = guideView(tour, connected)；ok = 與主畫面連線可用；t = 依遙控頁語系的 t
-export function GuidePanel({ v, ok, cmd, t }) {
+//   v = guideView(tour, connected)；ok = 與主畫面連線可用；t = 依遙控頁語系的 t；
+//   at = 收到導覽狀態的本機時間、now = 固定的「現在」（只有測試會給）；wake = 螢幕喚醒狀態（'on' | 'unsupported' | 'failed' | 其他 = 不顯示）
+export function GuidePanel({ v, ok, cmd, t, at = 0, now, wake = '' }) {
   const stopName = (id, i) => (STOP_NAMES[id] ? t(STOP_NAMES[id]) : t('第 {n} 站', { n: i + 1 }))
   return (
     <section className={'guide' + (ok ? '' : ' is-offline')} aria-label={t('導覽員')}>
@@ -89,6 +168,8 @@ export function GuidePanel({ v, ok, cmd, t }) {
         <h2 className="guide-title">{t('導覽員')}</h2>
         <span className="guide-scope">{t('只能操控資料導覽')}</span>
       </div>
+      {ok && wake === 'on' && <p className="guide-wake">{t('螢幕保持喚醒中')}</p>}
+      {ok && (wake === 'unsupported' || wake === 'failed') && <p className="guide-wake is-off">{t('此瀏覽器無法保持喚醒（請把手機的自動鎖定調長）')}</p>}
       <div className="guide-now" aria-live="polite">
         {!ok ? <p className="guide-msg">{t('連線中斷 · 按鈕暫時無法使用')}</p>
           : v.noData ? <p className="guide-msg">{t('主畫面還沒載入海況資料')}</p>
@@ -99,7 +180,18 @@ export function GuidePanel({ v, ok, cmd, t }) {
                 <span>{t('第 {n} / {total} 站', { n: v.index + 1, total: v.total })}</span>
                 {v.paused && <span className="guide-paused">{t('已暫停')}</span>}
               </div>
+              {v.timed && <GuideCountdown v={v} at={at} now={now} t={t} />}
               {v.note && <p className="guide-note">{v.note}</p>}
+              {v.next && (
+                <p className="guide-next">
+                  {v.next.last ? <span className="guide-next-k">{t('最後一站')}</span> : (
+                    <>
+                      <span className="guide-next-k">{t('下一站：{name}', { name: stopName(v.next.id, v.next.index) })}</span>
+                      {v.next.note && <span className="guide-next-note">{v.next.note}</span>}
+                    </>
+                  )}
+                </p>
+              )}
             </>
           ) : <p className="guide-msg">{v.known ? t('導覽還沒開始') : t('正在取得導覽狀態…')}</p>}
       </div>
@@ -137,8 +229,10 @@ export default function RemoteApp({ hostId, guide: guideToken = null }) {
   const [status, setStatus] = useState(T('連線中…'))
   const [statusP, setStatusP] = useState(null)
   const [ok, setOk] = useState(false)
+  const [stuck, setStuck] = useState(false)   // 連線層已放棄（主畫面已重新載入 / 致命錯誤）：顯示「重新整理」按鈕
   const [role, setRole] = useState(null)
-  const [gs, setGs] = useState({ guide: guideToken ? 'pending' : 'none', tour: null })
+  const [gs, setGs] = useState({ guide: guideToken ? 'pending' : 'none', tour: null, at: 0 })
+  const [wake, setWake] = useState('')
   const lastSend = useRef({})   // 節流
   const lastLocal = useRef({})  // 最近本地拖動時間（同步不要蓋住手上的滑桿）
   const listRef = useRef(null)
@@ -156,7 +250,8 @@ export default function RemoteApp({ hostId, guide: guideToken = null }) {
     const b = ensurePeer(hostId, guideToken)
     const sync = () => {
       setOk(b.ok); setStatus(b.status); setStatusP(b.statusP); setRole(b.role)
-      setGs((p) => (p.guide === b.guide && p.tour === b.tour ? p : { guide: b.guide, tour: b.tour }))
+      setStuck(!!b.ls && b.ls.phase === 'gaveup')
+      setGs((p) => (p.guide === b.guide && p.tour === b.tour && p.at === b.tourAt ? p : { guide: b.guide, tour: b.tour, at: b.tourAt }))
       // 主畫面參數 → 滑桿位置（2.5 秒內自己拖過的不蓋）
       if (b.syncParams && listRef.current) {
         const now = performance.now()
@@ -174,10 +269,18 @@ export default function RemoteApp({ hostId, guide: guideToken = null }) {
     }
     sync()
     b.subs.add(sync)
-    return () => b.subs.delete(sync)
+    return () => { b.subs.delete(sync); releasePeer(b) }
   }, [hostId, guideToken])
 
-  const send = (m) => { const c = boot && boot.conn; if (c && c.open) { try { c.send(m) } catch (e) {} } }
+  const isGuide = gs.guide === 'ok'
+
+  // 導覽員模式且已連線時：螢幕保持喚醒（一般遙控不啟用，省電）。連線中止 / 卸載 / 離開導覽員模式 → 釋放；回到前景由 wakeLockLite 自己重新取得。
+  useEffect(() => {
+    if (!(isGuide && ok)) { setWake(''); return undefined }
+    return holdScreenAwake({ onState: setWake })
+  }, [isGuide, ok])
+
+  const send = (m) => { if (boot) boot.link.send(m) }
   const sendParam = (pid, v) => {
     lastLocal.current[pid] = performance.now()
     const now = performance.now()
@@ -188,6 +291,7 @@ export default function RemoteApp({ hostId, guide: guideToken = null }) {
   const cmd = (c, arg) => { buzz(); send(guideCmd(c, arg)) }   // 導覽員按鈕：短震一下 + 送指令（host 端節流、驗證）
 
   // 感測器：傾斜 → 洋流方向（flowX/flowY）、搖晃 → 浪湧（pad note 17）。走同一條 wire 協定，主畫面不需新程式。
+  // 監聽由本元件持有、與連線無關：連線中斷期間 send 是空操作，重連後（boot.link 換了新連線）照原樣繼續送——原本開著的感測器保持開著。
   const toggleSensors = async () => {
     if (sensorsOn) {
       try { tiltRef.current && tiltRef.current.stop() } catch (e) {}
@@ -212,7 +316,6 @@ export default function RemoteApp({ hostId, guide: guideToken = null }) {
 
   const pids = (role && role.pids && role.pids.length ? role.pids : DEFAULT_PIDS).filter((p) => ALL_SLIDERS[p])
 
-  const isGuide = gs.guide === 'ok'
   const wrapPlay = !!guideToken && gs.guide !== 'denied'      // 有導覽員 token 且沒被拒絕：演奏控制收進「演奏控制」（驗證前就先收，通過時不會重建滑桿）
   const v = guideView(gs.tour, ok)
 
@@ -265,12 +368,12 @@ export default function RemoteApp({ hostId, guide: guideToken = null }) {
         </div>
         <span className={'remote-status' + (ok ? ' ok' : '')}>{t(status, statusP)}</span>
         {!wrapPlay && roleLine}
-        {!ok && /中斷|失敗|無法/.test(status) && (
+        {!ok && stuck && (
           <button className="remote-retry" onClick={() => location.reload()}>{t('重新連線（主畫面重開請掃新 QR）')}</button>
         )}
       </header>
       <main className="remote-body">
-        {isGuide && <GuidePanel v={v} ok={ok} cmd={cmd} t={t} />}
+        {isGuide && <GuidePanel v={v} ok={ok} cmd={cmd} t={t} at={gs.at} wake={wake} />}
         {!!guideToken && gs.guide === 'denied' && ok && (
           <p className="guide-denied" role="status">{t('導覽員連結已失效或主畫面沒有回應，先當一般遙控使用（主畫面重開後，請重新掃描導覽員 QR）')}</p>
         )}

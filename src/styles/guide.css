@@ -23,6 +23,19 @@
   white-space: pre-wrap; overflow-wrap: anywhere;
 }
 
+/* 螢幕保持喚醒標示 / 這一站的倒數 + 細進度條 / 下一站預告（主畫面有帶 remainMs 才會出現；舊版主畫面整段不顯示） */
+.guide-wake { margin: -4px 0 0; font-size: 11px; line-height: 1.5; color: var(--accent); }
+.guide-wake.is-off { color: var(--amber); }
+.guide-time { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 6px; }
+.guide-bar { flex: 1; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, .1); overflow: hidden; }
+.guide-bar > i { display: block; width: 100%; height: 100%; border-radius: 3px; background: var(--accent); transform-origin: left center; transition: transform .25s linear; }
+.guide-time.is-paused .guide-bar > i { background: var(--amber); }
+.guide-left { min-width: 4.5em; text-align: right; font-family: var(--mono); font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.guide-time.is-paused .guide-left { color: var(--amber); }
+.guide-next { margin: 6px 0 0; font-size: 13px; line-height: 1.5; color: var(--muted); overflow-wrap: anywhere; }
+.guide-next-k { color: var(--text); font-weight: 600; }
+.guide-next-note { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-top: 2px; font-size: 12px; color: var(--muted); white-space: pre-wrap; }
+
 /* 大按鈕：觸控目標 ≥ 56px、單手拇指可按；蓋掉全域 button 的小尺寸 */
 .guide-nav { display: grid; grid-template-columns: 1fr 1.3fr 1fr; gap: 8px; }
 .guide-btn {
@@ -76,4 +89,4 @@
 .kiosk-qr.is-guide .kiosk-qr-count { color: var(--muted); font-family: var(--mono); }
 @media (max-width: 820px) { .kiosk-qr.is-guide canvas { width: 124px; height: 124px; } }
 
-@media (prefers-reduced-motion: reduce) { .guide-btn:active:not(:disabled) { transform: none; } .remote-play-arrow { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .guide-btn:active:not(:disabled) { transform: none; } .remote-play-arrow { transition: none; } .guide-bar > i { transition: none; } }

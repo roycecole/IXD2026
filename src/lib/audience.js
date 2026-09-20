@@ -18,9 +18,14 @@
 //     snapshot:false 事件型切片不放進完整快照（事件是一次性的，不該在新觀眾連上時補放）
 //   get() 回傳 undefined ＝ 這次沒有東西要送。apply(value, meta) 的 meta.snapshot 為 true 表示這是完整快照（不是增量）。
 //   核心切片（createCoreSlices）：locale / overlays / gov / params / series / rec / spawns / pad；
-//   其他功能自己 registerMirror 的切片（導覽字幕、點物件卡片…）對本檔是「任意切片」——host 每次探測都會重新掃描註冊表，晚註冊的也會被接上。
+//   其他功能自己 registerMirror 的切片（導覽字幕、點物件卡片、取景模式…）對本檔是「任意切片」——host 每次探測都會重新掃描註冊表，晚註冊的也會被接上。
 //
 // ── 成本：host 平時只掛一個 channel 監聽（零計時器、零訂閱）；第一個觀眾 hello 之後才啟動切片訂閱與 ping 計時，最後一個觀眾離開就全部收掉。
+
+// 取景模式的鏡像切片（'view'）由 viewPrefs.js 在模組頂層自己註冊。觀眾視窗的 3D 場景是 lazy chunk，第一個快照可能比它先到——
+// 快照裡有 'view' 但註冊表還沒有它 → 該值會被略過（host 只在變化時才再送），所以在這裡先載入：本檔載入時切片就已就位。
+// viewPrefs.js 是純模組（載入時不碰 window / localStorage / location），與本檔一樣可在 Node 載入。
+import './viewPrefs.js'
 
 export const AUDIENCE_CHANNEL = 'midisea-audience'
 export const AUDIENCE_NAME = 'midisea-audience'   // window.open 的視窗名（同名視窗會被重用）
@@ -329,18 +334,38 @@ export function createCoreSlices(deps) {
     subscribe: watch((s, p) => s.overlays !== p.overlays),
   }])
 
-  out.push(['gov', {   // 只同步「選了哪個海況選項 / 哪個月份」；資料本身由觀眾視窗自己載入 ocean.json，也不 applyGov（參數由 params 切片決定）
-    hz: 5,
-    get: () => { const s = store.getState(); return { id: s.govOptionId == null ? null : s.govOptionId, month: s.surveyMonth == null ? null : s.surveyMonth } },
-    apply: (v) => {
-      if (!isObj(v)) return
-      const patch = {}
-      if (typeof v.id === 'string' && v.id) patch.govOptionId = v.id
-      if (v.month === null || (Number.isInteger(v.month) && v.month >= 0 && v.month <= 11)) patch.surveyMonth = v.month
-      if (Object.keys(patch).length) store.setState(patch)
-    },
-    subscribe: watch((s, p) => s.govOptionId !== p.govOptionId || s.surveyMonth !== p.surveyMonth),
-  }])
+  {   // 只同步「選了哪個海況選項 / 哪個月份 / 空氣品質驅動來源」；資料本身由觀眾視窗自己載入 ocean.json，也不 applyGov（參數由 params 切片決定）
+    // airDrive（資料卡的「驅動海況的資料」：'model' | 'obs'；null = 沒選過 = auto）存在記憶體的 store.gov 上（gov.airDrive），
+    // 所以觀眾視窗要等 ocean.json 載入（store.gov 有東西）才寫得進去：先收下「最近一次收到的值」，之後 gov 一出現就補套用。
+    // gov 之後被整份換掉（每 30 分鐘的資料更新、或載入完成的 setState({ gov: d })）也會補套用——否則那次換資料會把 airDrive 洗掉。
+    let want           // undefined：還沒收到過（舊版主視窗不送 airDrive → 觀眾端維持自己的）；null | 'model' | 'obs'：主視窗最近一次送來的
+    let offWatch = null
+    const airOf = (g) => (isObj(g) && (g.airDrive === 'model' || g.airDrive === 'obs') ? g.airDrive : null)
+    const sync = () => {
+      if (want === undefined) return
+      const g = store.getState().gov
+      if (!isObj(g) || airOf(g) === want) return   // gov 還沒載入 / 已經是這個值：什麼都不做（避免無謂地換 gov 物件）
+      store.setState({ gov: { ...g, airDrive: want } })   // 不可變更新：gov 物件可能是共用的（資料快取），不能就地改
+    }
+    out.push(['gov', {
+      hz: 5,
+      get: () => { const s = store.getState(); return { id: s.govOptionId == null ? null : s.govOptionId, month: s.surveyMonth == null ? null : s.surveyMonth, airDrive: airOf(s.gov) } },
+      apply: (v) => {
+        if (!isObj(v)) return
+        const patch = {}
+        if (typeof v.id === 'string' && v.id) patch.govOptionId = v.id
+        if (v.month === null || (Number.isInteger(v.month) && v.month >= 0 && v.month <= 11)) patch.surveyMonth = v.month
+        if (Object.keys(patch).length) store.setState(patch)
+        if (v.airDrive === null || v.airDrive === 'model' || v.airDrive === 'obs') {   // 舊版主視窗沒有這個欄位 / 壞值 → 略過
+          want = v.airDrive
+          if (!offWatch) offWatch = store.subscribe((s, p) => { if (!p || s.gov !== p.gov) sync() })
+          sync()
+        }
+      },
+      subscribe: watch((s, p) => s.govOptionId !== p.govOptionId || s.surveyMonth !== p.surveyMonth || airOf(s.gov) !== airOf(p.gov)),
+      dispose: () => { if (offWatch) { offWatch(); offWatch = null } want = undefined },   // 取消「等 gov」的訂閱（測試 / 拆除用；觀眾視窗的切片與視窗同壽命）
+    }])
+  }
 
   out.push(['params', {   // 視覺參數：走 applyParams（不走 input()：否則會寫進錄製、觸發 soft-takeover、閃 HUD）
     hz: 30,

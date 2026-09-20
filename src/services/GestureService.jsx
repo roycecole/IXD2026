@@ -5,6 +5,8 @@
 //     捏合＝spawnWhale()（上升緣觸發，冷卻 3 秒）
 //     揮手（只在資料導覽進行中、且「揮手換站」開著）：張開手掌快速橫掃，向左揮＝下一站、向右揮＝上一站（以使用者自己的左右為準）；
 //       走 touchGuide()（不是 touch()：touch 會中止導覽）；這段期間暫停「張手平靜」（平靜的參數寫入是真實輸入，會中止導覽）。沒在導覽時完全不處理揮手。
+//       「揮手換站」開關會記住使用者的選擇（localStorage，見 lib/wavePrefs.js）：本服務掛載時把存過的選擇套進 useHandsStore.waveNav（沒存過 = 預設開）；
+//       切換時的寫入在 GestureSection。
 // 關閉 / 離開時停掉偵測、放掉自己開的相機。畫布角落的徽章（受 overlays.hud 控制）與「相機使用中」指示
 // （永遠顯示，不受 hud 影響——隱私）用 portal 掛到 .canvas-wrap。
 import { useEffect, useState } from 'react'
@@ -14,6 +16,7 @@ import { touchGuide } from '../store/activity.js'
 import { useT, t } from '../i18n/index.js'
 import { createGestureTracker, createWaveDetector, routeWave } from '../lib/gestures.js'
 import { createHandsRuntime, useHandsStore, stateLabel, waveLabel, errorKey } from '../lib/hands.js'
+import { hydrateWavePref } from '../lib/wavePrefs.js'
 import { tourRunner } from './tourCore.js'
 import '../styles/gestures.css'
 
@@ -87,6 +90,10 @@ export default function GestureService() {
   const wave = useHandsStore((s) => s.wave)
   const hud = useStore((s) => s.overlays.hud)
   const [host, setHost] = useState(null)
+
+  // 揮手換站偏好：掛載時把存過的選擇套進狀態（可重複執行：StrictMode 會跑兩次；沒存過 / 讀不到就不動，預設開）。
+  // 在這裡做（而不是等 GestureSection 出現）：導覽員 / 展場不會開「裝置」面板，開關也要照使用者上次的選擇。
+  useEffect(() => { hydrateWavePref(useHandsStore) }, [])
 
   // 徽章掛載點：畫布容器（App 一直都有渲染它；找不到就掛 body，指示燈不能不見）
   useEffect(() => {

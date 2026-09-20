@@ -5,6 +5,7 @@ import {
   isMsg, createHost, createAudience, createCoreSlices, createStatusStore, tapPush, pickGovOptionId,
   buildAudienceUrl, pickAudienceScreen, popupFeatures, requestScreens, planAudienceOpen, queryWindowPermission, readScreenInfo,
 } from './audience.js'
+import { getMirror } from './mirror.js'
 
 // ───────────── 測試替身：假 channel 匯流排 / 假時鐘 / 假切片 / 假 store ─────────────
 function makeBus() {
@@ -70,7 +71,7 @@ function makeStore(init = {}) {
   let s = {
     params: { a: 0.5, b: 0.2 }, rec: { mode: 'idle', playhead: 0, duration: 0, speed: 1, loop: false, count: 0 },
     spawns: { whale: 0, dolphin: 0, turtle: 0, purify: 0 }, overlays: { board: true, hud: true, qr: true },
-    govOptionId: null, surveyMonth: null, calls: [], ...init,
+    govOptionId: null, surveyMonth: null, gov: null, calls: [], ...init,
   }
   const subs = new Set()
   const store = {
@@ -498,10 +499,10 @@ test('params 切片：get 是 JSON 純值；apply 走 applyParams（不走 input
   p.apply(null); p.apply('x')                                        // 壞資料不丟例外
 })
 
-test('gov 切片：只同步選項 id 與月份；不合法的值忽略；不呼叫 applyGov', () => {
+test('gov 切片：同步選項 id / 月份 / 空氣品質驅動來源；不合法的值忽略；不呼叫 applyGov', () => {
   const store = makeStore({ govOptionId: 'feitsui', surveyMonth: 3 })
   const g = coreOf({ store }).get('gov')
-  assert.deepEqual(g.get(), { id: 'feitsui', month: 3 })
+  assert.deepEqual(g.get(), { id: 'feitsui', month: 3, airDrive: null })   // gov 還沒載入 / 沒選過驅動來源 → airDrive: null（= auto）
   g.apply({ id: 'hualien-tide', month: null })
   assert.equal(store.getState().govOptionId, 'hualien-tide'); assert.equal(store.getState().surveyMonth, null)
   g.apply({ id: 42, month: 99 })
@@ -509,6 +510,162 @@ test('gov 切片：只同步選項 id 與月份；不合法的值忽略；不呼
   g.apply({ id: null, month: 11 })                                   // 主視窗還沒載入資料（id 為 null）不覆蓋觀眾端已有的選項
   assert.equal(store.getState().govOptionId, 'hualien-tide'); assert.equal(store.getState().surveyMonth, 11)
   assert.deepEqual(store.getState().calls, [])
+  g.dispose()
+})
+
+// ───────────── gov 切片：airDrive 鏡像 ─────────────
+const GOV_A = () => ({ sourceShort: 'x', options: [{ id: 'feitsui' }, { id: 'air' }], air: { pm25: 12, obs: { history: [] } }, fetchedAt: 'T1' })
+
+test('gov 切片 get：帶 airDrive（model | obs | null）；gov 上的怪值 / 沒有 gov 一律 null；整份可 JSON 往返', () => {
+  const store = makeStore({ govOptionId: 'air', surveyMonth: null })
+  const g = coreOf({ store }).get('gov')
+  assert.deepEqual(g.get(), { id: 'air', month: null, airDrive: null })                       // gov = null
+  store.setState({ gov: GOV_A() })
+  assert.equal(g.get().airDrive, null)                                                         // 沒選過 = auto
+  store.setState({ gov: { ...GOV_A(), airDrive: 'obs' } })
+  assert.deepEqual(g.get(), { id: 'air', month: null, airDrive: 'obs' })
+  store.setState({ gov: { ...GOV_A(), airDrive: 'model' } })
+  assert.equal(g.get().airDrive, 'model')
+  for (const bad of ['auto', 'OBS', '', 0, 1, {}, [], true, undefined]) { store.setState({ gov: { ...GOV_A(), airDrive: bad } }); assert.equal(g.get().airDrive, null, String(bad)) }
+  store.setState({ gov: 'oops' }); assert.equal(g.get().airDrive, null)
+  store.setState({ gov: { ...GOV_A(), airDrive: 'obs' } })
+  assert.deepEqual(JSON.parse(JSON.stringify(g.get())), g.get())
+  g.dispose()
+})
+
+test('gov 切片 subscribe：airDrive 變了也會通知；gov 換了但內容不影響鏡像（同一個 airDrive）不通知；id / 月份照舊', () => {
+  const store = makeStore({ gov: GOV_A() })
+  const g = coreOf({ store }).get('gov')
+  let n = 0
+  const off = g.subscribe(() => { n++ })
+  store.setState({ gov: { ...store.getState().gov, airDrive: 'obs' } }); assert.equal(n, 1)   // 資料卡切了驅動來源
+  store.setState({ gov: { ...store.getState().gov, fetchedAt: 'T2' } }); assert.equal(n, 1)    // 資料更新、airDrive 沒變 → 不通知
+  store.setState({ gov: { ...store.getState().gov, airDrive: 'model' } }); assert.equal(n, 2)
+  store.setState({ gov: { ...store.getState().gov, airDrive: undefined } }); assert.equal(n, 3) // 回到沒選過（auto）
+  store.setState({ govOptionId: 'air' }); assert.equal(n, 4)
+  store.setState({ surveyMonth: 5 }); assert.equal(n, 5)
+  store.setState({ params: { a: 9, b: 9 } }); assert.equal(n, 5)                                // 別的欄位不通知
+  off(); store.setState({ gov: { ...store.getState().gov, airDrive: 'obs' } }); assert.equal(n, 5)
+  g.dispose()
+})
+
+test('gov 切片 apply（觀眾視窗）：airDrive 寫進 store.gov.airDrive——不可變更新（不改共用的 gov 物件、其餘欄位沿用同一個參考）；沒變就不換 gov 物件', () => {
+  const shared = Object.freeze(GOV_A())                                                         // 凍結：任何就地修改都會丟 TypeError
+  const store = makeStore({ gov: shared })
+  const g = coreOf({ store }).get('gov')
+  g.apply({ id: 'air', month: null, airDrive: 'obs' })
+  const after = store.getState().gov
+  assert.notEqual(after, shared)                                                                // 換了新物件
+  assert.equal(after.airDrive, 'obs')
+  assert.equal(shared.airDrive, undefined)                                                      // 原本的沒被動到
+  assert.equal(after.air, shared.air); assert.equal(after.options, shared.options)              // 其餘欄位是同一個參考（淺拷貝）
+  assert.equal(after.fetchedAt, 'T1'); assert.equal(store.getState().govOptionId, 'air')
+  g.apply({ id: 'air', month: null, airDrive: 'obs' })                                          // 同一個值再來一次：不換物件
+  assert.equal(store.getState().gov, after)
+  g.apply({ airDrive: 'model' })
+  assert.equal(store.getState().gov.airDrive, 'model'); assert.equal(after.airDrive, 'obs')     // 上一版也沒被改
+  g.apply({ airDrive: null })                                                                   // 主視窗回到沒選過（auto）
+  assert.equal(store.getState().gov.airDrive, null)
+  assert.equal(coreOf({ store }).get('gov').get().airDrive, null)
+  assert.deepEqual(store.getState().calls, [])                                                  // 不呼叫 applyGov / 任何 store 動作
+  g.dispose()
+})
+
+test('gov 切片 apply：舊版主視窗的訊息（沒有 airDrive 欄位）與壞值都相容——不動觀眾端目前的 airDrive、也不換 gov 物件', () => {
+  const store = makeStore({ gov: { ...GOV_A(), airDrive: 'obs' } })
+  const g = coreOf({ store }).get('gov')
+  const before = store.getState().gov
+  g.apply({ id: 'feitsui', month: 2 })                                                          // 舊訊息
+  assert.equal(store.getState().gov, before); assert.equal(store.getState().gov.airDrive, 'obs')
+  assert.equal(store.getState().govOptionId, 'feitsui'); assert.equal(store.getState().surveyMonth, 2)   // id / 月份照常
+  for (const bad of ['auto', 'OBS', '', 0, 7, {}, [], true, undefined]) g.apply({ id: 'feitsui', month: 2, airDrive: bad })
+  assert.equal(store.getState().gov, before)
+  g.apply(null); g.apply('x'); g.apply(42); g.apply([])                                         // 壞資料不丟例外
+  assert.equal(store.getState().gov, before)
+  // 舊訊息不會讓「之後才載入的 gov」被補上任何 airDrive
+  const fresh = makeStore()
+  const g2 = coreOf({ store: fresh }).get('gov')
+  g2.apply({ id: 'feitsui', month: null })
+  const loaded = GOV_A(); fresh.setState({ gov: loaded })
+  assert.equal(fresh.getState().gov, loaded)
+  g.dispose(); g2.dispose()
+})
+
+test('gov 切片 apply：gov 尚未載入時先到的訊息——記下最近一次的值，gov 一載入就補套用；之後 gov 被整份換掉（資料更新）也會補套用', () => {
+  const store = makeStore({ gov: null })
+  const g = coreOf({ store }).get('gov')
+  g.apply({ id: 'air', month: null, airDrive: 'obs' })
+  assert.equal(store.getState().gov, null)                                                      // 沒有 gov 可以寫：略過、不丟例外、不憑空造一個
+  assert.equal(store.getState().govOptionId, 'air')                                             // id 仍照常套用
+  g.apply({ id: 'air', month: null, airDrive: 'model' })                                        // 載入前又來一個新的：以最近一次為準
+  const loaded = GOV_A()
+  store.setState({ gov: loaded, govOptionId: 'feitsui' })                                       // AudienceApp 載入 ocean.json 的寫法
+  assert.equal(store.getState().gov.airDrive, 'model')                                          // 補套用
+  assert.equal(loaded.airDrive, undefined)                                                      // 載入來的物件沒被改
+  assert.equal(store.getState().govOptionId, 'feitsui')
+  const refreshed = { ...GOV_A(), fetchedAt: 'T2' }                                             // 每 30 分鐘的資料更新：整份換掉，airDrive 會被洗掉 → 補回
+  store.setState({ gov: refreshed })
+  assert.equal(store.getState().gov.airDrive, 'model'); assert.equal(store.getState().gov.fetchedAt, 'T2'); assert.equal(refreshed.airDrive, undefined)
+  g.apply({ airDrive: null })                                                                   // 主視窗改回 auto
+  assert.equal(store.getState().gov.airDrive, null)
+  store.setState({ gov: { ...GOV_A(), airDrive: 'obs' } })                                      // 換進來的資料自己帶了別的值 → 以主視窗最近一次為準
+  assert.equal(store.getState().gov.airDrive, null)
+  g.dispose()
+})
+
+test('gov 切片：補套用的訂閱只在第一次收到 airDrive 才建立、不重複；dispose 取消訂閱後不再補套用；沒收過 airDrive 就不訂閱', () => {
+  let subs = 0
+  const store = makeStore({ gov: null })
+  const rawSubscribe = store.subscribe
+  store.subscribe = (f) => { subs++; const off = rawSubscribe(f); return () => { subs--; off() } }
+  const g = coreOf({ store }).get('gov')
+  g.apply({ id: 'air', month: 1 }); assert.equal(subs, 0)                                       // 舊訊息：不需要訂閱
+  g.apply({ airDrive: 'obs' }); g.apply({ airDrive: 'model' }); g.apply({ airDrive: null })
+  assert.equal(subs, 1)                                                                         // 只有一個
+  g.dispose(); assert.equal(subs, 0)
+  g.dispose()                                                                                   // 冪等
+  store.setState({ gov: GOV_A() })
+  assert.equal(store.getState().gov.airDrive, undefined)                                        // 已取消：不再補套用
+})
+
+test('全流程（假 channel）：主視窗切換驅動來源 → 觀眾視窗的 gov.airDrive 跟著變；觀眾視窗晚載入資料（gov 先是 null）也會在載入後補上；主視窗重整後 auto 也會同步', () => {
+  const bus = makeBus(), clock = makeClock()
+  const hostStore = makeStore({ govOptionId: 'air', gov: { ...GOV_A(), airDrive: 'obs' } })
+  const hostSlices = createCoreSlices({ store: hostStore, seriesMeta: makeSeriesMeta(), purifyMeta: { v: 1 }, locale: noLocale })
+  const mkHost = (id) => createHost({ channel: bus.create(), listSlices: () => hostSlices, now: clock.now, timers: clock.timers, hostId: id })
+  const audStore = makeStore({ gov: null })                                                     // 觀眾視窗還沒載入 ocean.json
+  const audSlices = new Map(createCoreSlices({ store: audStore, seriesMeta: makeSeriesMeta(), purifyMeta: { v: 1 }, locale: noLocale }))
+  const aud = createAudience({ channel: bus.create(), id: 'A1', now: clock.now, timers: clock.timers, apply: (k, v, m) => { const s = audSlices.get(k); if (s) s.apply(v, m) } })
+  let host = mkHost('H1')
+  aud.start()                                                                                   // hello → 快照（含 airDrive: 'obs'），此時觀眾端 gov 是 null
+  assert.equal(host.count(), 1)
+  assert.equal(audStore.getState().gov, null); assert.equal(audStore.getState().govOptionId, 'air')
+  audStore.setState({ gov: GOV_A() })                                                           // 觀眾視窗自己的 ocean.json 載入完成
+  assert.equal(audStore.getState().gov.airDrive, 'obs')
+  clock.advance(1000)
+  hostStore.setState({ gov: { ...hostStore.getState().gov, airDrive: 'model' } })               // 資料卡切換
+  assert.equal(audStore.getState().gov.airDrive, 'model')
+  clock.advance(1000)
+  hostStore.setState({ gov: { ...hostStore.getState().gov, airDrive: undefined } })             // 回到沒選過
+  assert.equal(audStore.getState().gov.airDrive, null)
+  // 主視窗重整：新的 host（沒選過驅動來源）→ 觀眾端 3 秒內重新 hello，拿到 airDrive: null
+  clock.advance(1000)
+  hostStore.setState({ gov: { ...hostStore.getState().gov, airDrive: 'obs' } })
+  assert.equal(audStore.getState().gov.airDrive, 'obs')
+  host.destroy()
+  hostStore.setState({ gov: GOV_A() })
+  host = mkHost('H2')
+  clock.advance(PROBE_AFTER_MS + HELLO_MS)
+  assert.equal(audStore.getState().gov.airDrive, null)
+  aud.stop(); host.destroy(); audSlices.get('gov').dispose()
+})
+
+test("viewPrefs 的 'view' 鏡像切片在 audience.js 載入時就已註冊（觀眾視窗的 Scene3D 是 lazy chunk，第一個快照可能比它先到）", async () => {
+  const slice = getMirror('view')
+  assert.ok(slice && typeof slice.get === 'function' && typeof slice.apply === 'function' && typeof slice.subscribe === 'function')
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('./audience.js', import.meta.url), 'utf8')
+  assert.match(src, /^import '\.\/viewPrefs\.js'$/m)
 })
 
 test('overlays 切片：直接 setState，不走 setOverlay（它會寫兩個視窗共用的 localStorage）', () => {
@@ -770,6 +927,25 @@ test('真實 store：核心切片的 get 全是 JSON 純值，spawn / purify / �
   slices.get('overlays').apply({ board: false, hud: true, qr: true })
   assert.equal(useStore.getState().overlays.board, false)
   offs.forEach((f) => f())
+})
+
+test('真實 store：gov 切片的 airDrive 補套用（AudienceApp 載入 ocean.json 的寫法 setState({ gov })）與讀出', async () => {
+  const { useStore } = await import('../store/useStore.js')
+  const slice = coreOf({ store: useStore }).get('gov')
+  const saved = { gov: useStore.getState().gov, govOptionId: useStore.getState().govOptionId }
+  try {
+    useStore.setState({ gov: null })
+    slice.apply({ id: 'air', month: null, airDrive: 'obs' })
+    assert.equal(useStore.getState().gov, null)
+    const loaded = Object.freeze({ options: [{ id: 'air' }], defaultOption: 'air', air: { pm25: 9 } })
+    useStore.setState({ gov: loaded, govOptionId: pickGovOptionId(loaded, useStore.getState().govOptionId) })
+    assert.equal(useStore.getState().gov.airDrive, 'obs')
+    assert.deepEqual(slice.get(), { id: useStore.getState().govOptionId, month: useStore.getState().surveyMonth == null ? null : useStore.getState().surveyMonth, airDrive: 'obs' })
+    assert.equal(loaded.airDrive, undefined)
+  } finally {
+    slice.dispose()
+    useStore.setState(saved)
+  }
 })
 
 // ───────────── 真的 BroadcastChannel（Node 內建）往返 ─────────────

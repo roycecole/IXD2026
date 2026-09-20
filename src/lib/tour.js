@@ -764,5 +764,15 @@ export function createTourRunner(deps) {
     isPaused: () => !!(run && run.paused),
     isActive: () => !!run || stopping,   // 導覽進行中「或正在收尾」：觸覺回饋據此靜音（導覽自己的換站 / 播放 / 還原不是使用者的事件）
     current: () => (run ? { index: run.i, total: run.stops.length, stop: run.stops[run.i], auto: run.auto, paused: run.paused } : null),
+    // 這一站還剩多少毫秒（唯讀，不改任何狀態）：暫停時凍結在暫停那一刻、繼續後接著倒數；超過時間（旁白還在念、等著換站）→ 0；
+    // 沒在跑 / 還沒進入任何一站 → null。導覽員遙控（手機）的倒數與進度條用它。
+    remainingMs: () => {
+      const r = run
+      if (!r) return null
+      const cur = r.stops[r.i]
+      if (!cur || !isNum(cur.durationMs)) return null
+      const spent = r.paused ? r.frozenMs : now() - r.at
+      return Math.max(0, cur.durationMs - Math.max(0, spent))
+    },
   })
 }

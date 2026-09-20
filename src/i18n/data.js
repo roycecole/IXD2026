@@ -5,9 +5,11 @@
 //   lunarLabelText(zh)    '農曆八月初十' → 'Lunar 8/10'
 //   lunarDayText(zh)      不含「農曆」前綴的部分（'八月初十' / '8/10'），給「農曆 {lunar}」這類句型用
 //   tideRangeText(range)  潮差（'小' 或 '小潮'）→ '小潮' / 'neap tide'
-// 注意：本檔的中文只能出現在 regex 字面量裡（i18n 掃描器不算），中文↔英文的對照表在 ./en/data.js。
+// 注意：本檔的中文只能出現在 regex 字面量裡（i18n 掃描器不算）。名稱的中文↔英文對照在 ./en/data.js（字典，動態載入）；
+// 組詞用的詞素表（天氣 / 農曆）在 ./data-tables.js——不能靜態 import ./en/data.js：i18n/en/ 底下都是動態載入的英文字典 chunk，
+// 靜態 import 會讓中文使用者也得下載整包英文字典（見 vite.config.js 的 manualChunk）。data-tables.js 與 ./en/data.js 的同名匯出由 i18n.test.mjs 核對一致。
 import { t, getLocale, getEnDict } from './index.js'
-import { WX_SKY, WX_MOD, WX_NOUN, LUNAR_MONTH, LUNAR_DAY } from './en/data.js'
+import { WX_SKY, WX_MOD, WX_NOUN, LUNAR_MONTH, LUNAR_DAY } from './data-tables.js'
 
 const HAN = /[㐀-鿿豈-﫿]/
 const isEn = () => getLocale() === 'en'

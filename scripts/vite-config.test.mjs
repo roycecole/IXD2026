@@ -178,3 +178,75 @@ test('dist（建置後）：version.json 存在且 id 出現在 bundle 內', { s
   const hits = assets.filter((f) => readFileSync(new URL('assets/' + f, root), 'utf8').includes(v.id))
   assert.ok(hits.length >= 1, `bundle 內找不到 build id ${v.id}`)
 })
+
+// =============================================================================================
+// 英文字典動態載入（第 5 輪）：src/i18n/en/*.js 與彙整它們的 src/i18n/en-all.js 全部歸同一個 chunk「i18n-en」，
+// 只被 src/i18n/index.js 的 loadEnglish() 動態 import——中文使用者與手機遙控頁的中文模式完全不下載（入口 chunk gzip 約 13KB，而不是 67KB）。
+// =============================================================================================
+import { resolve as resolvePath } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { loadEnDict } from './i18n-check.mjs'
+
+test('manualChunks：src/i18n/en/*.js 與 src/i18n/en-all.js 歸 i18n-en；i18n 其他檔案（index / loader / data / data-tables）與其餘原始碼、node_modules 分塊規則不變', () => {
+  const src = (p) => `/Users/x/IXD2026/src/${p}`
+  assert.equal(manualChunk(src('i18n/en/air.js')), 'i18n-en')
+  assert.equal(manualChunk(src('i18n/en/ui-shell.js')), 'i18n-en')
+  assert.equal(manualChunk(src('i18n/en/diagnostics2.js')), 'i18n-en')
+  assert.equal(manualChunk(src('i18n/en-all.js')), 'i18n-en', '彙整模組跟字典同一個 chunk（否則會多一個只轉手的 facade chunk、多一趟往返）')
+  assert.equal(manualChunk('C:\\Users\\x\\IXD2026\\src\\i18n\\en\\tour.js'), 'i18n-en', 'Windows 路徑')
+  assert.equal(manualChunk(src('i18n/en/air.js') + '?v=123'), 'i18n-en', '帶查詢字串')
+  // 真實專案裡每一個字典檔都要歸進去（新增功能的字典自動被 glob 併入，也自動歸這個 chunk）
+  for (const f of readdirSync(new URL('../src/i18n/en/', import.meta.url)).filter((n) => n.endsWith('.js'))) assert.equal(manualChunk(src(`i18n/en/${f}`)), 'i18n-en', f)
+  // 其餘不變
+  for (const f of ['i18n/index.js', 'i18n/loader.js', 'i18n/data.js', 'i18n/data-tables.js', 'i18n/i18n.test.mjs', 'i18n/GLOSSARY.md', 'main.jsx', 'App.jsx', 'lib/resilience.js', 'i18n/en/nested/x.js', 'i18n/english.js', 'i18n/en-all.json']) assert.equal(manualChunk(src(f)), undefined, f)
+  assert.equal(manualChunk('/Users/x/IXD2026/node_modules/foo/src/i18n/en/x.js'), undefined, 'node_modules 裡剛好同名的路徑不算（錨定在 node_modules 之外）')
+  assert.equal(manualChunk(nm('react/index.js')), 'react'); assert.equal(manualChunk(nm('three/build/three.module.js')), 'three'); assert.equal(manualChunk(nm('@react-three/fiber/dist/index.js')), 'r3f')
+  assert.equal(config({ command: 'build', mode: 'production' }).build.rollupOptions.output.manualChunks, manualChunk)
+})
+
+test('main.jsx 啟動流程：最前面就 bootLocale()（英文字典載入與路由 chunk 並行），第一次 render 等它（.then(mount, mount)：不論成功 / 逾時 / 失敗都 render），render 只出現在 mount 裡；不靜態載入字典', () => {
+  const src = readFileSync(new URL('../src/main.jsx', import.meta.url), 'utf8')
+  assert.match(src, /import \{ t, bootLocale \} from '\.\/i18n\/index\.js'/)
+  const iBoot = src.indexOf('const localeReady = bootLocale()')
+  assert.ok(iBoot > 0, '有 bootLocale() 啟動')
+  assert.ok(iBoot < src.indexOf('const parseRemote') && iBoot < src.indexOf("lazy(() => import('./App.jsx'))"), 'bootLocale() 在路由設定之前（最前面就開始載入）')
+  assert.match(src, /const mount = \(\) => createRoot\(document\.getElementById\('root'\)\)\.render\(/)
+  assert.match(src, /\nlocaleReady\.then\(mount, mount\)\s*$/, '等字典（成功 / 失敗都 render）')
+  assert.equal((src.match(/\.render\(/g) || []).length, 1, 'render 只有 mount 裡一處（不會在字典就緒前就 render）')
+  assert.doesNotMatch(src, /en-all|i18n\/en\//, '不靜態載入字典')
+  assert.match(src, /import\('\.\/remote\/RemoteApp\.jsx'\)\s*:\s*diagnosticsMode \? import\('\.\/DiagnosticsApp\.jsx'\)\s*:\s*audienceMode \? import\('\.\/AudienceApp\.jsx'\)\s*:\s*import\('\.\/App\.jsx'\)/, '等字典期間預抓這個網址會用到的路由 chunk（與 lazy() 同一個模組）')
+  // 路由分流與 #remote= 解析原封不動
+  assert.match(src, /remoteMatch \? <RemoteApp hostId=\{remoteMatch\.hostId\} guide=\{remoteMatch\.guide\} \/> : diagnosticsMode \? <DiagnosticsApp \/> : audienceMode \? <AudienceApp \/> : <App \/>/)
+})
+
+// 完整驗證（建置產物）：預設略過。MIDISEA_VERIFY_DIST=1 讀 dist/；MIDISEA_DIST_DIR=<目錄> 讀指定的（例如暫存目錄的 build，不動別人正在用的 dist/）。
+//   MIDISEA_DIST_DIR=/tmp/xxx/build node --test scripts/vite-config.test.mjs
+const distDir = process.env.MIDISEA_DIST_DIR ? pathToFileURL(resolvePath(process.env.MIDISEA_DIST_DIR) + '/') : new URL('../dist/', import.meta.url)
+test('dist（建置後）：i18n-en 是單一帶 hash 的 chunk；index.html / 入口 chunk 不含英文字典；只有入口 chunk 動態 import 它，沒有任何靜態依賴；HTML 不 modulepreload 它', { skip: !(process.env.MIDISEA_VERIFY_DIST || process.env.MIDISEA_DIST_DIR) }, async () => {
+  const html = readFileSync(new URL('index.html', distDir), 'utf8')
+  const files = readdirSync(new URL('assets/', distDir)).filter((f) => f.endsWith('.js'))
+  const en = files.filter((f) => /^i18n-en-[A-Za-z0-9_-]{8}\.js$/.test(f))
+  assert.equal(en.length, 1, `i18n-en 應該只有一個帶 hash 的 chunk：${files.filter((f) => /i18n/.test(f))}`)
+  const enFile = en[0]
+  assert.ok(!html.includes('i18n-en'), 'index.html 不能引用 i18n-en（modulepreload / script 都不行）')
+  const entry = /<script type="module"[^>]*src="\/assets\/([^"]+\.js)"/.exec(html)[1]
+  const read = (f) => readFileSync(new URL('assets/' + f, distDir), 'utf8')
+  const entryCode = read(entry)
+  assert.match(entryCode, new RegExp(`import\\("\\./${enFile.replace('.', '\\.')}"\\)`), '入口 chunk 以動態 import 載入字典')
+  for (const f of files) {
+    if (f === enFile) continue
+    const code = read(f)
+    const staticDep = new RegExp(`(?:from|import)\\s*"\\./${enFile.replace('.', '\\.')}"`).test(code)
+    assert.ok(!staticDep, `${f} 靜態依賴 ${enFile}（中文使用者也得下載字典）`)
+    if (f !== entry) assert.ok(!code.includes(enFile), `${f} 引用了 ${enFile}（只有入口 chunk 該動態載入它）`)
+  }
+  // 字典內容只在 i18n-en：抽樣（較長的英文譯文）
+  const { dict } = await loadEnDict()
+  const samples = Object.values(dict).filter((v) => typeof v === 'string' && v.length >= 30 && !/["'\\`]/.test(v)).slice(0, 40)
+  assert.ok(samples.length >= 20)
+  const enCode = read(enFile)
+  const inEntry = samples.filter((s) => entryCode.includes(s)), inEn = samples.filter((s) => enCode.includes(s))
+  assert.deepEqual(inEntry, [], '入口 chunk 不能含英文字典的內容')
+  assert.ok(inEn.length >= samples.length * 0.9, `i18n-en 應含字典內容（${inEn.length}/${samples.length}）`)
+  for (const f of files) if (f !== enFile && f !== entry) assert.ok(!samples.some((s) => read(f).includes(s)), `${f} 含英文字典內容`)
+})

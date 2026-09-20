@@ -15,6 +15,9 @@ import {
   VIEW_MODES, DEFAULT_VIEW, isViewMode, parseFitParam, readViewPref, saveViewPref, resolveView, viewMattersAt, createViewState, getViewState,
 } from './viewPrefs.js'
 import { importJsx, liveSsr, illegal } from './tourTestEnv.mjs'
+import { getMirror } from './mirror.js'
+import { createViewMirror } from './viewPrefs.js'
+import { createHost, createAudience } from './audience.js'
 
 const { dict } = await loadEnDict()
 registerEn(dict)
@@ -446,4 +449,194 @@ test('英文字典：view.js 的 key 都被 ViewSection 用到、沒有多餘也
     for (const k of Object.keys(m)) others.set(k, f)
   }
   for (const k of Object.keys(en)) assert.ok(!others.has(k), `key 與 ${others.get(k)} 重複：${k}`)
+})
+
+// =============================================================================================
+// 觀眾視窗鏡像：applyMirror / subscribeMode / 'view' 切片
+// =============================================================================================
+test('applyMirror（觀眾視窗）：只改記憶體中的生效模式——不存偏好、不動 pref、快照形狀不變；生效模式變了才通知一般訂閱者（CameraRig 每幀讀 get().mode）', () => {
+  const save = mkSave()
+  const v = createViewState({ search: '', load: mkLoad('full'), save })
+  const keys = Object.keys(v.get())
+  let n = 0; v.subscribe(() => { n++ })
+  assert.equal(v.applyMirror('full'), true)                                   // 與目前生效的模式相同：接受，但沒有東西變 → 不通知、快照不變
+  assert.equal(n, 0)
+  assert.equal(v.applyMirror('fill'), true)
+  assert.equal(v.get().mode, 'fill'); assert.equal(v.get().pref, 'full')      // 偏好沒被動到
+  assert.deepEqual(Object.keys(v.get()), keys)                                // 快照沒有多出欄位（ViewSection / 既有測試依賴這個形狀）
+  assert.ok(Object.isFrozen(v.get()))
+  assert.equal(n, 1)
+  const cur = v.get()
+  assert.equal(v.applyMirror('fill'), true); assert.equal(n, 1); assert.equal(v.get(), cur, '同值不換快照')
+  assert.equal(v.applyMirror('full'), true); assert.equal(v.get().mode, 'full'); assert.equal(n, 2)
+  assert.equal(save.calls.length, 0, 'apply 不落地：不呼叫 save')
+})
+
+test('applyMirror：非法值（不是 full / fill，區分大小寫）被拒——回 false、狀態不變、不通知、不存', () => {
+  const save = mkSave()
+  const v = createViewState({ search: '', load: mkLoad('fill'), save })
+  let n = 0; v.subscribe(() => { n++ })
+  const cur = v.get()
+  for (const bad of ['FILL', 'Full', 'x', '', null, undefined, 1, 0, {}, [], true, NaN, 'fill ']) assert.equal(v.applyMirror(bad), false, String(bad))
+  assert.equal(v.get(), cur); assert.equal(n, 0); assert.equal(save.calls.length, 0)
+  v.applyMirror('full'); assert.equal(v.get().mode, 'full')
+  for (const bad of ['FILL', null, {}]) v.applyMirror(bad)
+  assert.equal(v.get().mode, 'full', '壞值不會清掉已收到的值')
+})
+
+test('applyMirror 與網址覆寫：這個視窗自己的 ?fit=full|fill 優先（不被主視窗蓋過）；?fit=0 只影響 enabled，模式仍跟著主視窗', () => {
+  const save = mkSave()
+  const a = createViewState({ search: '?fit=fill', load: mkLoad('full'), save })
+  let n = 0; a.subscribe(() => { n++ })
+  a.applyMirror('full')
+  assert.equal(a.get().mode, 'fill'); assert.equal(a.get().override, 'fill'); assert.equal(n, 0, '生效模式沒變 → 不通知')
+  const b = createViewState({ search: '?fit=0', load: mkLoad('full'), save })
+  b.applyMirror('fill')
+  assert.equal(b.get().enabled, false); assert.equal(b.get().override, 'off'); assert.equal(b.get().mode, 'fill')
+  assert.equal(save.calls.length, 0)
+})
+
+test('setMode 會清掉收到的鏡像值（使用者自己選 = 明確的選擇，立刻生效並存偏好）', () => {
+  const save = mkSave()
+  const v = createViewState({ search: '', load: mkLoad('full'), save })
+  v.applyMirror('fill')
+  let n = 0; v.subscribe(() => { n++ })
+  assert.equal(v.setMode('full'), true)                                       // 偏好本來就是 full、但生效的是鏡像來的 fill → 這一下要真的換回 full
+  assert.equal(v.get().mode, 'full'); assert.equal(n, 1)
+  assert.deepEqual(save.calls, [[LS.view, 'full']])
+  v.applyMirror('fill'); assert.equal(v.get().mode, 'fill')                   // 之後主視窗再送就再跟
+})
+
+test('回送防護：subscribeMode 只在「本機造成的」生效模式改變時通知——applyMirror / setCanvas / 同值 / 非法值都不觸發；取消訂閱、壞訂閱者不影響別人', () => {
+  const v = createViewState({ search: '', load: mkLoad('full'), save: mkSave() })
+  let local = 0, all = 0
+  const off = v.subscribeMode(() => { local++ })
+  v.subscribe(() => { all++ })
+  v.applyMirror('fill')
+  assert.equal(local, 0, '收到的值不會再被當成本機改變送出去'); assert.equal(all, 1)
+  v.setCanvas(375, 812); v.setCanvas(1600, 900)
+  assert.equal(local, 0, '畫布尺寸改變不是模式改變')
+  v.setMode('fill')                                                           // 生效模式 fill → fill（偏好變了但生效的沒變）
+  assert.equal(local, 0)
+  v.setMode('full'); assert.equal(local, 1)                                   // 真的換了
+  v.setMode('full'); assert.equal(local, 1)
+  v.setMode('bogus'); assert.equal(local, 1)
+  v.setMode('fill'); assert.equal(local, 2)
+  const u = createViewState({ search: '?fit=fill', load: mkLoad('full'), save: mkSave() })
+  let lu = 0; u.subscribeMode(() => { lu++ })
+  u.setMode('fill'); assert.equal(lu, 0, '網址覆寫的 fill 變成偏好 fill：生效模式沒變')
+  u.setMode('full'); assert.equal(lu, 1)
+  off(); v.setMode('full'); assert.equal(local, 2, '取消訂閱後不再通知')
+  const w = createViewState({ search: '', load: mkLoad(null), save: mkSave() })
+  let ok = 0
+  w.subscribeMode(() => { throw new Error('壞訂閱者') })
+  w.subscribeMode(() => { ok++ })
+  assert.doesNotThrow(() => w.setMode('fill')); assert.equal(ok, 1)
+})
+
+test('createViewMirror：get = 生效模式；apply 只收 full / fill；apply 不落地、不觸發 subscribe；subscribe 回傳取消函式', () => {
+  const save = mkSave()
+  const v = createViewState({ search: '', load: mkLoad('full'), save })
+  const m = createViewMirror(() => v)
+  assert.equal(typeof m.hz, 'number')
+  assert.equal(m.get(), 'full')
+  let n = 0
+  const off = m.subscribe(() => { n++ })
+  m.apply('fill')
+  assert.equal(m.get(), 'fill'); assert.equal(v.get().mode, 'fill')
+  assert.equal(n, 0, 'apply 不會回送'); assert.equal(save.calls.length, 0, 'apply 不落地')
+  for (const bad of ['FILL', 'x', '', null, undefined, 1, {}, [], true, NaN]) m.apply(bad)
+  assert.equal(m.get(), 'fill')
+  v.setMode('full'); assert.equal(n, 1); assert.equal(m.get(), 'full')        // 本機（主視窗）的選擇才會通知
+  assert.deepEqual(JSON.parse(JSON.stringify(m.get())), m.get(), 'get 是 JSON 純值')
+  off(); v.setMode('fill'); assert.equal(n, 1)
+  assert.doesNotThrow(() => createViewMirror(() => v).apply(undefined))
+})
+
+test("registerMirror('view')：模組頂層註冊（import 時不碰 localStorage / location、不建立狀態）；get / apply / subscribe 走全站共用的那一份；apply 不寫 localStorage", async () => {
+  const st = new StrictStorage({ [LS.view]: '"full"' })
+  const desc = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  let mod
+  Object.defineProperty(globalThis, 'localStorage', { value: st, configurable: true, writable: true })
+  try {
+    mod = await import('./viewPrefs.js?view-mirror-registration')               // 全新的模組實例：註冊表裡的 'view' 就是它註冊的那一份
+    assert.equal(st.log.length, 0, 'import 只註冊切片，不讀寫 localStorage')
+    const slice = getMirror('view')
+    assert.ok(slice, "註冊表裡有 'view'")
+    assert.equal(typeof slice.hz, 'number')
+    assert.equal(slice.get(), 'full')                                          // 第一次用到才建立狀態並讀偏好
+    let n = 0
+    const off = slice.subscribe(() => { n++ })
+    slice.apply('fill')
+    assert.equal(mod.getViewState().get().mode, 'fill'); assert.equal(slice.get(), 'fill')
+    assert.equal(mod.getViewState().get().pref, 'full')
+    assert.equal(n, 0, '回送防護：收到的值不通知 subscribe')
+    slice.apply('bogus'); slice.apply(null); slice.apply({ mode: 'full' })
+    assert.equal(slice.get(), 'fill', '非法值忽略')
+    assert.deepEqual(st.log.filter((x) => x[0] === 'set'), [], 'apply 不落地：沒有任何 setItem')
+    assert.equal(st.m.get(LS.view), '"full"')
+    mod.getViewState().setMode('full')                                         // 主視窗使用者的選擇：存偏好、通知
+    assert.equal(n, 1); assert.equal(st.m.get(LS.view), '"full"'); assert.equal(slice.get(), 'full')
+    off()
+  } finally {
+    if (desc) Object.defineProperty(globalThis, 'localStorage', desc); else delete globalThis.localStorage
+  }
+})
+
+test('兩個視窗（假 channel）：主視窗改取景 → 觀眾視窗跟著換且不存偏好；觀眾視窗不會把收到的值送回去；晚連上的觀眾視窗從快照拿到目前模式', () => {
+  const chans = []
+  const mkCh = () => {
+    const ch = { onmessage: null, closed: false, sent: [], postMessage(m) { ch.sent.push(m); const data = structuredClone(m); for (const o of chans) if (o !== ch && !o.closed && typeof o.onmessage === 'function') o.onmessage({ data }) }, close() { ch.closed = true } }
+    chans.push(ch)
+    return ch
+  }
+  let clock = 0
+  const timers = { setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0, clearInterval() {} }
+  const hostSave = mkSave(), audSave = mkSave()
+  const hostView = createViewState({ search: '', load: mkLoad('full'), save: hostSave })
+  const audView = createViewState({ search: '', load: mkLoad('full'), save: audSave })
+  const hostSlice = createViewMirror(() => hostView), audSlice = createViewMirror(() => audView)
+  let audEchoes = 0
+  audSlice.subscribe(() => { audEchoes++ })                                    // 假設觀眾視窗端也有人在訂閱這個切片：apply 不能讓它動起來
+  const hostCh = mkCh(), audCh = mkCh()
+  const host = createHost({ channel: hostCh, listSlices: () => [['view', hostSlice]], hostId: 'H1', now: () => clock, timers })
+  const aud = createAudience({ channel: audCh, id: 'A1', now: () => clock, timers, apply: (k, v, meta) => { if (k === 'view') audSlice.apply(v, meta) } })
+  const seen = []
+  audView.subscribe(() => { seen.push(audView.get().mode) })
+  try {
+    aud.start()
+    assert.equal(host.count(), 1)
+    assert.equal(audView.get().mode, 'full')                                   // 快照
+    clock += 1000; hostView.setMode('fill')
+    assert.equal(audView.get().mode, 'fill')                                   // 增量
+    assert.deepEqual(seen, ['fill'], 'CameraRig 讀的那份快照有換、只換一次')
+    assert.equal(audView.get().pref, 'full'); assert.equal(audSave.calls.length, 0, '觀眾視窗不寫偏好')
+    assert.deepEqual(hostSave.calls, [[LS.view, 'fill']], '主視窗的使用者選擇照常存偏好')
+    assert.equal(audEchoes, 0, '收到的值沒有觸發觀眾視窗端的 subscribe')
+    assert.ok(audCh.sent.every((m) => m.type === 'hello' || m.type === 'pong' || m.type === 'bye'), '觀眾視窗只送 hello / pong / bye，沒有把 view 送回去：' + audCh.sent.map((m) => m.type))
+    clock += 1000; hostView.setMode('full')
+    assert.equal(audView.get().mode, 'full'); assert.deepEqual(seen, ['fill', 'full'])
+    clock += 1000; hostView.setMode('fill')
+    // 晚連上的第二個觀眾視窗：hello → 快照帶目前的模式
+    const late = createViewState({ search: '', load: mkLoad('full'), save: mkSave() })
+    const lateSlice = createViewMirror(() => late)
+    const lateAud = createAudience({ channel: mkCh(), id: 'A2', now: () => clock, timers, apply: (k, v, meta) => { if (k === 'view') lateSlice.apply(v, meta) } })
+    lateAud.start()
+    assert.equal(host.count(), 2)
+    assert.equal(late.get().mode, 'fill')
+    lateAud.stop()
+  } finally {
+    aud.stop(); host.destroy()
+  }
+})
+
+test("取景鏡像的接線守則：audience.js 載入時就註冊 'view'（快照可能比 lazy 的 Scene3D 先到）；CameraRig 每幀讀 view.get().mode（收到的模式下一幀就進目標倍率、由既有 lerp 平滑過去）；viewPrefs 仍是純模組", () => {
+  const aud = readFileSync(new URL('./audience.js', import.meta.url), 'utf8')
+  assert.match(aud, /^import '\.\/viewPrefs\.js'$/m)
+  const scene = readFileSync(new URL('../scene/Scene3D.jsx', import.meta.url), 'utf8')
+  assert.match(scene, /mode: view\.get\(\)\.mode/)
+  const lib = readFileSync(new URL('./viewPrefs.js', import.meta.url), 'utf8')
+  assert.match(lib, /registerMirror\('view', /)
+  assert.match(lib, /from '\.\/mirror\.js'/)
+  assert.doesNotMatch(lib, /from 'three'|from 'react'|store\/useStore|zustand/)
 })

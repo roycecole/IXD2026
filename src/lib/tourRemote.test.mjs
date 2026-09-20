@@ -4,18 +4,22 @@
 //   導覽沒在跑時的指令；touchGuide 有呼叫而 touch 沒有；格式錯誤訊息不丟例外；連線關閉後移出集合）、
 //   狀態酬載（白名單 / 備註 ≤120 字 / 站位置不位移）與推送時機（createGuideSync：立即推、變化才推、每 2 秒補推、停止即清）、
 //   遙控頁的檢視模型與訊息 reducer、展場 QR 的 G 鍵判斷，以及「真的 runner + 真的 store + 真的活動掛鉤」的整合（導覽員指令不會中止導覽）。
+//   第 5 輪補強：倒數欄位（remainMs / stopMs）的酬載與相容、guideView 的倒數 / 下一站預告、本機內插（校準 / 暫停凍結）、tourRunner.remainingMs()（真的 runner + 假時鐘）、
+//   推送時機（換站 / 暫停 / 繼續即時推、其餘 2 秒補推）、host 端同一支手機的連線取代（peer id 去重、舊連線的 close 不影響新連線）、
+//   遙控頁連線單例（createBoot / ensurePeer / releasePeer：自動重連、重送 hello、StrictMode 雙掛載）與狀態文字、導覽員區塊的倒數 / 預告 / 喚醒標示的 SSR 標記。
 // 連線 / 計時器 / runner 都是「會檢查 this 的假物件」：脫離原物件呼叫會丟 Illegal invocation，跟瀏覽器一樣。
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { create } from 'zustand'
-import { illegal, withStorage, importJsx } from './tourTestEnv.mjs'
+import { illegal, withStorage, importJsx, makeTimers } from './tourTestEnv.mjs'
 import {
-  GUIDE_STOP_IDS, GUIDE_STOP_OTHER, GUIDE_CMDS, GUIDE_NOTE_MAX, GUIDE_MAX_STOPS, GUIDE_MIN_GAP_MS, GUIDE_PUSH_MS, GUIDE_MAX_BAD_HELLO, GUIDE_TOKEN_LEN, GUIDE_QR_MS, GUIDE_HELLO_WAIT_MS,
-  isGuideToken, makeGuideToken, parseRemoteHash, buildRemoteUrl, helloMsg, guideCmd, parseGuideCmd, tourPayload, parseTourPayload, reduceGuideMsg, guideView, isGuideQrKey,
+  GUIDE_STOP_IDS, GUIDE_STOP_OTHER, GUIDE_CMDS, GUIDE_NOTE_MAX, GUIDE_MAX_STOPS, GUIDE_MAX_STOP_MS, GUIDE_MIN_GAP_MS, GUIDE_PUSH_MS, GUIDE_MAX_BAD_HELLO, GUIDE_TOKEN_LEN, GUIDE_QR_MS, GUIDE_HELLO_WAIT_MS,
+  isGuideToken, makeGuideToken, parseRemoteHash, buildRemoteUrl, helloMsg, guideCmd, parseGuideCmd, tourPayload, parseTourPayload, reduceGuideMsg, guideView, countdownView, countdownExtra, isGuideQrKey,
   createGuideHost, createGuideSync,
 } from './tourRemote.js'
 import { TOUR_STOP_IDS } from './tourLink.js'
+import { backoffMs } from './remoteReconnect.js'
 
 const TOKEN = 'k3x9a1b7zq'
 const src = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8')
@@ -945,7 +949,7 @@ function makeWin() {
   const L = {}
   return { addEventListener(t, f) { (L[t] ||= []).push(f) }, removeEventListener(t, f) { L[t] = (L[t] || []).filter((x) => x !== f) } }
 }
-function realSetup() {
+function realSetup(over = {}) {
   S().stopPlayback(); if (S().rec.mode === 'recording') S().stopRecording()
   S().clearRec()
   S().setGov(gov)
@@ -954,7 +958,7 @@ function realSetup() {
   const clock = { t: 5e6 }
   const runner = createTourRunner({ store: useStore, getActivity: () => activity.last, touch, now: () => clock.t })
   const detach = attachTourGuards({ win: makeWin(), doc: Object.assign(makeWin(), { hidden: false }), runner })   // 與正式環境一樣的活動掛鉤：任何 touch() 都會中止導覽
-  const host = createGuideHost({ runner, tourStore: useTourStore, touchGuide, noteActivity: noteRemoteActivity, now: () => clock.t, getToken: () => TOKEN, setSpeak, getExtra: () => ({ ready: true }) })
+  const host = createGuideHost({ runner, tourStore: useTourStore, touchGuide, noteActivity: noteRemoteActivity, now: () => clock.t, getToken: () => TOKEN, setSpeak, getExtra: over.getExtra || (() => ({ ready: true })) })
   const conn = makeConn('real')
   host.handle(conn, helloMsg(TOKEN))
   const tick = (ms) => { clock.t += ms; runner.tick(clock.t) }
@@ -1101,11 +1105,11 @@ test('端到端（假連線對 + 真的 runner / store）：遙控頁的狀態�
 // =============================================================================================
 const importsOf = (code) => [...code.matchAll(/(?:^|\n)\s*import\s+(?:[^'"\n]*?from\s+)?['"]([^'"]+)['"]/g)].map((m) => m[1])
 
-test('遙控頁保持輕量：RemoteApp 只 import react / ice / sensors / i18n / tourRemote / guide.css，不碰 three、store、tour.js、tourCore、multiplayer；tourRemote.js 本身沒有任何 import', () => {
+test('遙控頁保持輕量：RemoteApp 只 import react / ice / sensors / i18n / tourRemote / remoteReconnect / wakeLockLite / guide.css，不碰 three、store、tour.js、tourCore、multiplayer、主畫面的 wakeLock.js；tourRemote / remoteReconnect / wakeLockLite 本身沒有任何 import', () => {
   const app = src('../remote/RemoteApp.jsx')
-  assert.deepEqual(importsOf(app).sort(), ['../i18n/index.js', '../lib/ice.js', '../lib/sensors.js', '../lib/tourRemote.js', '../styles/guide.css', 'react'])
-  for (const bad of ['three', 'zustand', 'store', 'tour.js', 'tourCore', 'multiplayer', 'services', 'scene', 'App.jsx']) assert.equal(importsOf(app).some((s) => s.includes(bad)), false, bad)
-  assert.equal(importsOf(src('./tourRemote.js')).length, 0)
+  assert.deepEqual(importsOf(app).sort(), ['../i18n/index.js', '../lib/ice.js', '../lib/remoteReconnect.js', '../lib/sensors.js', '../lib/tourRemote.js', '../lib/wakeLockLite.js', '../styles/guide.css', 'react'])
+  for (const bad of ['three', 'zustand', 'store', 'tour.js', 'tourCore', 'multiplayer', 'services', 'scene', 'App.jsx', 'lib/wakeLock.js']) assert.equal(importsOf(app).some((s) => s.includes(bad)), false, bad)
+  for (const f of ['./tourRemote.js', './remoteReconnect.js', './wakeLockLite.js']) assert.equal(importsOf(src(f)).length, 0, f)
 })
 
 test('RemoteApp：連線 open 後送 hello（帶 token）、逾時不回應就退回一般遙控；導覽員區塊有大按鈕 / aria-pressed / 站 chips / 念出字幕；演奏控制收進預設收合的 details；震動走功能偵測', () => {
@@ -1127,8 +1131,8 @@ test('RemoteApp：連線 open 後送 hello（帶 token）、逾時不回應就�
   assert.match(app, /\) : playControls\}/)
   // 8 個站名用 T() 標記
   for (const zh of ['今日水庫', '潮汐', '月亮', '揚塵', '空氣品質', '鳥群調查', '魚群調查', '河川測站']) assert.ok(app.includes(`T('${zh}')`), zh)
-  // 卸載清理
-  assert.match(app, /clearTimeout\(b\.helloTimer\)/)
+  // 卸載清理（計時器一律經注入的 setTimer / clearTimer：測試用假計時器、預設是「裸函式包一層」）
+  assert.match(app, /clearTimer\(b\.helloTimer\)/)
 })
 
 test('樣式：導覽員主要按鈕觸控目標 ≥ 56px（上一站 / 暫停 / 下一站 64px、開始 / 結束 56px）；guide.css 由遙控頁 / 多人視窗 / 展場 QR 各自 import', () => {
@@ -1334,3 +1338,1021 @@ test('SSR·英文語系：導覽員區塊的介面文字都是英文（站名用
   assert.equal(withNote.replace('潮汐備註', '').match(HAN_RE), null)
 })
 
+
+// =============================================================================================
+// 第 5 輪：倒數（remainMs / stopMs）— 酬載、相容、檢視模型、本機內插
+// =============================================================================================
+const RUN3 = { running: true, paused: false, index: 1, total: 3, stopList: stopList(['tide', 'moon', 'dust'], { dust: '這站講 PM10' }) }
+
+test('tourPayload：倒數欄位 remainMs / stopMs 只在導覽進行中、且是有限非負數時才帶（四捨五入成整數、夾上限；stopMs 要 > 0）；0 是合法的', () => {
+  const m = tourPayload(RUN3, { speak: false, canSpeak: true, ready: true, remainMs: 8123.6, stopMs: 16000 })
+  assert.equal(m.remainMs, 8124)
+  assert.equal(m.stopMs, 16000)
+  assert.equal(Number.isInteger(m.remainMs), true)
+  assert.equal(tourPayload(RUN3, { remainMs: 0 }).remainMs, 0, '剩 0 毫秒是合法的')
+  assert.equal('stopMs' in tourPayload(RUN3, { remainMs: 5, stopMs: 0 }), false, 'stopMs 要 > 0')
+  assert.equal(tourPayload(RUN3, { remainMs: 1e12, stopMs: 1e12 }).remainMs, GUIDE_MAX_STOP_MS)
+  assert.equal(tourPayload(RUN3, { remainMs: 1e12, stopMs: 1e12 }).stopMs, GUIDE_MAX_STOP_MS)
+  for (const bad of [-1, NaN, Infinity, -Infinity, '5', null, undefined, {}, [], true]) {
+    const q = tourPayload(RUN3, { remainMs: bad, stopMs: bad })
+    assert.equal('remainMs' in q, false, String(bad))
+    assert.equal('stopMs' in q, false, String(bad))
+  }
+  const idle = tourPayload({ running: false }, { remainMs: 5000, stopMs: 9000 })
+  assert.equal('remainMs' in idle || 'stopMs' in idle, false, '沒在跑就沒有倒數')
+  assert.deepEqual(JSON.parse(JSON.stringify(m)), m, '純 JSON')
+})
+
+test('tourPayload：舊欄位相容——沒給倒數欄位時，酬載的鍵與以前完全相同（舊版遙控頁 / 舊測試不受影響）；附加欄位與倒數欄位互不干擾', () => {
+  assert.deepEqual(Object.keys(tourPayload(RUN3)).sort(), ['index', 'paused', 'running', 'stops', 't', 'total'])
+  assert.deepEqual(Object.keys(tourPayload(RUN3, { speak: true, canSpeak: true, ready: true })).sort(), ['canSpeak', 'index', 'paused', 'ready', 'running', 'speak', 'stops', 't', 'total'])
+  assert.deepEqual(Object.keys(tourPayload(RUN3, { speak: true, canSpeak: true, ready: true, remainMs: 1, stopMs: 2, evil: 'x' })).sort(), ['canSpeak', 'index', 'paused', 'ready', 'remainMs', 'running', 'speak', 'stopMs', 'stops', 't', 'total'])
+  const withFields = tourPayload(RUN3, { remainMs: 100, stopMs: 200 })
+  const without = tourPayload(RUN3)
+  const { remainMs, stopMs, ...rest } = withFields
+  assert.deepEqual(rest, without, '除了那兩個欄位，其餘逐欄相同')
+})
+
+test('parseTourPayload：倒數欄位是選用的——往返保留；缺 / 格式不對只丟掉那個欄位（整則狀態仍有效）；沒在跑的狀態不帶；舊版主畫面的酬載解出來與以前逐欄相同', () => {
+  const wire = JSON.parse(JSON.stringify(tourPayload(RUN3, { ready: true, remainMs: 8123.6, stopMs: 16000 })))
+  const p = parseTourPayload(wire)
+  assert.equal(p.remainMs, 8124); assert.equal(p.stopMs, 16000)
+  assert.deepEqual(p.stops.map((s) => s.id), ['tide', 'moon', 'dust'])
+  const old = parseTourPayload(JSON.parse(JSON.stringify(tourPayload(RUN3, { ready: true }))))
+  assert.equal('remainMs' in old || 'stopMs' in old, false)
+  for (const bad of [-5, NaN, Infinity, '9', null, {}, [], true]) {
+    const q = parseTourPayload({ ...wire, remainMs: bad, stopMs: bad })
+    assert.ok(q, `整則狀態仍有效：${String(bad)}`)
+    assert.equal('remainMs' in q || 'stopMs' in q, false, String(bad))
+    assert.equal(q.index, 1)
+  }
+  assert.equal('stopMs' in parseTourPayload({ ...wire, stopMs: 0 }), false)
+  assert.equal(parseTourPayload({ ...wire, remainMs: 1e12 }).remainMs, GUIDE_MAX_STOP_MS)
+  const idle = parseTourPayload({ ...wire, running: false })
+  assert.equal('remainMs' in idle || 'stopMs' in idle, false, '沒在跑：不帶')
+  const extra = parseTourPayload({ ...wire, evil: 1, remain: 3 })
+  assert.equal('evil' in extra, false)
+})
+
+test('reduceGuideMsg：每次新推送（remainMs 不同）都是新的 tour 物件（遙控頁據此重新校準倒數）；完全相同的推送回傳同一個物件', () => {
+  const ok = { guide: 'ok', tour: null }
+  const a = reduceGuideMsg(ok, { t: 'tour', ...T1, remainMs: 9000, stopMs: 16000 })
+  assert.equal(a.tour.remainMs, 9000)
+  const b = reduceGuideMsg(a, { t: 'tour', ...T1, remainMs: 7000, stopMs: 16000 })
+  assert.notEqual(b.tour, a.tour)
+  assert.equal(b.tour.remainMs, 7000)
+  const c = reduceGuideMsg(b, { t: 'tour', ...T1, remainMs: 7000, stopMs: 16000 })
+  assert.equal(c.tour, b.tour)
+})
+
+test('guideView：舊版主畫面（沒有 remainMs）→ timed:false、next:null（畫面整段不顯示）；有 remainMs → timed、remainMs / stopMs、下一站預告（站 id + 備註）', () => {
+  const v0 = guideView(T1, true)
+  assert.deepEqual([v0.timed, v0.remainMs, v0.stopMs, v0.next], [false, null, null, null])
+  const t = { ...T1, index: 0, stops: [{ id: 'reservoir' }, { id: 'tide', note: '潮汐備註' }, { id: 'moon' }], remainMs: 8000, stopMs: 11000 }
+  const v = guideView(t, true)
+  assert.deepEqual([v.timed, v.remainMs, v.stopMs], [true, 8000, 11000])
+  assert.deepEqual(v.next, { last: false, id: 'tide', index: 1, note: '潮汐備註' })
+  assert.deepEqual(guideView({ ...t, index: 1 }, true).next, { last: false, id: 'moon', index: 2, note: '' })
+  assert.deepEqual(guideView({ ...t, index: 2 }, true).next, { last: true, id: null, index: 3, note: '' }, '最後一站')
+  assert.equal(guideView({ ...t, stopMs: undefined }, true).stopMs, null, '沒有總長：只有文字倒數、沒有進度條')
+  assert.equal(guideView({ ...t, stopMs: 0 }, true).stopMs, null)
+  assert.equal(guideView({ ...t, index: 9 }, true).next, null, 'index 超出 stops：沒有預告（不丟例外）')
+  const idle = guideView({ ...T0, remainMs: 5000 }, true)
+  assert.deepEqual([idle.timed, idle.next], [false, null], '沒在跑：沒有倒數')
+  assert.equal(guideView({ ...t, remainMs: NaN }, true).timed, false)
+  assert.equal(guideView({ ...t, remainMs: '8' }, true).timed, false)
+  assert.equal(guideView(t, false).timed, true, '連線中斷時模型仍保留（畫面自己決定不顯示）')
+})
+
+test('countdownView：進行中 = remainMs −（now − at）（不會小於 0、進位到整秒）；暫停時凍結；進度比例 = 已過 / 總長；沒有總長 → frac:null；不是 timed → null', () => {
+  const v = guideView({ ...T1, remainMs: 12000, stopMs: 16000 }, true)
+  const at = 5000
+  assert.deepEqual(countdownView(v, at, 5000), { remainMs: 12000, secs: 12, frac: 0.25, paused: false })
+  assert.equal(countdownView(v, at, 6000).secs, 11)
+  assert.equal(countdownView(v, at, 6001).secs, 11, '進位到整秒：10999ms → 11')
+  assert.equal(countdownView(v, at, 5500).secs, 12, '11500ms → 12')
+  assert.equal(countdownView(v, at, 17000).remainMs, 0)
+  assert.equal(countdownView(v, at, 17000).secs, 0)
+  assert.equal(countdownView(v, at, 17000).frac, 1)
+  assert.equal(countdownView(v, at, 99999999).remainMs, 0, '很久之後：停在 0，不會變負數')
+  assert.equal(countdownView(v, at, 4000).remainMs, 12000, '時鐘倒退：不會多出時間')
+  assert.equal(countdownView(guideView({ ...T1, remainMs: 12000 }, true), at, 5000).frac, null)
+  assert.equal(countdownView(guideView(T1, true), at, 5000), null, '舊版主畫面')
+  assert.equal(countdownView(null, at, 5000), null)
+  for (const bad of [undefined, NaN, null, 'x']) assert.equal(countdownView(v, bad, 6000).remainMs, 12000, `at 壞掉 → 不內插：${String(bad)}`)
+  assert.equal(countdownView(v, at, NaN).remainMs, 12000)
+})
+
+test('countdownView：暫停時凍結——本機時間再怎麼走剩餘時間都不動，進度條也不動', () => {
+  const v = guideView({ ...T1, paused: true, remainMs: 6500, stopMs: 16000 }, true)
+  for (const now of [5000, 6000, 60000, 1e9]) {
+    const c = countdownView(v, 5000, now)
+    assert.deepEqual([c.remainMs, c.secs, c.paused], [6500, 7, true])
+    assert.equal(c.frac, 1 - 6500 / 16000)
+  }
+})
+
+test('倒數校準（避免漂移）：每 2 秒收到新的推送就以新的 remainMs 與收到時間重設；本機時鐘偏快 / 偏慢都不會累積誤差', () => {
+  // 主畫面的真實剩餘時間：16000 起、每 2000ms 推一次；手機本機時鐘偏快 5%（100ms 的時鐘跑 105）
+  let remain = 16000, at = 0, local = 0
+  const worst = []
+  for (let push = 0; push < 7; push++) {
+    const v = guideView({ ...T1, remainMs: remain, stopMs: 16000 }, true)         // 收到推送：重設基準
+    at = local
+    for (const step of [500, 1000, 1500, 1999]) {                                 // 兩次推送之間，手機以自己（偏快的）時鐘內插
+      const shown = countdownView(v, at, at + step * 1.05).remainMs
+      worst.push(Math.abs(shown - (remain - step)))
+    }
+    remain -= 2000; local += 2000 * 1.05
+  }
+  assert.ok(Math.max(...worst) <= 105, `任何時刻的誤差都不會超過一個推送週期內的 5%（實際最大 ${Math.max(...worst)}ms）`)
+  // 對照：不校準（只用第一次的基準）→ 誤差會一路累積
+  const v0 = guideView({ ...T1, remainMs: 16000, stopMs: 16000 }, true)
+  assert.ok(Math.abs(countdownView(v0, 0, 12 * 1000 * 1.05).remainMs - (16000 - 12000)) >= 600, '不校準的話 12 秒後誤差已 ≥ 600ms')
+})
+
+// =============================================================================================
+// countdownExtra（runner → 酬載欄位）與 tourRunner.remainingMs()
+// =============================================================================================
+test('countdownExtra：remainMs = runner.remainingMs()、stopMs = runner.current().stop.durationMs；以方法呼叫 runner；沒在跑 / 舊 runner / 丟例外 → {}', () => {
+  const runner = {
+    remainingMs() { if (this !== runner) throw illegal(); return 8123 },
+    current() { if (this !== runner) throw illegal(); return { index: 0, total: 3, stop: { durationMs: 16000 } } },
+  }
+  assert.deepEqual(countdownExtra(runner), { remainMs: 8123, stopMs: 16000 })
+  assert.deepEqual(countdownExtra({ remainingMs: () => null, current: () => null }), {}, '沒在跑')
+  assert.deepEqual(countdownExtra({ remainingMs: () => NaN }), {})
+  assert.deepEqual(countdownExtra({ remainingMs: () => 5000, current: () => ({ stop: null }) }), { remainMs: 5000 }, '有剩餘時間但沒有總長：只帶 remainMs')
+  assert.deepEqual(countdownExtra({ remainingMs: () => 5000, current: () => ({ stop: { durationMs: 0 } }) }), { remainMs: 5000 })
+  assert.deepEqual(countdownExtra({ current: () => ({}) }), {}, '舊版 runner（沒有 remainingMs）')
+  assert.deepEqual(countdownExtra({ remainingMs: () => { throw new Error('boom') } }), {})
+  assert.deepEqual(countdownExtra({ remainingMs: () => 5000, current: () => { throw new Error('boom') } }), {})
+  for (const bad of [null, undefined, 0, 'x', []]) assert.deepEqual(countdownExtra(bad), {})
+})
+
+test('runner.remainingMs：沒在跑 → null；開始後 = 該站總長、隨（假）時鐘遞減、超過就停在 0；停止後又是 null', () => {
+  const env = realSetup()
+  try {
+    assert.equal(env.runner.remainingMs(), null)
+    assert.equal(env.runner.start({ auto: false }), true)
+    const stops = buildTour(S().gov)
+    const dur0 = stops[0].durationMs
+    assert.equal(typeof dur0, 'number')
+    assert.equal(env.runner.remainingMs(), dur0)
+    assert.equal(env.runner.current().stop.durationMs, dur0)
+    env.clock.t += 3000
+    assert.equal(env.runner.remainingMs(), dur0 - 3000)
+    env.clock.t += 1e6                                                       // 沒有 tick：時間早就過了，但還沒換站（例如旁白還在念）
+    assert.equal(env.runner.remainingMs(), 0)
+    env.runner.stop('user')
+    assert.equal(env.runner.remainingMs(), null)
+  } finally { env.detach() }
+})
+
+test('runner.remainingMs：暫停時凍結、暫停期間時鐘再走也不動；繼續後從凍結的值接著倒數（不重新計滿）；唯讀（不改任何狀態）', () => {
+  const env = realSetup()
+  try {
+    env.runner.start({ auto: false })
+    const dur0 = buildTour(S().gov)[0].durationMs
+    env.clock.t += 3000
+    env.runner.pause()
+    const frozen = env.runner.remainingMs()
+    assert.equal(frozen, dur0 - 3000)
+    env.clock.t += 20000
+    assert.equal(env.runner.remainingMs(), frozen, '暫停中不動')
+    env.clock.t += 5000
+    assert.equal(env.runner.remainingMs(), frozen)
+    env.runner.resume()
+    assert.equal(env.runner.remainingMs(), frozen, '繼續的那一刻不變')
+    env.clock.t += 1000
+    assert.equal(env.runner.remainingMs(), frozen - 1000, '繼續後接著倒數')
+    // 唯讀：反覆呼叫不影響導覽（狀態 / 計時都不變）
+    const before = { ...env.runner.current() }
+    for (let i = 0; i < 50; i++) env.runner.remainingMs()
+    assert.deepEqual({ ...env.runner.current() }, before)
+    assert.equal(env.runner.remainingMs(), frozen - 1000)
+  } finally { env.detach() }
+})
+
+test('runner.remainingMs：換站（goto / next / prev）重新計滿該站；暫停中換站 = 新一站的整段總長且凍結；最後一站 / 從頭開始暫停（hold）也正確', () => {
+  const env = realSetup()
+  try {
+    const stops = buildTour(S().gov)
+    const n = stops.length
+    assert.ok(n >= 3)
+    env.runner.start({ auto: false })
+    env.clock.t += 4000
+    env.runner.next()
+    assert.equal(env.runner.remainingMs(), stops[1].durationMs, '換站：重新計滿')
+    env.clock.t += 2500
+    assert.equal(env.runner.remainingMs(), stops[1].durationMs - 2500)
+    env.runner.goto(n - 1)
+    assert.equal(env.runner.remainingMs(), stops[n - 1].durationMs, '最後一站')
+    env.clock.t += 1000
+    assert.equal(env.runner.remainingMs(), stops[n - 1].durationMs - 1000)
+    env.runner.prev()
+    assert.equal(env.runner.remainingMs(), stops[n - 2].durationMs)
+    env.runner.pause()
+    env.clock.t += 3000
+    env.runner.goto(0)                                                       // 暫停中跳站：新一站在起點凍結
+    assert.equal(env.runner.isPaused(), true)
+    assert.equal(env.runner.remainingMs(), stops[0].durationMs)
+    env.clock.t += 60000
+    assert.equal(env.runner.remainingMs(), stops[0].durationMs, '暫停中：整段總長，不動')
+    env.runner.stop('user')
+    // hold：導覽員模式（一開始就暫停在第 0 站）
+    assert.equal(env.runner.start({ auto: false, hold: true }), true)
+    assert.equal(env.runner.isPaused(), true)
+    assert.equal(env.runner.remainingMs(), stops[0].durationMs)
+    env.clock.t += 10000
+    assert.equal(env.runner.remainingMs(), stops[0].durationMs)
+    env.runner.resume()
+    env.clock.t += 2000
+    assert.equal(env.runner.remainingMs(), stops[0].durationMs - 2000)
+    env.runner.stop('user')
+  } finally { env.detach() }
+})
+
+test('runner.remainingMs：start() 內第一次通知站表時還沒進入任何一站 → null（不丟例外）；之後每次通知都是數字；自動導覽循環回第 0 站也重新計滿', () => {
+  const env = realSetup()
+  const seen = []
+  const off = useTourStore.subscribe(() => { seen.push(env.runner.remainingMs()) })
+  try {
+    assert.doesNotThrow(() => env.runner.start({ auto: false }))
+    off()
+    assert.equal(seen[0], null, '站表就緒、還沒進站（run.i = -1）：null')
+    assert.equal(typeof seen.at(-1), 'number')
+    env.runner.stop('user')
+    assert.equal(env.runner.start({ auto: true }), true)
+    const stops = buildTour(S().gov)
+    env.runner.goto(stops.length - 1)
+    env.clock.t += 5000
+    env.runner.next()                                                        // 自動導覽：最後一站 → 回第 0 站
+    assert.equal(env.runner.current().index, 0)
+    assert.equal(env.runner.remainingMs(), env.runner.current().stop.durationMs)
+    env.runner.stop('user')
+  } finally { off(); env.detach() }
+})
+
+test('整合：倒數欄位隨換站 / 暫停 / 繼續即時推、其餘由每 2 秒補推帶著（remainMs 隨時間遞減）；兩次補推之間沒有額外流量；stopMs = 該站總長', () => {
+  let runnerRef
+  const env = realSetup({ getExtra: () => ({ ready: true, ...countdownExtra(runnerRef) }) })
+  runnerRef = env.runner
+  const iv = makeIv()
+  const sync = createGuideSync({ tourStore: useTourStore, payload: () => env.host.payload(), broadcast: (m) => env.host.broadcast(m), setIv: iv.setIv, clearIv: iv.clearIv })
+  try {
+    sync.start()
+    const stops = buildTour(S().gov)
+    const pushes = () => env.conn.all('tour')
+    const last = () => pushes().at(-1)
+    assert.equal('remainMs' in last(), false, '導覽沒在跑：沒有倒數欄位')
+    send(env, guideCmd('start'))
+    assert.equal(last().running, true)
+    assert.equal(last().remainMs, stops[0].durationMs, '開始：即時推，剩餘 = 整站')
+    assert.equal(last().stopMs, stops[0].durationMs)
+    // 兩次補推之間時間在走，但沒有額外流量
+    const n0 = pushes().length
+    env.clock.t += 500
+    assert.equal(pushes().length, n0, '沒有計時器就沒有推送')
+    env.clock.t += 1500
+    iv.fire()                                                                // 每 2 秒補推
+    assert.equal(pushes().length, n0 + 1)
+    assert.equal(last().remainMs, stops[0].durationMs - 2000, '補推帶著最新的剩餘時間')
+    // 換站：即時推、重新計滿
+    send(env, guideCmd('next'))
+    assert.equal(last().index, 1)
+    assert.equal(last().remainMs, stops[1].durationMs)
+    assert.equal(last().stopMs, stops[1].durationMs)
+    // 暫停：即時推、凍結
+    env.clock.t += 3000
+    send(env, guideCmd('pause'))
+    assert.equal(last().paused, true)
+    const frozen = last().remainMs
+    assert.equal(frozen, Math.round(env.runner.remainingMs()))
+    env.clock.t += 10000
+    iv.fire()
+    assert.equal(last().remainMs, frozen, '暫停中補推：剩餘時間凍結')
+    // 繼續：即時推
+    send(env, guideCmd('resume'))
+    assert.equal(last().paused, false)
+    assert.equal(last().remainMs, frozen)
+    env.clock.t += 1000
+    iv.fire()
+    assert.equal(last().remainMs, frozen - 1000)
+    // 跳到目前這一站 = 重播：倒數重新計滿（同一站、同 index 也立刻推）
+    send(env, guideCmd('goto', 1))
+    assert.equal(last().remainMs, stops[1].durationMs)
+    // 停止：倒數欄位消失
+    send(env, guideCmd('stop'))
+    assert.equal(last().running, false)
+    assert.equal('remainMs' in last() || 'stopMs' in last(), false)
+    // 遙控頁看到的一路都對（訊息經 JSON 往返）
+    let st = { guide: 'pending', tour: null }
+    for (const m of env.conn.sent) st = reduceGuideMsg(st, JSON.parse(JSON.stringify(m)))
+    assert.equal(st.guide, 'ok')
+  } finally { sync.stop(); env.detach() }
+})
+
+// =============================================================================================
+// host 端：同一支手機以新連線取代舊連線
+// =============================================================================================
+test('host：同一支手機（同一個 peer id）以新連線取代舊連線——舊連線移出集合並關閉、人數不重複、只推給新連線；舊連線之後才發的 close 不會把新連線移出集合', () => {
+  const { host, rec, changes, runner } = setup()
+  const oldC = makeConn('phone-1'); host.handle(oldC, helloMsg(TOKEN))
+  assert.equal(host.size(), 1)
+  const newC = makeConn('phone-1'); host.handle(newC, helloMsg(TOKEN))       // 鎖屏後自動重連：新連線 + 重送 hello
+  assert.equal(host.size(), 1, '同一支手機不會有兩條連線')
+  assert.deepEqual(host.conns(), [newC])
+  assert.equal(host.has(oldC), false)
+  assert.equal(oldC.closed, 1, '舊連線被關掉')
+  assert.equal(newC.last('guide').ok, true)
+  assert.equal(newC.last('tour').t, 'tour', '新連線立刻拿到最新狀態')
+  assert.deepEqual(rec.logs, [['join', 1], ['join', 1]], '取代不是離線 + 加入兩次人數起伏：人數維持 1')
+  assert.equal(changes.n, 2)
+  // multiplayer.js 的 close / error 處理會呼叫 host.remove(舊連線)：只移除它自己
+  assert.equal(host.remove(oldC), false)
+  assert.equal(host.has(newC), true)
+  assert.equal(host.size(), 1)
+  assert.equal(changes.n, 2, '舊連線的殘留 close 不再通知')
+  // 只推給新連線
+  const before = oldC.sent.length
+  assert.equal(host.broadcast({ t: 'tour', ping: 1 }), 1)
+  assert.equal(oldC.sent.length, before)
+  assert.equal(newC.last('tour').ping, 1)
+  // 舊連線再送的指令一律忽略；新連線的指令照常
+  runner.st.run = true
+  host.handle(oldC, guideCmd('next'))
+  assert.deepEqual(runner.calls, [])
+  host.handle(newC, guideCmd('next'))
+  assert.deepEqual(runner.names(), ['next'])
+})
+
+test('host：舊連線的 close 先到（新連線還沒 hello）→ 正常移除；新連線 hello 後是新的成員；舊連線的 close() 丟例外也不影響取代', () => {
+  const { host, rec } = setup()
+  const oldC = makeConn('phone-2'); host.handle(oldC, helloMsg(TOKEN))
+  assert.equal(host.remove(oldC), true)
+  assert.equal(host.size(), 0)
+  const newC = makeConn('phone-2'); host.handle(newC, helloMsg(TOKEN))
+  assert.deepEqual(host.conns(), [newC])
+  assert.equal(oldC.closed, 0, '舊連線早就不在集合：不必再關')
+  assert.deepEqual(rec.logs, [['join', 1], ['leave', 0], ['join', 1]])
+  const third = makeConn('phone-2'); newC.close = function () { throw new Error('close boom') }
+  assert.doesNotThrow(() => host.handle(third, helloMsg(TOKEN)))
+  assert.deepEqual(host.conns(), [third])
+})
+
+test('host：不同手機（不同 peer id）各自保留；沒有 peer id 的連線不去重；重複 hello（同一條連線）仍是冪等', () => {
+  const { host } = setup()
+  const a = makeConn('phone-a'), b = makeConn('phone-b')
+  host.handle(a, helloMsg(TOKEN)); host.handle(b, helloMsg(TOKEN))
+  assert.equal(host.size(), 2)
+  const x = makeConn(); delete x.peer
+  const y = makeConn(); delete y.peer
+  host.handle(x, helloMsg(TOKEN)); host.handle(y, helloMsg(TOKEN))
+  assert.equal(host.size(), 4, '沒有 peer id 無從判斷是不是同一支手機')
+  host.handle(a, helloMsg(TOKEN))
+  assert.equal(host.size(), 4)
+  assert.equal(a.closed, 0)
+  const z = makeConn(''); host.handle(z, helloMsg(TOKEN))
+  assert.equal(host.size(), 5, '空字串 peer id 也不去重')
+})
+
+test('host：換成錯誤的 token 才是撤銷；新連線用錯誤 token hello 不會擠掉同一支手機的舊連線', () => {
+  const { host } = setup()
+  const oldC = makeConn('phone-3'); host.handle(oldC, helloMsg(TOKEN))
+  const bad = makeConn('phone-3'); host.handle(bad, helloMsg('wrongtoken1'))
+  assert.equal(host.has(bad), false)
+  assert.equal(host.has(oldC), true, '驗證失敗的連線不取代任何人')
+  assert.equal(oldC.closed, 0)
+})
+
+// =============================================================================================
+// 遙控頁連線單例（createBoot / ensurePeer / releasePeer）：假 Peer + 假計時器
+// =============================================================================================
+const { statusForLink, createBoot, ensurePeer, releasePeer } = RemoteMod
+
+function mkNet() {
+  const timers = makeTimers()
+  const st = timers.setTimeout, ct = timers.clearTimeout
+  const listeners = { doc: new Map(), win: new Map() }
+  const mkTarget = (name, vis) => {
+    const d = {
+      visibilityState: vis ? 'visible' : undefined,
+      addEventListener(ev, f) { if (this !== d) throw illegal(); if (!listeners[name].has(ev)) listeners[name].set(ev, new Set()); listeners[name].get(ev).add(f) },
+      removeEventListener(ev, f) { if (this !== d) throw illegal(); if (listeners[name].has(ev)) listeners[name].get(ev).delete(f) },
+      fire(ev) { for (const f of [...(listeners[name].get(ev) || [])]) f({ type: ev }) },
+    }
+    return d
+  }
+  const doc = mkTarget('doc', 'visible'), win = mkTarget('win')
+  const peers = []
+  const mkConn = (host, o) => {
+    const L = {}
+    const c = {
+      peer: host, opts: o, open: false, dead: false, sent: [],
+      on(ev, f) { if (this !== c) throw illegal(); (L[ev] ||= []).push(f); return c },
+      send(m) { if (this !== c) throw illegal(); if (!c.open) throw new Error('not open'); c.sent.push(m) },
+      close() { if (this !== c) throw illegal(); c.dead = true; if (c.open) { c.open = false; c.fire('close') } },
+      fire(ev, ...a) { for (const f of [...(L[ev] || [])]) f(...a) },
+      doOpen() { c.open = true; c.fire('open') }, doData(m) { c.fire('data', m) }, doClose() { c.open = false; c.dead = true; c.fire('close') },
+    }
+    return c
+  }
+  const mkPeer = () => {
+    const L = {}
+    const conns = []
+    const p = {
+      open: false, disconnected: false, destroyed: false, conns,
+      on(ev, f) { if (this !== p) throw illegal(); (L[ev] ||= []).push(f); return p },
+      connect(host, o) { if (this !== p) throw illegal(); const c = mkConn(host, o); conns.push(c); return c },
+      reconnect() { if (this !== p) throw illegal(); p.disconnected = false },
+      destroy() { if (this !== p) throw illegal(); if (p.destroyed) return; for (const c of conns) c.close(); p.destroyed = true; p.fire('close') },
+      fire(ev, ...a) { for (const f of [...(L[ev] || [])]) f(...a) },
+      doOpen() { p.open = true; p.fire('open') },
+      doUnavailable() { p.fire('error', { type: 'peer-unavailable' }) },
+      last: () => conns[conns.length - 1],
+    }
+    return p
+  }
+  const deps = { makePeer: () => { const p = mkPeer(); peers.push(p); return Promise.resolve(p) }, env: { doc, win }, setTimer: (fn, ms) => st(fn, ms), clearTimer: (id) => ct(id) }
+  const flush = () => new Promise((r) => setImmediate(r))
+  const lis = () => [...listeners.doc.values(), ...listeners.win.values()].reduce((a, x) => a + x.size, 0)
+  return { timers, deps, peers, doc, win, flush, listenerCount: lis, async up(b) { b.link.start(); await flush(); peers.at(-1).doOpen(); const c = peers.at(-1).last(); c.doOpen(); return c } }
+}
+
+const bootStatus = (b) => translate('zh', b.status, b.statusP)
+
+test('createBoot（導覽員）：連上後送 hello；host 回 ok + 狀態 → guide=ok、tour 與收到時間；連線掉了 → 「重新連線中…（第 1 次）」、按鈕停用（ok=false）但保留導覽員身分與最後的狀態；1 秒後同一個 Peer 重連、重送 hello、清掉過時的狀態；新狀態一到就恢復', async () => {
+  const net = mkNet()
+  const b = createBoot('host1', TOKEN, net.deps)
+  const emits = []
+  b.subs.add(() => emits.push([b.ok, bootStatus(b)]))
+  assert.equal(bootStatus(b), '連線中…')
+  b.link.start(); await net.flush()
+  net.peers[0].doOpen()
+  const c1 = net.peers[0].last(); c1.doOpen()
+  assert.equal(b.ok, true); assert.equal(bootStatus(b), '已連上主畫面 · 一起合奏')
+  assert.deepEqual(c1.sent, [helloMsg(TOKEN)], 'open 後立刻送 hello')
+  assert.equal(b.guide, 'pending')
+  c1.doData({ t: 'guide', ok: true })
+  c1.doData({ t: 'tour', ...T1, remainMs: 8000, stopMs: 16000 })
+  assert.equal(b.guide, 'ok'); assert.equal(b.tour.remainMs, 8000)
+  assert.ok(typeof b.tourAt === 'number' && b.tourAt > 0, '記下收到的本機時間（倒數內插的基準）')
+  const at1 = b.tourAt
+  c1.doData({ t: 'tour', ...T1, remainMs: 6000, stopMs: 16000 })
+  assert.equal(b.tour.remainMs, 6000); assert.ok(b.tourAt >= at1, '每次新推送都重設基準')
+  c1.doClose()
+  assert.equal(b.ok, false)
+  assert.deepEqual([b.status, b.statusP], ['重新連線中…（第 {n} 次）', { n: 1 }])
+  assert.equal(bootStatus(b), '重新連線中…（第 1 次）')
+  assert.equal(translate('en', b.status, b.statusP), 'Reconnecting… (attempt 1)')
+  assert.equal(b.guide, 'ok', '導覽員身分維持（面板留著、按鈕停用）')
+  assert.notEqual(b.tour, null, '斷線期間保留最後的狀態給畫面顯示')
+  net.timers.advance(999); assert.equal(net.peers[0].conns.length, 1)
+  net.timers.advance(1)
+  assert.equal(net.peers.length, 1, '同一個 Peer 重連')
+  const c2 = net.peers[0].last(); assert.notEqual(c2, c1)
+  assert.equal(b.ok, false); assert.equal(bootStatus(b), '重新連線中…（第 1 次）')
+  c2.doOpen()
+  assert.equal(b.ok, true); assert.equal(bootStatus(b), '已連上主畫面 · 一起合奏')
+  assert.deepEqual(c2.sent, [helloMsg(TOKEN)], '重連成功後重送 hello')
+  assert.equal(b.tour, null, '過時的導覽狀態清掉（等主畫面的新狀態）')
+  assert.equal(b.guide, 'ok')
+  c2.doData({ t: 'guide', ok: true })
+  c2.doData({ t: 'tour', ...T1, remainMs: 15000, stopMs: 16000 })
+  assert.equal(b.tour.remainMs, 15000)
+  assert.ok(emits.length > 4)
+  b.destroy()
+})
+
+test('createBoot：hello 逾時沒回應 → denied（當一般遙控）；重連後重送 hello 仍有機會升級為 ok；重連成功時的 hello 計時器也會重新起算、掉線時清掉', async () => {
+  const net = mkNet()
+  const b = createBoot('host1', TOKEN, net.deps)
+  const c1 = await net.up(b)
+  assert.equal(b.guide, 'pending')
+  net.timers.advance(GUIDE_HELLO_WAIT_MS - 1); assert.equal(b.guide, 'pending')
+  net.timers.advance(1)
+  assert.equal(b.guide, 'denied')
+  c1.doClose()
+  net.timers.advance(1000)
+  const c2 = net.peers[0].last(); c2.doOpen()
+  assert.deepEqual(c2.sent, [helloMsg(TOKEN)], 'denied 之後重連也再問一次（可能只是主畫面當時太忙）')
+  c2.doData({ t: 'guide', ok: true })
+  assert.equal(b.guide, 'ok')
+  net.timers.advance(GUIDE_HELLO_WAIT_MS * 2)
+  assert.equal(b.guide, 'ok', '回覆後 hello 計時器已清掉')
+  // 等待回覆時掉線：計時器被清掉（不會在離線時把 pending 誤判成 denied）
+  const net2 = mkNet()
+  const b2 = createBoot('host1', TOKEN, net2.deps)
+  const d1 = await net2.up(b2)
+  d1.doClose()
+  net2.timers.advance(GUIDE_HELLO_WAIT_MS - 1000 + 500)   // 離線期間（重連前）
+  assert.equal(b2.guide, 'pending')
+  b.destroy(); b2.destroy()
+})
+
+test('createBoot（一般遙控，沒有 token）：不送 hello；重連後 role / 滑桿同步值保留、送出走新連線（感測器的 send 不必重新綁定）', async () => {
+  const net = mkNet()
+  const b = createBoot('host1', null, net.deps)
+  const c1 = await net.up(b)
+  assert.deepEqual(c1.sent, [], '一般遙控不送 hello')
+  assert.equal(b.guide, 'none')
+  c1.doData({ t: 'role', id: 'ocean', label: '海', pids: ['seaLevel'] })
+  c1.doData({ t: 'sync', params: { seaLevel: 0.7 } })
+  c1.doData({ t: 'tour', ...T1 })                                            // 一般遙控不理導覽狀態
+  assert.equal(b.tour, null)
+  assert.equal(b.link.send({ t: 'p', pid: 'flowX', v: 0.5 }), true)
+  assert.deepEqual(c1.sent, [{ t: 'p', pid: 'flowX', v: 0.5 }])
+  c1.doClose()
+  assert.equal(b.ok, false)
+  assert.equal(b.link.send({ t: 'p', pid: 'flowX', v: 0.6 }), false, '重連期間送出是空操作（不丟例外）')
+  assert.equal(b.role.id, 'ocean'); assert.equal(b.syncParams.seaLevel, 0.7)
+  net.timers.advance(1000)
+  const c2 = net.peers[0].last(); c2.doOpen()
+  assert.equal(b.ok, true)
+  assert.deepEqual(c2.sent, [], '重連後一般遙控仍不送 hello')
+  assert.equal(b.link.send({ t: 'p', pid: 'flowX', v: 0.6 }), true)
+  assert.deepEqual(c2.sent, [{ t: 'p', pid: 'flowX', v: 0.6 }], '走新連線')
+  assert.equal(b.role.id, 'ocean', 'role / sync 保留到主畫面送新的來')
+  b.destroy()
+})
+
+test('createBoot：主畫面已重新載入（peer-unavailable 連續 6 次）→ 停止、狀態「主畫面已重新載入，請重新掃描 QR」、沒有殘留計時器；中英文都有字', async () => {
+  const net = mkNet()
+  const b = createBoot('oldhost', TOKEN, net.deps)
+  b.link.start(); await net.flush()
+  const p = net.peers[0]; p.doOpen()
+  for (let i = 1; i <= 6; i++) {
+    p.doUnavailable()
+    if (i < 6) { assert.equal(bootStatus(b), `重新連線中…（第 ${i} 次）`, '從沒連上過但失敗原因是「主畫面不存在」：不是 Wi-Fi 問題，不顯示 Wi-Fi 提示'); net.timers.advance(backoffMs(b.ls.n)) }
+  }
+  assert.equal(b.ls.phase, 'gaveup'); assert.equal(b.ok, false)
+  assert.equal(bootStatus(b), '主畫面已重新載入，請重新掃描 QR')
+  assert.equal(translate('en', b.status, b.statusP), 'The main screen was reloaded. Please scan the QR code again')
+  net.timers.advance(600000)
+  assert.equal(p.conns.length, 6)
+  assert.equal(net.timers.pending(), 0, '沒有任何重試 / 逾時計時器')
+  b.destroy()
+  assert.equal(net.timers.pending(), 0)
+})
+
+test('createBoot：第一次連線超過 15 秒還沒連上 → 提示場地 Wi-Fi 可能擋 P2P（只在從沒連上過時）；連上之後不再提示', async () => {
+  const net = mkNet()
+  const b = createBoot('host1', null, net.deps)
+  b.link.start(); await net.flush()
+  net.peers[0].doOpen()                                                      // 已向訊號伺服器註冊，但 P2P 一直打不通（場地 Wi-Fi 擋 WebRTC）
+  net.timers.advance(14999)
+  assert.equal(bootStatus(b), '連線中…')
+  net.timers.advance(1)
+  assert.match(bootStatus(b), /^連線偏慢…/)
+  net.timers.advance(1000)                                                   // 逾時後自動再試一次
+  assert.match(bootStatus(b), /^連線偏慢…/, '還沒連上過：持續提示 Wi-Fi')
+  net.peers[0].last().doOpen()
+  assert.equal(bootStatus(b), '已連上主畫面 · 一起合奏')
+  net.peers[0].last().doClose()
+  assert.equal(bootStatus(b), '重新連線中…（第 1 次）', '連上過之後掉線：顯示重連次數，不是 Wi-Fi 提示')
+  b.destroy()
+  const net2 = mkNet()
+  const c = createBoot('host1', null, net2.deps)
+  const cc = await net2.up(c)
+  assert.equal(net2.timers.pending(), 0, '連上後提示計時器已清掉')
+  c.destroy()
+})
+
+test('ensurePeer / releasePeer（StrictMode 雙掛載）：cleanup 後排一個 macrotask 拆除、立刻重掛載就取消；只有一個 Peer；真的卸載才拆（Peer 銷毀、監聽 / 計時器全清、單例清空）；之後重新進入是全新連線', async () => {
+  const net = mkNet()
+  const sub = () => {}
+  const b1 = ensurePeer('h', null, net.deps)
+  b1.subs.add(sub)                                                           // 第一次 effect
+  b1.subs.delete(sub); releasePeer(b1)                                       // StrictMode 的模擬卸載
+  assert.notEqual(b1.teardown, null, '拆除已排程')
+  const b2 = ensurePeer('h', null, net.deps)                                 // 第二次 effect（同一個 tick 內）
+  assert.equal(b2, b1, '沿用同一個單例')
+  assert.equal(b1.teardown, null, '取消了尚未執行的拆除')
+  b2.subs.add(sub)
+  net.timers.advance(0)
+  await net.flush()
+  assert.equal(net.peers.length, 1, '只建了一個 Peer')
+  assert.equal(net.peers[0].destroyed, false)
+  net.peers[0].doOpen(); net.peers[0].last().doOpen()
+  assert.equal(b2.ok, true)
+  assert.equal(net.listenerCount(), 3, '只有一組可見性 / 網路監聽')
+  // 重複 ensurePeer（例如重新渲染）不會多建連線
+  ensurePeer('h', null, net.deps)
+  assert.equal(net.peers.length, 1)
+  // 真的卸載
+  b2.subs.delete(sub); releasePeer(b2)
+  releasePeer(b2)                                                            // 重複 release 不會排兩個拆除
+  net.timers.advance(0)
+  assert.equal(net.peers[0].destroyed, true)
+  assert.equal(net.listenerCount(), 0, '監聽全部移除')
+  assert.equal(net.timers.pending(), 0, '計時器全部清掉')
+  assert.equal(b2.subs.size, 0)
+  const b3 = ensurePeer('h', null, net.deps)
+  assert.notEqual(b3, b1, '單例已清空：重新進入是全新連線')
+  await net.flush()
+  assert.equal(net.peers.length, 2)
+  b3.subs.add(sub); b3.subs.delete(sub); releasePeer(b3); net.timers.advance(0)
+  assert.equal(net.peers[1].destroyed, true)
+})
+
+test('ensurePeer：網址參數不同（理論上整頁會重載）→ 拆掉舊連線再建新的；卸載時還有訂閱者的話不拆', async () => {
+  const net = mkNet()
+  const a = ensurePeer('hostA', null, net.deps)
+  await net.flush()
+  const c = ensurePeer('hostB', TOKEN, net.deps)
+  assert.notEqual(c, a)
+  assert.equal(net.peers[0].destroyed, true, '舊連線被拆掉')
+  await net.flush()
+  assert.equal(net.peers.length, 2)
+  c.subs.add(() => {})
+  releasePeer(c)
+  assert.equal(c.teardown, null, '還有訂閱者：不排拆除')
+  c.subs.clear(); releasePeer(c); net.timers.advance(0)
+  assert.equal(net.peers[1].destroyed, true)
+})
+
+test('createBoot：destroy 完整拆除——連線層停止（Peer 銷毀、監聽移除）、hello / 提示 / 拆除計時器全清；destroy 後晚到的事件不再通知訂閱者', async () => {
+  const net = mkNet()
+  const b = createBoot('host1', TOKEN, net.deps)
+  let notified = 0
+  b.subs.add(() => { notified++ })
+  const c1 = await net.up(b)
+  assert.equal(net.timers.pending(), 1, 'hello 計時器（提示計時器已在連上時清掉）')
+  b.teardown = b.setTimer(() => {}, 5)
+  b.destroy()
+  assert.equal(net.timers.pending(), 0)
+  assert.equal(net.listenerCount(), 0)
+  assert.equal(net.peers[0].destroyed, true)
+  const n = notified
+  c1.fire('data', { t: 'tour', ...T1 }); c1.fire('close')
+  net.peers[0].fire('open')
+  assert.equal(notified, n)
+})
+
+test('statusForLink：連線層狀態 → 中文 key（T 標記）＋ 插值參數；中英文都有字、沒有殘留 {n}', () => {
+  const z = (ls, o) => { const s = statusForLink(ls, o); return translate('zh', s.key, s.params) }
+  const e = (ls, o) => { const s = statusForLink(ls, o); return translate('en', s.key, s.params) }
+  assert.deepEqual(statusForLink(null), { key: '連線中…', params: null })
+  assert.deepEqual(statusForLink({ phase: 'connecting', n: 0, ever: false }), { key: '連線中…', params: null })
+  assert.match(z({ phase: 'connecting', n: 0, ever: false }, { slow: true }), /^連線偏慢…/)
+  assert.match(z({ phase: 'waiting', n: 2, ever: false }, { slow: true }), /^連線偏慢…/, '從沒連上過：一直顯示 Wi-Fi 提示')
+  assert.equal(z({ phase: 'waiting', n: 3, ever: true }, { slow: true }), '重新連線中…（第 3 次）', '連上過就不顯示 Wi-Fi 提示')
+  assert.equal(z({ phase: 'connecting', n: 1, ever: true }), '重新連線中…（第 1 次）')
+  assert.equal(z({ phase: 'connected', n: 0, ever: true }), '已連上主畫面 · 一起合奏')
+  assert.equal(z({ phase: 'paused', n: 1, ever: true }), '連線中斷 · 回到這個畫面會自動重連')
+  assert.equal(z({ phase: 'gaveup', reason: 'unavailable' }), '主畫面已重新載入，請重新掃描 QR')
+  assert.equal(z({ phase: 'gaveup', reason: 'load', detail: 'chunk failed' }), '載入失敗：chunk failed')
+  assert.equal(z({ phase: 'gaveup', reason: 'fatal', detail: 'browser-incompatible' }), '無法連線：browser-incompatible')
+  assert.equal(z('壞輸入'), '連線中…')
+  assert.equal(e({ phase: 'waiting', n: 3, ever: true }), 'Reconnecting… (attempt 3)')
+  assert.equal(e({ phase: 'paused', n: 1, ever: true }), 'Disconnected · will reconnect when you come back to this screen')
+  assert.equal(e({ phase: 'gaveup', reason: 'unavailable' }), 'The main screen was reloaded. Please scan the QR code again')
+  assert.equal(e({ phase: 'connected' }), 'Connected to the main screen · jamming together')
+  for (const ls of [{ phase: 'waiting', n: 4, ever: true }, { phase: 'gaveup', reason: 'unavailable' }, { phase: 'paused', n: 1 }]) assert.doesNotMatch(e(ls), /\{|[㐀-鿿]/)
+})
+
+// =============================================================================================
+// SSR：導覽員區塊的倒數 / 下一站預告 / 螢幕喚醒標示
+// =============================================================================================
+const panel2 = (tour, { ok = true, t = tZh, at = 1000, now = 1000, wake = '' } = {}) => renderToStaticMarkup(React.createElement(GuidePanel, { v: guideView(tour, ok), ok, cmd: () => {}, t, at, now, wake }))
+const TT = { ...T1, index: 1, stops: [{ id: 'reservoir' }, { id: 'tide' }, { id: 'moon', note: '看月亮的起落' }], remainMs: 12000, stopMs: 16000 }
+
+test('SSR·倒數（進行中）：細進度條（已過比例）+「剩 12 秒」；隨本機時間內插（過 3.5 秒 → 剩 9 秒、進度往前）；role="timer" 不吵螢幕閱讀器；不在任何按鈕裡', () => {
+  const html = panel2(TT, { at: 1000, now: 1000 })
+  assert.match(html, /<div class="guide-time"><div class="guide-bar" aria-hidden="true"><i style="transform:scaleX\(0\.250\)"><\/i><\/div><span class="guide-left" role="timer" aria-live="off">剩 12 秒<\/span><\/div>/)
+  const later = panel2(TT, { at: 1000, now: 4500 })
+  assert.match(later, /剩 9 秒/)
+  assert.match(later, /scaleX\(0\.469\)/)
+  assert.doesNotMatch(later, /<button[^>]*>[^<]*剩/)
+  assert.equal(count(html, /disabled/g), 0, '連線正常、導覽進行中：沒有按鈕被停用')
+  // 進度條放在站名 / 第幾站之後（導覽員視線由上往下：站名 → 進度 → 倒數）
+  assert.ok(html.indexOf('guide-stop') < html.indexOf('guide-meta') && html.indexOf('guide-meta') < html.indexOf('guide-time'))
+  assert.match(panel2({ ...TT, remainMs: 100, stopMs: 16000 }, { at: 0, now: 5000 }), /剩 0 秒/)
+  assert.match(panel2({ ...TT, stopMs: undefined }), /剩 12 秒/)
+  assert.doesNotMatch(panel2({ ...TT, stopMs: undefined }), /guide-bar/, '沒有總長：只有文字倒數')
+})
+
+test('SSR·倒數（暫停）：凍結——本機時間再走剩餘時間也不動、標成 is-paused；已暫停標示與「繼續」鈕照舊', () => {
+  const p = { ...TT, paused: true, remainMs: 6500 }
+  for (const now of [1000, 60000, 1e7]) {
+    const html = panel2(p, { at: 1000, now })
+    assert.match(html, /<div class="guide-time is-paused">/)
+    assert.match(html, /剩 7 秒/)
+    assert.match(html, /<span class="guide-paused">已暫停<\/span>/)
+    assert.match(html, /aria-pressed="true">繼續<\/button>/)
+  }
+})
+
+test('SSR·下一站預告：「下一站：<站名>」+ 備註（若有）；最後一站 →「最後一站」；未知站 id →「下一站：第 n 站」；備註是純文字（HTML 被跳脫）', () => {
+  const html = panel2(TT)
+  assert.match(html, /<p class="guide-next"><span class="guide-next-k">下一站：月亮<\/span><span class="guide-next-note">看月亮的起落<\/span><\/p>/)
+  const noNote = panel2({ ...TT, index: 0 })
+  assert.match(noNote, /<p class="guide-next"><span class="guide-next-k">下一站：潮汐<\/span><\/p>/)
+  assert.doesNotMatch(noNote, /guide-next-note/)
+  const last = panel2({ ...TT, index: 2 })
+  assert.match(last, /<p class="guide-next"><span class="guide-next-k">最後一站<\/span><\/p>/)
+  assert.doesNotMatch(last, /下一站：/)
+  assert.match(panel2({ ...TT, stops: [{ id: 'reservoir' }, { id: 'tide' }, { id: 'other' }] }), /下一站：第 3 站/)
+  const evil = panel2({ ...TT, stops: [{ id: 'reservoir' }, { id: 'tide' }, { id: 'moon', note: '<img src=x onerror=alert(1)>' }] })
+  assert.doesNotMatch(evil, /<img/)
+  assert.match(evil, /&lt;img src=x onerror=alert\(1\)&gt;/)
+  assert.ok(html.indexOf('guide-time') < html.indexOf('guide-next'))
+})
+
+test('SSR·舊版主畫面（沒有 remainMs / stopMs）：倒數與下一站預告整段不顯示、其餘與以前逐字相同；沒在跑 / 連線中斷 / 還沒收到狀態也沒有', () => {
+  const oldHtml = panel2(T1)
+  assert.doesNotMatch(oldHtml, /guide-time|guide-next|guide-bar|guide-left|role="timer"|下一站：|最後一站|剩 /)
+  assert.equal(oldHtml, panel(T1), '與第一波的輸出逐字相同')
+  assert.equal(panel2({ ...T0, remainMs: 3000, stopMs: 9000 }).includes('guide-time'), false, '沒在跑')
+  const off = panel2(TT, { ok: false })
+  assert.doesNotMatch(off, /guide-time|guide-next|role="timer"/)
+  assert.match(off, /class="guide is-offline"/)
+  assert.equal(count(off, /<button/g), count(off, /<button[^>]*disabled/g), '重連期間每顆按鈕都停用')
+  assert.doesNotMatch(panel2(null), /guide-time|guide-next/)
+})
+
+test('SSR·英文：倒數 / 預告 / 喚醒標示都是英文（站名用資料層譯名；備註是導覽員的原文）', () => {
+  const html = panel2(TT, { t: tEn, wake: 'on' })
+  assert.match(html, /9 s left|12 s left/)
+  assert.ok(html.includes('Up next: Moon'))
+  assert.ok(html.includes('Screen kept awake'))
+  assert.equal(html.replace('看月亮的起落', '').match(HAN_RE), null)
+  assert.ok(panel2({ ...TT, index: 2 }, { t: tEn }).includes('Last stop'))
+  assert.ok(panel2(TT, { t: tEn, wake: 'unsupported' }).includes('This browser cannot keep the screen awake (set your phone’s auto-lock to a longer time)'))
+  assert.match(panel2(TT, { t: tEn, at: 0, now: 2500 }), /10 s left/)
+})
+
+test('SSR·螢幕喚醒標示：持有中「螢幕保持喚醒中」；不支援 / 被拒 →「此瀏覽器無法保持喚醒（請把手機的自動鎖定調長）」；請求中 / 已放掉 / 空 / 連線中斷 → 不顯示', () => {
+  assert.match(panel2(TT, { wake: 'on' }), /<p class="guide-wake">螢幕保持喚醒中<\/p>/)
+  for (const w of ['unsupported', 'failed']) assert.match(panel2(TT, { wake: w }), /<p class="guide-wake is-off">此瀏覽器無法保持喚醒（請把手機的自動鎖定調長）<\/p>/, w)
+  for (const w of ['pending', 'off', '', undefined]) assert.doesNotMatch(panel2(TT, { wake: w }), /guide-wake/, String(w))
+  assert.doesNotMatch(panel2(TT, { ok: false, wake: 'on' }), /guide-wake/, '連線中斷：沒有持有 lock，不顯示')
+  assert.ok(panel2(TT, { wake: 'on' }).indexOf('guide-head') < panel2(TT, { wake: 'on' }).indexOf('guide-wake'))
+})
+
+test('SSR·一般遙控與導覽員（驗證中）的頁面維持原樣：沒有倒數 / 預告 / 喚醒標示 / 重新整理鈕', () => {
+  for (const props of [{ hostId: 'ms1' }, { hostId: 'ms1', guide: TOKEN }]) {
+    const html = renderToStaticMarkup(React.createElement(RemoteApp, props))
+    assert.doesNotMatch(html, /guide-time|guide-next|guide-wake|remote-retry/)
+    assert.match(html, /<span class="remote-status">連線中…<\/span>/)
+  }
+})
+
+// =============================================================================================
+// 原始碼接線檢查
+// =============================================================================================
+test('RemoteApp：連線交給 createRemoteLink（不再自己 new Peer / 在 close 時清單例）、每次連線 open 都送 hello、卸載走 releasePeer、按鈕停用條件與重新整理鈕條件', () => {
+  const app = src('../remote/RemoteApp.jsx')
+  assert.match(app, /createRemoteLink\(\{/)
+  assert.doesNotMatch(app, /peer\.connect\(/, '連線流程在 lib/remoteReconnect.js')
+  assert.doesNotMatch(app, /conn\.on\('close'/)
+  assert.match(app, /onOpen: \(conn, \{ reconnect \}\) => \{/)
+  assert.match(app, /if \(reconnect\) b\.tour = null/)
+  assert.match(app, /return \(\) => \{ b\.subs\.delete\(sync\); releasePeer\(b\) \}/)
+  assert.match(app, /\{!ok && stuck && \(/, '只有連線層放棄時才顯示「重新連線」（重新整理）鈕；自動重連期間不顯示')
+  assert.match(app, /setStuck\(!!b\.ls && b\.ls\.phase === 'gaveup'\)/)
+  assert.match(app, /const send = \(m\) => \{ if \(boot\) boot\.link\.send\(m\) \}/, '送出永遠走目前的連線（重連後自動換成新的）')
+  assert.equal(count(app, /disabled=\{!ok\}/g) >= 6, true, '滑桿 / 感測器 / 動作 / 打擊墊 / chips / 念出字幕在 ok=false 時都停用')
+  // 感測器：只有 toggle 與卸載會停它；連線狀態變化（ok）不會
+  assert.equal(count(app, /tiltRef\.current && tiltRef\.current\.stop\(\)/g), 2)
+  assert.equal(count(app, /shakeStop\.current && shakeStop\.current\(\)/g), 2)
+  assert.doesNotMatch(app, /useEffect\(\(\) => \{[^}]*sensorsOn[^}]*\}, \[[^\]]*\bok\b/, '感測器不隨連線狀態重建')
+  // 倒數元件：只在「有在倒數」時才有計時器、清乾淨
+  assert.match(app, /const live = !fixed && !v\.paused && v\.remainMs > 0/)
+  assert.match(app, /const id = setInterval\(\(\) => setTick\(nowMs\(\)\), 250\)\n\s+return \(\) => clearInterval\(id\)/)
+})
+
+test('multiplayer.js：同一支手機重連 → 收掉同 peer id 的舊連線（含移出導覽員集合）、聲部沿用、不重複計入加入人數；host 重建時清空記憶；仍不 import 導覽模組', () => {
+  const mp = src('./multiplayer.js')
+  assert.match(mp, /import \{ createPeerMemory, staleConns \} from '\.\/remoteReconnect\.js'/)
+  assert.match(mp, /const peerRoles = createPeerMemory\(\)/)
+  assert.match(mp, /const again = !!c\.peer && peerRoles\.has\(c\.peer\)/)
+  assert.match(mp, /for \(const old of staleConns\(conns, c\)\) \{\n\s+if \(guideHost\) \{ try \{ guideHost\.remove\(old\) \} catch \(e\) \{\}? \}\n\s+conns = conns\.filter\(\(x\) => x !== old\)\n\s+try \{ old\.close\(\) \} catch \(e\) \{\}\n\s+\}/)
+  assert.match(mp, /if \(!again\) bumpStat\('joins'\)/)
+  assert.match(mp, /let role = c\.peer \? peerRoles\.get\(c\.peer\) : null/)
+  assert.match(mp, /peerRoles\.clear\(\)/)
+  assert.match(mp, /遙控器重新連線 · 聲部「\{part\}」（\{n\} 人連線）/)
+  for (const bad of ['tourCore', "tour.js'", 'useTourStore', 'touchGuide']) assert.equal(mp.includes(bad), false, bad)
+  // 既有接線不變
+  assert.match(mp, /if \(guideHost && guideHost\.handle\(c, m\)\) return; dispatch\(m, c\.peer\)/)
+  assert.match(mp, /const drop = \(\) => \{ if \(guideHost\) \{ try \{ guideHost\.remove\(c\) \} catch \(e\) \{\} \} conns = conns\.filter\(\(x\) => x !== c\)/)
+})
+
+test('TourRemoteService：狀態酬載的倒數欄位來自 tourRunner（countdownExtra）；tour.js 的 createTourRunner 回傳 remainingMs（唯讀）', () => {
+  const s = src('../services/TourRemoteService.jsx')
+  assert.match(s, /import \{ createGuideHost, createGuideSync, countdownExtra \} from '\.\.\/lib\/tourRemote\.js'/)
+  assert.match(s, /\.\.\.countdownExtra\(tourRunner\)/)
+  const t = src('./tour.js')
+  assert.match(t, /remainingMs: \(\) => \{\n\s+const r = run\n\s+if \(!r\) return null/)
+  assert.match(t, /const spent = r\.paused \? r\.frozenMs : now\(\) - r\.at/)
+  assert.doesNotMatch(t.slice(t.indexOf('remainingMs: () => {'), t.indexOf('remainingMs: () => {') + 500), /run\s*=|emit\(|st\(\)\.set/, '唯讀：不改任何狀態')
+})
+
+test('樣式：進度條 / 倒數 / 預告 / 喚醒標示；動效偏好「減少動態」時進度條不做過場；不動 styles.css', () => {
+  const css = src('../styles/guide.css')
+  for (const sel of ['.guide-wake', '.guide-wake.is-off', '.guide-time', '.guide-bar', '.guide-bar > i', '.guide-time.is-paused .guide-bar > i', '.guide-left', '.guide-next', '.guide-next-k', '.guide-next-note']) assert.ok(css.includes(sel + ' {') || css.includes(sel + ','), sel)
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)[^\n]*\.guide-bar > i \{ transition: none; \}/)
+  assert.match(css, /\.guide-bar > i \{[^}]*transform-origin: left center/)
+  assert.doesNotMatch(src('../styles.css'), /\.guide-(bar|time|next|wake)/)
+})
+
+test('英文字典：第 5 輪新增的 key 都有英文、單複數 / 插值正確', async () => {
+  const mine = (await import('../i18n/en/guide.js')).default
+  const keys = ['重新連線中…（第 {n} 次）', '連線中斷 · 回到這個畫面會自動重連', '主畫面已重新載入，請重新掃描 QR', '螢幕保持喚醒中', '此瀏覽器無法保持喚醒（請把手機的自動鎖定調長）', '剩 {n} 秒', '下一站：{name}', '最後一站', '遙控器重新連線 · 聲部「{part}」（{n} 人連線）']
+  for (const k of keys) assert.ok(k in mine, k)
+  assert.equal(mine['剩 {n} 秒']({ n: 3 }), '3 s left')
+  assert.equal(translate('en', '剩 {n} 秒', { n: 12 }), '12 s left')
+  assert.equal(translate('en', '下一站：{name}', { name: 'Moon' }), 'Up next: Moon')
+  assert.equal(translate('zh', '下一站：{name}', { name: '月亮' }), '下一站：月亮')
+  assert.equal(translate('en', '遙控器重新連線 · 聲部「{part}」（{n} 人連線）', { part: 'Ocean', n: 2 }), 'Remote reconnected · part "Ocean" (2 connected)')
+})
+
+// =============================================================================================
+// React 執行期整合（沒有 DOM 的極簡 renderer：react-reconciler + 假樹）：真的掛載 <StrictMode><RemoteApp/>，跑完整的 effect 順序，
+//   假 Peer / 假計時器 / 假 navigator.wakeLock——涵蓋 SSR 測不到的部分（effect 內的 sync、雙掛載、喚醒 lock、倒數計時器、重連、卸載清理）。
+// =============================================================================================
+const Reconciler = (await import('react-reconciler')).default
+const { DefaultEventPriority } = await import('react-reconciler/constants.js')
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+function makeTreeRenderer() {
+  const host = {
+    supportsMutation: true, isPrimaryRenderer: true, supportsPersistence: false, supportsHydration: false, noTimeout: -1,
+    now: () => Date.now(), scheduleTimeout: (fn, ms) => setTimeout(fn, ms), cancelTimeout: (id) => clearTimeout(id),
+    getRootHostContext: () => ({}), getChildHostContext: (p) => p, prepareForCommit: () => null, resetAfterCommit() {},
+    createInstance: (type, props) => ({ type, props, children: [], dataset: {}, querySelectorAll: () => [], querySelector: () => null }),
+    createTextInstance: (text) => ({ type: '#text', text: String(text) }),
+    appendInitialChild: (p, c) => { p.children.push(c) },
+    appendChild: (p, c) => { p.children = p.children.filter((x) => x !== c); p.children.push(c) },
+    appendChildToContainer: (p, c) => host.appendChild(p, c),
+    insertBefore: (p, c, before) => { p.children = p.children.filter((x) => x !== c); const i = p.children.indexOf(before); p.children.splice(i < 0 ? p.children.length : i, 0, c) },
+    insertInContainerBefore: (p, c, b) => host.insertBefore(p, c, b),
+    removeChild: (p, c) => { p.children = p.children.filter((x) => x !== c) },
+    removeChildFromContainer: (p, c) => host.removeChild(p, c),
+    finalizeInitialChildren: () => false, prepareUpdate: () => true, commitUpdate: (inst, _u, _t, _o, next) => { inst.props = next },
+    commitTextUpdate: (t, _o, n) => { t.text = String(n) }, shouldSetTextContent: () => false, resetTextContent() {},
+    clearContainer: (c) => { c.children = [] }, getPublicInstance: (i) => i, preparePortalMount() {}, detachDeletedInstance() {},
+    getCurrentEventPriority: () => DefaultEventPriority, getInstanceFromNode: () => null, beforeActiveInstanceBlur() {}, afterActiveInstanceBlur() {},
+    prepareScopeUpdate() {}, getInstanceFromScope: () => null, hideInstance() {}, unhideInstance() {}, hideTextInstance() {}, unhideTextInstance() {},
+  }
+  const r = Reconciler(host)
+  const container = { type: 'root', children: [] }
+  const root = r.createContainer(container, 1, null, false, null, '', () => {}, null)
+  const walk = (n, f) => { f(n); for (const c of n.children || []) walk(c, f) }
+  return {
+    container,
+    render: (el) => r.updateContainer(el, root, null, null),
+    text: () => { const out = []; walk(container, (n) => { if (n.type === '#text') out.push(n.text) }); return out.join('') },
+    find: (pred) => { const out = []; walk(container, (n) => { if (n.type !== '#text' && n.type !== 'root' && pred(n)) out.push(n) }); return out },
+  }
+}
+
+function fakeWakeLock() {
+  const w = { requests: 0, sentinels: [], request(type) {
+    if (this !== w) throw illegal()
+    w.requests++
+    assert.equal(type, 'screen')
+    const L = new Set()
+    const s = { released: false, releaseCalls: 0, addEventListener(ev, f) { if (this !== s) throw illegal(); L.add(f) }, removeEventListener(ev, f) { if (this !== s) throw illegal(); L.delete(f) },
+      release() { if (this !== s) throw illegal(); s.releaseCalls++; if (s.released) throw new Error('already released'); s.released = true; for (const f of [...L]) f(); return Promise.resolve() } }
+    w.sentinels.push(s)
+    return Promise.resolve(s)
+  } }
+  return w
+}
+
+test('React 執行期（StrictMode 雙掛載）：只建一個 Peer / 一組訂閱；連上 → 導覽員區塊（倒數逐秒遞減、暫停凍結、下一站預告）；螢幕喚醒只在導覽員且已連線時持有', async () => {
+  const net = mkNet()
+  const wake = fakeWakeLock()
+  Object.defineProperty(globalThis.navigator, 'wakeLock', { value: wake, configurable: true })
+  const view = makeTreeRenderer()
+  try {
+    const b0 = ensurePeer('hostZ', TOKEN, net.deps)                        // 先用假網路建好連線單例（元件掛載時 ensurePeer 會沿用它）
+    view.render(React.createElement(React.StrictMode, null, React.createElement(RemoteApp, { hostId: 'hostZ', guide: TOKEN })))
+    await sleep(30)
+    await net.flush()
+    assert.equal(net.peers.length, 1, 'StrictMode 雙掛載：只有一個 Peer')
+    assert.equal(b0.subs.size, 1, '雙掛載後只剩一個訂閱者')
+    assert.equal(b0.teardown, null, '模擬卸載的拆除已被取消')
+    assert.equal(net.listenerCount(), 3)
+    assert.match(view.text(), /連線中…/)
+    assert.equal(wake.requests, 0, '還沒連線 / 還不是導覽員：不要螢幕喚醒')
+    // 連線
+    net.peers[0].doOpen()
+    const c1 = net.peers[0].last(); c1.doOpen()
+    await sleep(30)
+    assert.match(view.text(), /已連上主畫面 · 一起合奏/)
+    assert.deepEqual(c1.sent, [helloMsg(TOKEN)])
+    assert.equal(wake.requests, 0, '驗證通過前（還不是導覽員）不請求喚醒')
+    // 導覽員通過 + 導覽進行中（帶倒數）
+    c1.doData({ t: 'guide', ok: true })
+    c1.doData({ t: 'tour', ...T1, index: 1, remainMs: 6000, stopMs: 16000, paused: false })
+    await sleep(60)
+    let txt = view.text()
+    assert.match(txt, /導覽員/); assert.match(txt, /第 2 \/ 3 站/); assert.match(txt, /剩 6 秒/); assert.match(txt, /下一站：月亮/)
+    assert.equal(wake.requests, 1, '導覽員且已連線：請求螢幕喚醒')
+    assert.match(txt, /螢幕保持喚醒中/)
+    assert.equal(wake.sentinels[0].released, false)
+    // 倒數在兩次推送之間用本機時鐘內插
+    await sleep(1250)
+    txt = view.text()
+    const secs = Number(txt.match(/剩 (\d+) 秒/)[1])
+    assert.ok(secs <= 5 && secs >= 2, `過了約 1.3 秒（機器忙時更久）：剩 ${secs} 秒，一定比 6 少`)
+    // 暫停：凍結
+    c1.doData({ t: 'tour', ...T1, index: 1, remainMs: 6500, stopMs: 16000, paused: true })
+    await sleep(40)
+    assert.match(view.text(), /剩 7 秒/)
+    await sleep(700)
+    assert.match(view.text(), /剩 7 秒/, '暫停中：本機時間再走也不動')
+    assert.match(view.text(), /已暫停/)
+    // 連線中斷：狀態文字 + 按鈕停用 + 喚醒釋放；沒有重新整理鈕
+    c1.doClose()
+    await sleep(40)
+    txt = view.text()
+    assert.match(txt, /重新連線中…（第 1 次）/)
+    assert.match(txt, /連線中斷 · 按鈕暫時無法使用/)
+    const guideBtns = view.find((n) => n.type === 'button' && /guide-(btn|chip)/.test(n.props.className || ''))
+    assert.ok(guideBtns.length >= 4)
+    assert.ok(guideBtns.every((n) => n.props.disabled === true), '重連期間導覽員的按鈕全部停用')
+    assert.ok(view.find((n) => n.type === 'button' && n.props.disabled !== true && /remote-retry/.test(n.props.className || '')).length === 0)
+    assert.equal(view.find((n) => /remote-retry/.test(n.props.className || '')).length, 0, '自動重連期間不顯示「重新整理」鈕')
+    assert.equal(wake.sentinels[0].released, true, '連線中止：釋放喚醒')
+    assert.equal(wake.sentinels[0].releaseCalls, 1)
+    assert.doesNotMatch(txt, /螢幕保持喚醒中/)
+    // 1 秒後同一個 Peer 重連
+    net.timers.advance(1000)
+    const c2 = net.peers[0].last(); assert.notEqual(c2, c1)
+    c2.doOpen()
+    await sleep(40)
+    assert.equal(net.peers.length, 1)
+    assert.deepEqual(c2.sent, [helloMsg(TOKEN)], '重連後重送 hello')
+    txt = view.text()
+    assert.match(txt, /已連上主畫面 · 一起合奏/)
+    assert.match(txt, /正在取得導覽狀態…/, '過時的狀態清掉，等主畫面的新狀態')
+    assert.doesNotMatch(txt, /剩 \d+ 秒/)
+    assert.equal(wake.requests, 2, '重連成功：重新取得喚醒')
+    c2.doData({ t: 'guide', ok: true })
+    c2.doData({ t: 'tour', ...T1, index: 0, remainMs: 15000, stopMs: 16000 })
+    await sleep(40)
+    txt = view.text()
+    assert.match(txt, /剩 15 秒/); assert.match(txt, /下一站：潮汐/); assert.match(txt, /螢幕保持喚醒中/)
+    // 卸載：拆除連線、釋放喚醒、清計時器
+    view.render(null)
+    await sleep(30)
+    net.timers.advance(0)
+    assert.equal(net.peers[0].destroyed, true)
+    assert.equal(net.listenerCount(), 0)
+    assert.equal(wake.sentinels[1].released, true, '卸載：釋放喚醒')
+    assert.equal(net.timers.pending(), 0)
+    await sleep(300)                                                        // 倒數計時器已清（卸載後不會再 setState）
+  } finally {
+    delete globalThis.navigator.wakeLock
+    b0Cleanup()
+  }
+  function b0Cleanup() { try { const x = ensurePeer('hostZ', TOKEN, net.deps); x.destroy() } catch (e) { /* ignore */ } }
+})
+
+test('React 執行期：一般遙控（沒有 token）——連上後不送 hello、不請求喚醒；重連後照常；主畫面已重新載入 → 「主畫面已重新載入，請重新掃描 QR」與「重新整理」鈕', async () => {
+  const net = mkNet()
+  const wake = fakeWakeLock()
+  Object.defineProperty(globalThis.navigator, 'wakeLock', { value: wake, configurable: true })
+  const view = makeTreeRenderer()
+  try {
+    const bY = ensurePeer('hostY', null, net.deps)
+    view.render(React.createElement(React.StrictMode, null, React.createElement(RemoteApp, { hostId: 'hostY' })))
+    await sleep(30); await net.flush()
+    net.peers[0].doOpen()
+    const c1 = net.peers[0].last(); c1.doOpen()
+    await sleep(30)
+    assert.match(view.text(), /已連上主畫面 · 一起合奏/)
+    assert.deepEqual(c1.sent, [], '一般遙控不送 hello')
+    assert.equal(wake.requests, 0, '一般遙控不啟用螢幕喚醒（省電）')
+    const pads = view.find((n) => n.type === 'button' && /^水母$/.test(n.children.map((c) => c.text || '').join('')))
+    assert.equal(pads.length, 1); assert.notEqual(pads[0].props.disabled, true, '連線中：打擊墊可按')
+    c1.doClose()
+    await sleep(30)
+    assert.match(view.text(), /重新連線中…（第 1 次）/)
+    assert.equal(view.find((n) => n.type === 'button' && n.children.some((c) => c.text === '水母'))[0].props.disabled, true, '重連期間：打擊墊停用')
+    net.timers.advance(1000)
+    const c2 = net.peers[0].last(); c2.doOpen()
+    await sleep(30)
+    assert.deepEqual(c2.sent, [])
+    assert.notEqual(view.find((n) => n.type === 'button' && n.children.some((c) => c.text === '水母'))[0].props.disabled, true, '重連後打擊墊恢復')
+    // 主畫面重新載入：host id 不存在
+    c2.doClose()
+    for (let i = 1; i <= 6; i++) {
+      net.timers.advance(backoffMs(bY.link.state().n))                       // 等到下一次重試
+      net.peers[0].doUnavailable()                                           // 主畫面的 host id 已不存在
+    }
+    await sleep(30)
+    assert.match(view.text(), /主畫面已重新載入，請重新掃描 QR/)
+    assert.equal(view.find((n) => /remote-retry/.test(n.props.className || '')).length, 1, '放棄後才出現「重新整理」鈕')
+    view.render(null)
+    await sleep(30)
+    net.timers.advance(0)
+  } finally {
+    delete globalThis.navigator.wakeLock
+    try { ensurePeer('hostY', null, net.deps).destroy() } catch (e) { /* ignore */ }
+  }
+})
