@@ -670,3 +670,11 @@ test('InfoZh / InfoEn：id 與順序一一對應；快速上手 ≤ 5 條；每�
   assert.deepEqual(entries(zh), entries(en), '行內標記數量需一致')
   assert.equal(Object.keys(entries(zh)).length, 19 + 5)   // 玩法 19 + 快速上手 5（生態區塊的 id 是 eco，沒有 body 欄位）
 })
+
+// 導覽員分享的「第 n 站」連結：收到的人要直接看到那一站，不能先被新手導覽擋住（?onboard=1 仍可強制顯示）
+test('shouldAutoShow：?tourstop= 深連結不顯示新手導覽；?onboard=1 仍可強制', () => {
+  assert.equal(shouldAutoShow({ search: '?tourstop=air', local: () => null }), false)
+  assert.equal(shouldAutoShow({ search: '?tourstop=3&tourhold=1', local: () => null }), false)
+  assert.equal(shouldAutoShow({ search: '?tourstop=zzz', local: () => null }), true, '非法的站不算深連結（導覽不會啟動）→ 新手照常顯示')
+  assert.equal(shouldAutoShow({ search: '?tourstop=air&onboard=1', local: () => null }), true)
+})

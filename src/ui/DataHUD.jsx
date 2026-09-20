@@ -20,7 +20,7 @@ export default function DataHUD() {
           let moonName = ''
           if (seriesMeta.kind === 'tide') { const age = ageFromLunar(seriesMeta.lunar, p.h); if (age != null) moonName = moonPhaseName(age) } // 潮汐是月亮的引力
           const txt = formatHud(seriesMeta, p, { moonName }) +
-            ((st.rec.speed || 1) !== 1 ? ` · ×${st.rec.speed}` : '') + (st.rec.loop ? ' · ' + t('循環') : '')
+            (st.rec.speed < 0.01 ? ' · ' + t('已暫停') : (st.rec.speed || 1) !== 1 ? ` · ×${st.rec.speed}` : '') + (st.rec.loop ? ' · ' + t('循環') : '')
           if (el.__t !== txt) { el.__t = txt; el.textContent = txt } // 內容約 1 秒才變，不必每幀寫 DOM
           el.style.opacity = 1
         } else el.style.opacity = 0

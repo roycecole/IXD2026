@@ -1,12 +1,13 @@
 // 資料導覽（Data Tour）：面板卡片、畫面下方字幕、OUT 日誌。
 // 字幕文字（captionText）由 src/lib/tour.js 依資料組出，資料名稱（水庫 / 流域 / 縣市 / 月相 / 潮差 / 農曆）走資料層字典（./data.js）。
 // 用語依 GLOSSARY.md：sphere、sea level（海水高度）、reservoir、gauging station、no survey / interpolated（調查空窗）。
+// 導覽員控制（跳站 / 暫停 / 複製連結 / 念出字幕）、空氣品質站字幕、「已暫停」等英文在 ./tourpresenter.js。
 export default {
   // ---- 面板卡片（TourControls）----
   '資料導覽': 'Data tour',
   '共 {n} 站 · 約 {s} 秒': ({ n, s }) => `${n} ${n === 1 ? 'stop' : 'stops'} · about ${s} s`,
-  '依序巡演真實資料：水庫、潮汐、月亮、揚塵、鳥、魚、河川測站；畫面下方的字幕說明現在看的是什麼、球為什麼長這樣。':
-    'A guided tour through the real data: reservoir, tide, moon, dust, birds, fish and river stations. Captions below the sphere explain what you are looking at and why the sphere looks that way.',
+  '依序巡演真實資料：水庫、潮汐、月亮、揚塵、空氣品質（模型資料）、鳥、魚、河川測站；畫面下方的字幕說明現在看的是什麼、球為什麼長這樣。':
+    'A guided tour through the real data: reservoir, tide, moon, dust, air quality (modeled data), birds, fish and river stations. Captions below the sphere explain what you are looking at and why the sphere looks that way.',
   '▶ 開始導覽': '▶ Start tour',
   '■ 停止導覽': '■ Stop tour',
   '開始 / 停止資料導覽（快速鍵 T）': 'Start / stop the data tour (shortcut T)',

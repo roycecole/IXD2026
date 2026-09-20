@@ -14,6 +14,7 @@
 import { T } from '../i18n/index.js'
 import { LS } from './persist.js'
 import { flagOn } from './urlFlags.js'
+import { hasTourLink } from './tourLink.js'
 
 // ============================================================================================
 // 步驟
@@ -65,6 +66,7 @@ const writeKey = (s, key, val) => { try { if (!s) return false; s.setItem(key, v
 //   · ?onboard=0 → 永不顯示；#remote / ?audience / ?diagnostics（不同的頁面，沒有這些介面元素）→ 永不顯示（連 ?onboard=1 也不行）
 //   · ?onboard=1 → 強制顯示（無視 seen / onboarded / ?kiosk）
 //   · ?kiosk → 不顯示（展場整天開著，不能有卡片擋住）
+//   · ?tourstop=… 導覽深連結 → 不顯示（收到連結的人要直接看到那一站）
 //   · 已有 seen（舊使用者）或 onboarded → 不顯示
 //   · localStorage 讀不到（隱私模式 / 被封鎖）→ 視為首次、照樣顯示（與過去自動彈出說明視窗的行為一致），但 sessionStorage 若記得「這個分頁已完成」就不再顯示
 export function shouldAutoShow({ search = '', hash = '', local = null, session = null } = {}) {
@@ -73,6 +75,7 @@ export function shouldAutoShow({ search = '', hash = '', local = null, session =
   if (isRemoteHash(hash) || flagOn(search, 'audience') || flagOn(search, 'diagnostics')) return false
   if (flag === 'on') return true
   if (flagOn(search, 'kiosk')) return false
+  if (hasTourLink(search)) return false   // 別人分享的「導覽第 n 站」連結：直接看那一站，不要先擋一張新手卡（?onboard=1 仍可強制顯示）
   const l = storageOf(local), s = storageOf(session)
   return !(readKey(l, LS.seen) || readKey(l, LS.onboarded) || readKey(s, LS.onboarded))
 }

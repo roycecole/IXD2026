@@ -134,6 +134,9 @@ test('resolveConfig：?kiosk → 看門狗開、版本 5 分鐘、資料 30 分�
   assert.deepEqual(R.resolveConfig({ search: '?watchdog=0', buildId: 'b1' }).watchdog, { on: false, reason: 'flag-off' })
   assert.deepEqual(R.resolveConfig({ search: '?watchdog=1', buildId: 'b1' }).watchdog, { on: true, reason: 'flag' })
   assert.deepEqual(R.resolveConfig({ search: '?kiosk=0', buildId: 'b1' }).watchdog, { on: false, reason: 'default' }, '?kiosk=0 明確關閉不算展場')
+  // 觀眾視窗（投影機）整天開著、卡死了沒人發現 → 預設就開；?watchdog=0 仍可關
+  assert.deepEqual(R.resolveConfig({ search: '?audience=1', buildId: 'b1' }).watchdog, { on: true, reason: 'audience' })
+  assert.deepEqual(R.resolveConfig({ search: '?audience=1&watchdog=0', buildId: 'b1' }).watchdog, { on: false, reason: 'flag-off' })
 })
 
 test('resolveConfig：dev 建置不做版本檢查；?autoupdate=0 只記錄不自動重載', () => {
@@ -896,7 +899,7 @@ test('startGuards：WebGL 遺失 4 秒沒恢復 → 重載並記錄；有恢復 
 
 test('startGuards：觀眾視窗 → 沒有資料更新（它跟著主視窗），永遠閒置所以有新版就重載；遙控頁 / 診斷頁什麼都不做', async () => {
   const a = startWith('?audience=1')
-  assert.equal(a.env.counts().timers, 2, 'gl 掃描 + 版本輪詢；沒有資料輪詢'); assert.equal(a.status.get().data.state, 'off'); a.h.stop()
+  assert.equal(a.env.counts().timers, 3, 'gl 掃描 + 版本輪詢 + 看門狗檢查（投影機整天開著）；沒有資料輪詢'); assert.equal(a.status.get().data.state, 'off'); assert.equal(a.status.get().watchdog.on, true); a.h.stop()
   const env = makeEnv(); env.search = '?audience=1'
   env.idleState = () => R.DEFAULT_IDLE_STATE   // 觀眾視窗沒有人為輸入：預設環境的閒置狀態永遠是閒置
   env.respond = (u) => jsonRes(u.endsWith('version.json') ? { id: 'NEW' } : {})

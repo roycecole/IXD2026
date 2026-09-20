@@ -3,7 +3,9 @@
 //   · tourRunner：唯一的執行器（用 useStore、activity.last、performance.now）
 //   · tourIdleTick()：App 主迴圈在「閒置 30 秒且沒有錄製 / 播放」時每幀呼叫，決定要不要自動開始
 //   · toggleTour() / startTour() / stopTour()：鍵盤 T、面板按鈕用
-//   · attachTourGuards()：長駐掛鉤（見該函式）；attachRunningGuards()：導覽進行中的 capture 監聽
+//   · attachTourGuards()：長駐掛鉤（見該函式）；attachRunningGuards()：導覽進行中的 capture 監聽（含導覽員快速鍵 ← → P）
+//   · linkStarter（createLinkStarter）：網址帶 ?tourstop= 時，資料載入後只啟動一次導覽（見該函式）
+//   · copyTourLink()：「複製此站連結」（TourNav 的按鈕用）
 // 中斷的原則：「使用者的第一個動作要落在還原後的海上」——
 //   DOM 事件（pointerdown / keydown）用 capture 監聽先中止再往下傳；
 //   非 DOM 輸入（MIDI / 語音 / 手機遙控 / 手把 / 手勢 / 滾輪）都會先呼叫 activity.touch()，touch 的同步掛鉤（onActivity）在動作「之前」中止導覽並還原。
@@ -13,8 +15,11 @@ import { activity, touch, onActivity } from '../store/activity.js'
 import { stats } from '../store/stats.js'
 import { LS, saveLS } from '../lib/persist.js'
 import { arState } from '../lib/ar.js'
-import { createTourRunner, buildTour, useTourStore } from '../lib/tour.js'
+import { createTourRunner, buildTour, useTourStore, isAudienceSearch } from '../lib/tour.js'
 import { inspectStore } from '../lib/inspect.js'
+import { isInModal } from '../lib/modalFocus.js'
+import { parseTourLink, buildTourLink, copyText } from '../lib/tourLink.js'
+import { t, getLocale } from '../i18n/index.js'
 
 export const tourRunner = createTourRunner({
   store: useStore,
@@ -65,19 +70,51 @@ export function tourIdleTick(now = performance.now()) {
   return 'wait'
 }
 
-// 這些按鍵不算「操作海」：H 演出模式 / I 資訊面板 / ? 說明 / T 導覽開關 / 修飾鍵與 Tab
-export const KEEP_KEYS = new Set(['t', 'T', 'h', 'H', 'i', 'I', '?', 'Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Tab'])
+// 這些按鍵不算「操作海」：H 演出模式 / I 資訊面板 / ? 說明 / T 導覽開關 / 導覽員快速鍵（← 上一站、→ 下一站、P 暫停 / 繼續）/ 修飾鍵與 Tab
+export const KEEP_KEYS = new Set(['t', 'T', 'h', 'H', 'i', 'I', '?', 'ArrowLeft', 'ArrowRight', 'p', 'P', 'Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Tab'])
 // 點到這些元件不算「操作海」、不中斷導覽：導覽自己的卡片 / 字幕、語言切換（切語言時字幕要跟著換、導覽繼續）、
 // 分享 / 分享星球 / 錄影（要擷取「此刻看到的海」，不能先被還原）、資訊面板 / 說明 / 聲音 / 匯出 LOG、離開演出模式。
 // （TopBar 按鈕以 data-k 辨識；找不到對應元素時只是退化成「點了就中斷導覽」。）
 export const KEEP_SELECTOR = '[data-tour-ui], .stage-exit, [data-k="lang"], [data-k="share"], [data-k="shareimg"], [data-k="capture"], [data-k="overlays"], [data-k="help"], [data-k="audio"], [data-k="log"]'
 export const inKeepUi = (e) => { const el = e && e.target; return !!(el && el.closest && el.closest(KEEP_SELECTOR)) }
 
+// 導覽員快速鍵（只在導覽進行中；本函式是純判斷，可在 Node 測）：← 上一站、→ 下一站、P 暫停 / 繼續。
+//   忽略：ctrl / meta / alt 組合、輸入法組字中、輸入元件（INPUT / TEXTAREA / SELECT / contenteditable）與滑桿類元件（role="slider" 等，
+//   例如虛擬控制器的旋鈕用方向鍵調值——那是在「操作海」，交給該元件，導覽會被它的 input 中止）、彈窗開著且焦點在裡面（isInModal，與 App 的全域快速鍵同一個判斷）。
+const NAV_KEYS = new Map([['ArrowLeft', 'prev'], ['ArrowRight', 'next'], ['p', 'toggle'], ['P', 'toggle']])
+const TYPING_ROLE = /^(slider|textbox|spinbutton|combobox|listbox|searchbox)$/
+export function isTypingTarget(el) {
+  if (!el) return false
+  try {
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName || '')) return true
+    if (el.isContentEditable) return true
+    return TYPING_ROLE.test((typeof el.getAttribute === 'function' && el.getAttribute('role')) || '')
+  } catch (e) { return false }
+}
+export function navKeyAction(e) {
+  if (!e || e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return null
+  const act = NAV_KEYS.get(e.key)
+  if (!act) return null
+  if (isTypingTarget(e.target) || isInModal(e.target)) return null
+  return act
+}
+
 // 導覽進行中：碰螢幕 / 按鍵 → 立刻結束並還原（capture：先於任何處理器，使用者的動作會落在還原後的狀態上）。導覽自己的卡片與上面列出的非操作性按鈕不算。
+// 例外：導覽員快速鍵 ← → P（navKeyAction）——換站 / 暫停，不中止；處理時 preventDefault（不要捲動面板），按住不放不連續跳站。Esc 仍是結束。
 export function attachRunningGuards(win, runner = tourRunner) {
   const onDown = (e) => { if (!inKeepUi(e)) runner.stop('input') }
   const onKey = (e) => {
     if (e.key === 'Escape') { runner.stop('user'); return }
+    const nav = navKeyAction(e)
+    if (nav) {
+      if (typeof e.preventDefault === 'function') e.preventDefault()
+      if (e.repeat) return
+      if (nav === 'prev') runner.prev()
+      else if (nav === 'next') runner.next()
+      else if (runner.isPaused()) runner.resume()
+      else runner.pause()
+      return
+    }
     if (KEEP_KEYS.has(e.key) || e.ctrlKey || e.metaKey || e.altKey || inKeepUi(e)) return
     runner.stop('input')
   }
@@ -117,4 +154,60 @@ export function attachTourGuards({ win, doc, runner = tourRunner, store = useSto
     for (const ev of ACT) win.removeEventListener(ev, onAct, true)
     onHide()   // 卸載：結束並還原（導覽中的參數不該被主迴圈寫進使用者的偏好）
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// 每站連結（深連結）
+// ---------------------------------------------------------------------------------------------
+const safeSearch = () => { try { return typeof location !== 'undefined' ? location.search : '' } catch (e) { return '' } }
+const safeHref = () => { try { return typeof location !== 'undefined' ? location.href : '' } catch (e) { return '' } }
+
+// 網址帶 ?tourstop=（與選帶的 ?tourhold=1）→ 海況資料載入後，「只執行一次」runner.start({ auto:false, at, hold })。
+//   · 等 gov 有 options 才動；再延後 delayMs：App 在 setGov 之後、同一個 tick 內還要套用首次到訪 / 分享連結的參數，導覽要在那之後才記「導覽前」的狀態
+//   · 只有一次：done 旗標在「試過一次」（成功 / 失敗 / 不適用）時就立起，StrictMode 雙掛載、HMR 重新掛載都不會再啟動；start 失敗（例如正在錄製）就放棄，不重試
+//   · 觀眾視窗（remote / ?audience）不跑導覽 → 直接放棄
+//   · attach() 回傳取消函式（unmount 時退訂 + 清計時器）；重複 attach 安全。
+// 計時器以「裸函式包一層」呼叫（原生 setTimeout 掛在別的物件上再呼叫會丟 Illegal invocation）。
+export const LINK_START_DELAY_MS = 400
+export function createLinkStarter({
+  runner = tourRunner, store = useStore, tourStore = useTourStore, getSearch = safeSearch, delayMs = LINK_START_DELAY_MS,
+  schedule = (fn, ms) => setTimeout(fn, ms), cancel = (id) => clearTimeout(id),
+} = {}) {
+  let done = false
+  let timer = null
+  const govReady = () => { const g = store.getState().gov; return !!(g && Array.isArray(g.options) && g.options.length) }
+  function fire() {
+    timer = null
+    if (done) return
+    done = true
+    const link = parseTourLink(getSearch())
+    if (!link) return
+    try { runner.start({ auto: false, at: link.stop.id != null ? link.stop.id : link.stop.index, hold: link.hold }) } catch (e) { /* 起不來就放棄 */ }
+  }
+  function attach() {
+    if (done) return () => {}
+    const search = getSearch()
+    if (!parseTourLink(search) || tourStore.getState().remote || isAudienceSearch(search)) { done = true; return () => {} }
+    const check = () => { if (done || timer !== null || !govReady()) return; timer = schedule(fire, delayMs) }
+    const off = store.subscribe((s, prev) => { if (s.gov !== prev.gov) check() })
+    check()
+    return () => { off(); if (timer !== null) { cancel(timer); timer = null } }
+  }
+  return { attach, isDone: () => done }
+}
+export const linkStarter = createLinkStarter()
+
+// 「複製此站連結」：連結指向「目前這一站」（暫停中就帶 tourhold=1：收到連結的人也停在那一站）。
+// 回傳 'ok' | 'fail' | 'none'（導覽沒在跑 → 沒有站可指）。成功 / 失敗都寫一行 OUT 日誌。
+export async function copyTourLink({ tourStore = useTourStore, store = useStore, getHref = safeHref, env } = {}) {
+  const s = tourStore.getState()
+  const stop = s.running && Array.isArray(s.stopList) ? s.stopList[s.index] : null
+  if (!stop) return 'none'
+  const n = s.index + 1
+  const link = buildTourLink({ href: getHref(), stopId: stop.id, hold: !!s.paused, locale: getLocale() })
+  let ok = false
+  if (link) { try { ok = await copyText(link, env) } catch (e) { ok = false } }
+  const st = store.getState()
+  if (st.pushLog) st.pushLog('out', ok ? t('已複製第 {n} 站連結', { n }) : t('複製連結失敗：瀏覽器不允許存取剪貼簿'))
+  return ok ? 'ok' : 'fail'
 }

@@ -12,6 +12,8 @@ import { touch } from '../store/activity.js'
 import { useT, useLocale, localeTag } from '../i18n/index.js'
 import { getVoice, ERROR_TEXT } from '../lib/voice.js'
 import { runCommand, heardText, logText } from '../lib/voiceCommands.js'
+import { narrator } from '../lib/narration.js'
+import { createEchoGuard } from '../lib/echoGuard.js'
 import '../styles/voice.css'
 
 const HEARD_MS = 2200        // 「聽到：…」顯示多久
@@ -32,7 +34,9 @@ export default function VoiceService() {
   // 指令 → 動作 + 日誌 + 提示
   useEffect(() => {
     const h = { ids: [], at: -1e9, timer: 0 }
+    const echo = createEchoGuard({ narrator })   // 資料導覽旁白開著時，字幕裡的「鯨魚」「魚群」會被麥克風收進去 → 旁白期間（含餘音）忽略辨識結果
     const off = voice.onCommand((f) => {
+      if (echo.shouldIgnore()) return
       touch()   // 算一次人為操作（閒置吸引模式據此重新計時）
       useStore.getState().pushLog('in', logText(f.id))
       try { runCommand(f.id, useStore) } catch (e) { /* 動作出錯不影響辨識 */ }
@@ -43,7 +47,7 @@ export default function VoiceService() {
       clearTimeout(h.timer)
       h.timer = setTimeout(() => { h.ids = []; setHeard([]) }, HEARD_MS)
     })
-    return () => { off(); clearTimeout(h.timer) }
+    return () => { off(); echo.dispose(); clearTimeout(h.timer) }
   }, [voice])
 
   // 卸載時真正釋放麥克風

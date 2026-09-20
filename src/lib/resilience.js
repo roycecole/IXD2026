@@ -78,7 +78,7 @@ export function flagSummary(search, hash) {
 }
 
 // 依網址與 build id 算出「這個視窗要啟用哪些防呆」。
-//   看門狗：只在展場模式（?kiosk）或明確 ?watchdog=1 啟用；?watchdog=0 一律關閉（一般使用者的背景 / 省電情境不會被誤重載）
+//   看門狗：只在展場模式（?kiosk）、觀眾視窗（?audience=1：投影機整天開著、卡死了沒人會發現）或明確 ?watchdog=1 啟用；?watchdog=0 一律關閉（一般使用者的背景 / 省電情境不會被誤重載）
 //   版本檢查：正式建置一律檢查；有新版時的自動重載預設開（展場 / 閒置才動），?autoupdate=0 只記錄不重載；dev 建置不檢查
 //   資料更新：展場 30 分鐘、一般 3 小時（一般只在頁面可見時）
 export function resolveConfig({ search = '', hash = '', buildId = BUILD_ID } = {}) {
@@ -88,6 +88,7 @@ export function resolveConfig({ search = '', hash = '', buildId = BUILD_ID } = {
   if (flagOff(search, 'watchdog')) watchdog = { on: false, reason: 'flag-off' }
   else if (flagOn(search, 'watchdog')) watchdog = { on: true, reason: 'flag' }
   else if (kiosk) watchdog = { on: true, reason: 'kiosk' }
+  else if (mode === 'audience') watchdog = { on: true, reason: 'audience' }
   else watchdog = { on: false, reason: 'default' }
   const dev = !buildId || buildId === 'dev'
   const autoOff = flagOff(search, 'autoupdate')

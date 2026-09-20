@@ -3,29 +3,34 @@
 //   buildTour(gov, opts)       → stops[]：依資料產生導覽站（缺什麼資料就略過那一站，不會丟錯）
 //   captionText(caption)       → { title, body }：字幕文字。caption 只存「資料」{ key, p }，顯示時才依「當下語系」翻譯，
 //                                所以語系中途切換字幕會跟著換；也因此能安全地鏡像到觀眾視窗（JSON 可序列化、與語系無關）
-//   createTourRunner(deps)     → 導覽執行器：start / tick / stop；負責套用海況、播放序列、偵測中斷、還原導覽前的狀態
-//   useTourStore               → 字幕狀態（zustand）；registerMirror('tour') 讓觀眾視窗顯示同一份字幕
-// 導覽用既有引擎：useStore 的 setGovOption / playGovSeries / playDust / playMoon / playSurvey / stopPlayback / setRecSpeed。
+//   createTourRunner(deps)     → 導覽執行器：start / tick / stop；負責套用海況、播放序列、偵測中斷、還原導覽前的狀態。
+//                                導覽員控制：goto / next / prev / pause / resume（像簡報一樣跳站、暫停講解）；可選的字幕旁白（narration.js）
+//   useTourStore               → 字幕狀態（zustand）；registerMirror('tour') 讓觀眾視窗顯示同一份字幕（含「已暫停」）
+// 導覽用既有引擎：useStore 的 setGovOption / playGovSeries / playDust / playAir / playMoon / playSurvey / stopPlayback / setRecSpeed。
 import { flagOn } from './urlFlags.js'
 import { create } from 'zustand'
-import { seriesFromOption, seriesFromSurvey, seriesFromDust, seriesFromMoon } from './series.js'
+import { seriesFromOption, seriesFromSurvey, seriesFromDust, seriesFromAir, seriesFromMoon } from './series.js'
 import { dustSummary } from './describe.js'
 import { ageFromLunar, moonAge, moonPhaseName } from './moon.js'
 import { registerMirror } from './mirror.js'
 import { LS, loadLS, saveLS } from './persist.js'
-import { t, getLocale } from '../i18n/index.js'
+import { t, getLocale, useLocaleStore } from '../i18n/index.js'
 import { nameText, lunarLabelText, tideRangeText } from '../i18n/data.js'
+import { narrator as sharedNarrator, speechText as sharedSpeechText } from './narration.js'
 
 // ---------------------------------------------------------------------------------------------
 // 常數
 // ---------------------------------------------------------------------------------------------
 export const IDLE_MS = 30000                     // 閒置多久自動開始（與 App 主迴圈的門檻一致；僅供 UI 說明用）
-// 各站停留時間（ms）：七站合計約 99 秒（缺站時較短）。series 站會用倍速讓整段序列剛好在時間內播完。
-export const TOUR_MS = { reservoir: 11000, tide: 20000, moon: 16000, dust: 12000, birds: 14000, fish: 15000, stations: 11000 }
+// 各站停留時間（ms）：八站合計約 111 秒（缺站時較短）。series 站會用倍速讓整段序列剛好在時間內播完。
+export const TOUR_MS = { reservoir: 11000, tide: 20000, moon: 16000, dust: 12000, air: 12000, birds: 14000, fish: 15000, stations: 11000 }
 export const MIN_SPEED = 0.25                    // 資料很稀疏（例如揚塵只有 2 筆）時，放慢到這個倍速就夠了，其餘時間停在終點
 export const MAX_SPEED = 4                       // 與面板倍速鈕的上限一致
 const HOLD_S = 1.5                               // 序列播完後在終點停留（秒）：讓人看清最後的狀態
 export const AUTO_IDLE_DEFAULT = true            // 非 kiosk 時「閒置自動導覽」的預設值（沿用舊吸引模式的行為：閒置 30 秒才動）；想改成預設關閉只要改這裡
+export const SPEAK_DEFAULT = false               // 字幕旁白預設不出聲（展場也一樣：要導覽員自己打開，或網址 ?speak=1）
+export const PAUSE_SPEED = 1e-6                  // 暫停「序列播放」用的倍速：tickPlayback 用 speed || 1，設 0 會被當成 1；極小值 = 實質凍結，繼續時還原該站的倍速
+export const NARRATION_MAX_WAIT_MS = 6000        // 該站時間到、旁白還沒念完時，最多再等這麼久（等的期間不算暫停，只是延後換站）
 
 // ---------------------------------------------------------------------------------------------
 // 小工具
@@ -51,8 +56,8 @@ export function speedFor(seqSec, durationMs) {
 // ---------------------------------------------------------------------------------------------
 // buildTour：依資料組出導覽站
 //   stop = { id, optionId, kind:'apply'|'series', series?, durationMs, speed, seqSec, caption:{ key, p } }
-//   series：'tide'（playGovSeries）| 'dust'（playDust）| 'moon'（playMoon）| 'birds' / 'fish'（playSurvey）
-// 順序：今日水庫 → 潮汐 → 月亮 → 揚塵 → 鳥群 → 魚群 → 河川測站星座。
+//   series：'tide'（playGovSeries）| 'dust'（playDust）| 'air'（playAir）| 'moon'（playMoon）| 'birds' / 'fish'（playSurvey）
+// 順序：今日水庫 → 潮汐 → 月亮 → 揚塵 → 空氣品質 → 鳥群 → 魚群 → 河川測站星座（共 8 站，缺資料的站略過）。
 // ---------------------------------------------------------------------------------------------
 function reservoirStop(gov, options) {
   const cands = options.filter((o) => !o.kind && o.params && isNum(o.params.seaLevel) && isNum(o.level))
@@ -110,6 +115,20 @@ function dustStop(gov, options) {
   }
 }
 
+// 空氣品質：Open-Meteo Air Quality（CAMS 全球大氣模型）的逐時 PM2.5——「模型資料」，不是政府觀測值，字幕一定要講清楚。
+// 沒有 gov.air、沒有 kind === 'air' 的選項、或有效小時不足 2 個（seriesFromAir 回 null）→ 略過這一站，其他站不受影響。
+// 字幕的 lo / hi 是 PM2.5 的範圍（四捨五入到整數）；flat = 範圍收斂成同一個數字（模型幾乎沒變化）。
+function airStop(gov, options) {
+  const opt = options.find((o) => o.kind === 'air')
+  const spec = opt && gov.air ? seriesFromAir(gov.air) : null
+  if (!opt || !spec) return null
+  const lo = Math.round(spec.stats.min), hi = Math.round(spec.stats.max)
+  return {
+    opt, kind: 'series', series: 'air', spec,
+    caption: { key: 'air', p: { name: opt.name, lo, hi, n: spec.points.length, flat: lo === hi } },
+  }
+}
+
 // 鳥 / 魚調查年表：優先用 preferIds 裡有年表的海況（翡翠 → 淡水河的鳥；曾文 → 曾文溪的魚，中間有 2007–2013 的空窗），
 // 否則取「調查年最多」的（同數取資料順序在前者）。空窗年（extra.gaps，series.js 提供）在字幕裡明講。
 function surveyStop(kind, options, preferIds) {
@@ -148,6 +167,7 @@ export function buildTour(gov, opts = {}) {
     ['tide', safe(() => tideStop(gov, options, now))],
     ['moon', safe(() => moonStop(gov, options, now))],
     ['dust', safe(() => dustStop(gov, options))],
+    ['air', safe(() => airStop(gov, options))],
     ['birds', safe(() => surveyStop('birds', options, ['feitsui']))],
     ['fish', safe(() => surveyStop('fish', options, ['zengwen']))],
     ['stations', safe(() => stationsStop(gov, base))],
@@ -211,6 +231,15 @@ const CAPTIONS = {
     if (p.metric === 'wind') return { title, body: t('PM10 感測器回報無效，改看風速 {wind} m/s 推動洋流；歷史還在累積（{n} 筆有效）', P) }
     return { title, body: t('這幾座感測站目前沒有有效讀數；歷史還在累積', P) }
   },
+  // 空氣品質：對應以 series.js 的 automationFor('air') 為準——PM2.5 高 → 海水清澈度降低（混濁）、垃圾數量增加（色相偏黃綠、輝光收斂也是同一組係數，字幕只講最明顯的兩項）。
+  // 誠實原則：標題點出「模型資料」，說明明講「Open-Meteo / CAMS 模型，非政府觀測」。
+  air: (p) => {
+    const P = { lo: dash(p.lo), hi: dash(p.hi), v: dash(p.lo) }
+    return {
+      title: t('{name} · 模型資料', { name: nm(p.name) }),
+      body: p.flat ? t('PM2.5 約 {v} μg/m³（Open-Meteo / CAMS 模型，非政府觀測）：這段時間變化很小', P) : t('PM2.5 {lo}–{hi} μg/m³（Open-Meteo / CAMS 模型，非政府觀測）：越高，海水越混濁、垃圾越多', P),
+    }
+  },
   birds: (p) => surveyCaption('birds', p),
   fish: (p) => surveyCaption('fish', p),
   stations: (p) => ({
@@ -249,6 +278,17 @@ export function resolveAutoIdle({ saved = null, search = '' } = {}) {
   return AUTO_IDLE_DEFAULT
 }
 
+// 字幕旁白（語音朗讀）是否開啟。優先序：網址 ?speak=0/1 > 使用者存的偏好 > SPEAK_DEFAULT（預設不出聲，展場也一樣）
+export function resolveSpeak({ saved = null, search = '' } = {}) {
+  let q
+  try { q = new URLSearchParams(search || '') } catch (e) { q = new URLSearchParams('') }
+  const u = String(q.get('speak') || '').toLowerCase()
+  if (u === '0' || u === 'off' || u === 'false' || u === 'no') return false
+  if (u === '1' || u === 'on' || u === 'true' || u === 'yes') return true
+  if (typeof saved === 'boolean') return saved
+  return SPEAK_DEFAULT
+}
+
 // 觀眾視窗（第二個視窗）不能自己跑導覽：導覽由主視窗跑，字幕經 mirror 送過來。以網址判斷，另外收到第一個 mirror 訊息時也會標記為 remote。
 export function isAudienceSearch(search) {
   try {
@@ -259,10 +299,18 @@ export function isAudienceSearch(search) {
 }
 
 const safeSearch = () => { try { return typeof location !== 'undefined' ? location.search : '' } catch (e) { return '' } }
-const savedAuto = () => { const v = loadLS(LS.tour, null); return v && typeof v.auto === 'boolean' ? v.auto : null }
+// LS.tour 是一個物件 { auto, speak }：各偏好各自「合併」寫入，不能互相洗掉（以前 setAutoIdle 整個物件覆寫，會把 speak 洗掉）
+const readTourPrefs = () => { const v = loadLS(LS.tour, null); return v && typeof v === 'object' && !Array.isArray(v) ? v : {} }
+const savedAuto = () => { const v = readTourPrefs().auto; return typeof v === 'boolean' ? v : null }
+const savedSpeak = () => { const v = readTourPrefs().speak; return typeof v === 'boolean' ? v : null }
+
+// 導覽員按鈕用：目前這個瀏覽器有沒有語音合成（沒有就不顯示「念出字幕」開關）。在呼叫當下才問，import 時不碰任何全域。
+export function supportsNarration() {
+  try { return !!sharedNarrator.supported() } catch (e) { return false }
+}
 
 // ---------------------------------------------------------------------------------------------
-// 字幕狀態（zustand）：TourCaption / TourControls 讀它；registerMirror 把它送到觀眾視窗
+// 字幕狀態（zustand）：TourCaption / TourControls / TourNav 讀它；registerMirror 把它送到觀眾視窗
 // ---------------------------------------------------------------------------------------------
 export const useTourStore = create(() => ({
   running: false,
@@ -271,23 +319,30 @@ export const useTourStore = create(() => ({
   total: 0,
   stopMs: 0,               // 這一站的停留時間（進度條動畫用）
   seq: 0,                  // 每換一站 +1（元件用來判斷「換站了」）
+  paused: false,           // 導覽員按了暫停：這一站的計時與序列凍結，字幕標「已暫停」（鏡像到觀眾視窗）
+  stopList: [],            // [{ id, caption }]：這一輪實際有的站（進度點按鈕的標籤、複製此站連結的站 id）。只有主視窗用，不鏡像
   autoIdle: resolveAutoIdle({ saved: savedAuto(), search: safeSearch() }),
+  speak: resolveSpeak({ saved: savedSpeak(), search: safeSearch() }),   // 字幕旁白偏好（不鏡像：旁白只在跑導覽的主視窗出聲）
   remote: isAudienceSearch(safeSearch()),   // true = 這個視窗只顯示鏡像字幕、不跑導覽
 }))
 
 export function setAutoIdle(on) {
-  saveLS(LS.tour, { auto: !!on })
+  saveLS(LS.tour, { ...readTourPrefs(), auto: !!on })
   useTourStore.setState({ autoIdle: !!on })
+}
+export function setSpeak(on) {
+  saveLS(LS.tour, { ...readTourPrefs(), speak: !!on })
+  useTourStore.setState({ speak: !!on })
 }
 export function setTourRemote(on) { useTourStore.setState({ remote: !!on }) }   // 觀眾視窗實作者可主動標記
 
 // 鏡像切片（模組頂層註冊：兩個視窗載入時都會執行）。apply 只更新字幕 store，不觸發導覽邏輯。
-const MIRROR_FIELDS = ['running', 'caption', 'index', 'total', 'stopMs', 'seq']
+const MIRROR_FIELDS = ['running', 'caption', 'index', 'total', 'stopMs', 'seq', 'paused']
 registerMirror('tour', {
-  get: () => { const s = useTourStore.getState(); return { running: s.running, caption: s.caption, index: s.index, total: s.total, stopMs: s.stopMs, seq: s.seq } },
+  get: () => { const s = useTourStore.getState(); return { running: s.running, caption: s.caption, index: s.index, total: s.total, stopMs: s.stopMs, seq: s.seq, paused: s.paused } },
   apply: (v) => {
     if (!v || typeof v !== 'object') return
-    useTourStore.setState({ remote: true, running: !!v.running, caption: v.caption && typeof v.caption === 'object' ? v.caption : null, index: Number(v.index) || 0, total: Number(v.total) || 0, stopMs: Number(v.stopMs) || 0, seq: Number(v.seq) || 0 })
+    useTourStore.setState({ remote: true, running: !!v.running, caption: v.caption && typeof v.caption === 'object' ? v.caption : null, index: Number(v.index) || 0, total: Number(v.total) || 0, stopMs: Number(v.stopMs) || 0, seq: Number(v.seq) || 0, paused: !!v.paused })
   },
   // 只在「會被鏡像的欄位」改變、且不是由 apply 造成的（remote）時才通知，避免觀眾視窗把收到的字幕又送回去
   subscribe: (cb) => useTourStore.subscribe((s, prev) => { if (!s.remote && MIRROR_FIELDS.some((k) => s[k] !== prev[k])) cb() }),
@@ -303,17 +358,38 @@ registerMirror('tour', {
 //   deps.build        (gov, opts) => stops（預設 buildTour）
 //   deps.isRemote     () => 是否為觀眾視窗（預設讀 useTourStore.remote）
 //   deps.afterPlay    () => 導覽開始播放序列後的回呼（選用）
+//   旁白（選用；預設不出聲）：
+//   deps.narrator     旁白物件（narration.js 的 narrator：supported / speak / cancel / speaking），預設用共用實例。永遠以「方法呼叫」使用，不脫離原物件
+//   deps.speechText   ({ title, body }, locale) => 朗讀用字串（預設 narration.js 的 speechText）
+//   deps.isSpeak      () => 旁白偏好（預設讀 useTourStore.speak）
+//   deps.getLocale    () => 目前語系（預設 i18n 的 getLocale）
+//   deps.subscribeLocale / deps.subscribeSpeak   (cb) => 取消訂閱函式：語系切換 / 旁白開關切換時通知（預設訂閱 useLocaleStore / useTourStore）
 // 還原：開始時記下「導覽前」的參數 / 海況選項 / 播放倍速；結束或被中斷時 setGovOption(舊選項) → applyParams(舊參數) → setRecSpeed(舊倍速)。
 //   使用者「接手」（開始錄製、自己按播放、換了海況）時不還原——以使用者的操作為準，只停掉我們自己的播放。
 //   使用者在導覽前暫存的錄製由 playSeries / stopPlayback 既有的機制還原。
 // 自動（閒置）啟動的導覽會無限循環（展場）直到有人動；手動啟動的導覽播一輪後結束並還原。
+// 導覽員控制（goto / next / prev / pause / resume）：
+//   · 換站一律經過同一個 begin(i)（先寫導覽 OUT 日誌 → 套用海況 → 資料播放）；導覽員換站不是使用者「接手」，run.expect 同步更新，不會觸發 'input' / 'option' 中止。
+//   · 暫停凍結兩件事：這一站的計時（繼續後從剩餘時間接著算）與序列播放（倍速設成 PAUSE_SPEED，繼續時還原該站的倍速）。
+//     暫停不是「鎖定」：真實輸入（觸碰 / 按鍵 / MIDI）照樣中止導覽——tick 仍會偵測中斷，只是不推進時間。
 // ---------------------------------------------------------------------------------------------
 const PLAY = {
   tide: (s) => s.playGovSeries(),
   dust: (s) => s.playDust(),
+  air: (s) => s.playAir(),
   moon: (s) => s.playMoon(),
   birds: (s) => s.playSurvey('birds'),
   fish: (s) => s.playSurvey('fish'),
+}
+
+const noop = () => {}
+
+// 站的定位：整數 index（0 起算）或站 id 字串；找不到 → fallback
+export function resolveStopIndex(stops, at, fallback = 0) {
+  const list = Array.isArray(stops) ? stops : []
+  if (typeof at === 'number' && Number.isInteger(at) && at >= 0 && at < list.length) return at
+  if (typeof at === 'string' && at) { const k = list.findIndex((x) => x && x.id === at); if (k >= 0) return k }
+  return fallback
 }
 
 export function createTourRunner(deps) {
@@ -325,6 +401,12 @@ export function createTourRunner(deps) {
   const build = deps.build || buildTour
   const isRemote = deps.isRemote || (() => useTourStore.getState().remote)
   const afterPlay = deps.afterPlay || (() => {})   // 每次「導覽自己開始播放序列」後呼叫（讓外層把 store 記的「演出次數」扣回去：導覽不是使用者的演出）
+  const speaker = deps.narrator || sharedNarrator
+  const speechOf = deps.speechText || sharedSpeechText
+  const isSpeak = deps.isSpeak || (() => !!useTourStore.getState().speak)
+  const localeNow = deps.getLocale || (() => getLocale())
+  const subLocale = deps.subscribeLocale || ((cb) => useLocaleStore.subscribe((s, prev) => { if (s.locale !== prev.locale) cb() }))
+  const subSpeak = deps.subscribeSpeak || ((cb) => useTourStore.subscribe((s, prev) => { if (s.speak !== prev.speak) cb() }))
   const st = () => store.getState()
   let run = null
   let stopping = false   // stop() 進行中（還原海況時的 playStop / overflow 等副作用事件，是「導覽收尾」引起的，不是使用者引起的）
@@ -333,31 +415,103 @@ export function createTourRunner(deps) {
 
   const log = (text) => { const s = st(); if (s.pushLog) s.pushLog('out', text) }
 
+  // ---- 旁白：所有呼叫都包 try/catch——旁白壞了、被瀏覽器擋了（未經使用者手勢 → speak 以 'error' 解決）都不能影響導覽 ----
+  const speechOn = () => { try { return !!isSpeak() && !isRemote() && !!speaker.supported() } catch (e) { return false } }
+  function speakCurrent() {
+    const r = run
+    if (!r || r.paused || !speechOn()) return
+    try {
+      const text = speechOf(captionText(r.stops[r.i].caption), localeNow())
+      if (!text) return
+      if (r.spoke) { try { speaker.cancel() } catch (e) { /* ignore */ } }   // 前一句先取消（narrator.speak 本身也會取消前一句，這裡不去依賴它）
+      r.spoke = true
+      const p = speaker.speak(text)
+      if (p && typeof p.then === 'function') p.then(noop, noop)  // 'done' / 'cancelled' / 'error' / 'unsupported' 都不影響導覽
+    } catch (e) { /* ignore */ }
+  }
+  function cancelSpeech(r) {
+    if (!r || !r.spoke) return                                   // 這一輪沒念過就不去動共用的旁白（可能是別的功能在用）
+    r.spoke = false
+    try { speaker.cancel() } catch (e) { /* ignore */ }
+  }
+  const narrationBusy = () => { try { return speechOn() && !!speaker.speaking() } catch (e) { return false } }
+
+  // ---- 暫停 / 繼續的序列凍結 ----
+  function thaw(r) {                                              // 還原「我們自己」設成極小值的倍速
+    const cur = r.stops[r.i]
+    st().setRecSpeed(cur && cur.kind === 'series' ? cur.speed : r.snap.speed)
+    r.frozen = false
+  }
+
   function begin(i) {
     const cur = run.stops[i]
-    run.i = i; run.at = now(); run.own = false
+    run.i = i; run.at = now(); run.own = false; run.frozenMs = 0; run.waitFrom = null
     log(t('導覽 {i}/{n}｜{title}', { i: i + 1, n: run.stops.length, title: captionText(cur.caption).title }))   // 先寫這一行，OUT 監看的順序才是「導覽 → 套用海況 → 資料播放」
     const s = st()
     if (s.rec.mode === 'playing') s.stopPlayback()        // 保險：轉站前先停掉上一站的播放（playSeries 只在 idle 才會開始）
     s.setGovOption(cur.optionId)                           // 套用該海況基準（同時寫一行 OUT 日誌）
-    run.expect = cur.optionId
+    run.expect = cur.optionId                              // 導覽員換站也走這裡：expect 同步更新，tick 不會把它當成「有人換了海況」
     if (cur.kind === 'series' && PLAY[cur.series]) {
-      st().setRecSpeed(cur.speed)
+      st().setRecSpeed(run.paused ? PAUSE_SPEED : cur.speed)   // 暫停中換站：序列在該站起點凍結
+      run.frozen = run.paused
       PLAY[cur.series](st())
       run.own = st().rec.mode === 'playing'                // 沒播起來（資料不足）→ 當作靜態站，字幕照顯示
       if (run.own) afterPlay()
     }
-    emit({ running: true, caption: cur.caption, index: i, total: run.stops.length, stopMs: cur.durationMs, seq: ++seq })
+    emit({ running: true, paused: run.paused, caption: cur.caption, index: i, total: run.stops.length, stopMs: cur.durationMs, seq: ++seq })
+    speakCurrent()
   }
 
-  function advance() {
-    const s = st()
-    if (s.rec.mode === 'playing') s.stopPlayback()         // 轉下一站前先停播放
+  // 跳到第 i 站（0 起算的 index，或站 id）。跳到「目前這一站」= 重播該站；找不到那一站 → false（什麼都不動）
+  function goto(i) {
+    if (!run) return false
+    const idx = resolveStopIndex(run.stops, i, -1)
+    if (idx < 0) return false
+    if (st().rec.mode === 'recording') return stop('rec')  // 剛好有人開始錄製、輪詢還沒偵測到：讓給使用者，不去換他的海
+    if (st().rec.mode === 'playing') st().stopPlayback()   // 轉站前先停播放
     run.own = false
-    const next = run.i + 1
-    if (next < run.stops.length) return begin(next)
-    if (run.auto) return begin(0)                          // 展場：閒置啟動 → 無限循環，直到有人動
-    stop('done')
+    begin(idx)
+    return true
+  }
+
+  // 下一站：最後一站 → 自動（閒置啟動、無限循環）回第 0 站；手動 → 'done' 結束並還原
+  function next() {
+    if (!run) return false
+    const n = run.i + 1
+    if (n < run.stops.length) return goto(n)
+    if (run.auto) return goto(0)
+    return stop('done')
+  }
+  // 上一站：第 0 站 = 重播第 0 站
+  function prev() {
+    if (!run) return false
+    return goto(Math.max(0, run.i - 1))
+  }
+
+  function pause() {
+    const r = run
+    if (!r || r.paused) return false
+    r.paused = true
+    r.frozenMs = Math.max(0, now() - r.at)                 // 這一站已經過了多久：繼續時從這裡接著算，不重新計滿
+    r.waitFrom = null
+    if (r.own && st().rec.mode === 'playing') { st().setRecSpeed(PAUSE_SPEED); r.frozen = true }   // apply 站沒有序列 → 只凍計時
+    cancelSpeech(r)
+    emit({ paused: true })
+    log(t('資料導覽暫停（第 {n} 站）', { n: r.i + 1 }))
+    return true
+  }
+
+  function resume() {
+    const r = run
+    if (!r || !r.paused) return false
+    r.paused = false
+    r.at = now() - r.frozenMs
+    r.waitFrom = null
+    if (r.frozen) thaw(r)
+    emit({ paused: false })
+    log(t('資料導覽繼續（第 {n} 站）', { n: r.i + 1 }))
+    speakCurrent()                                         // 從頭重念目前這一站
+    return true
   }
 
   // reason：'done' 播完一輪 · 'user' 使用者按停止 / Esc · 'input' 偵測到輸入 · 'rec' 開始錄製 · 'external' 自己按了播放 · 'option' 換了海況 · 'hidden' 分頁被隱藏 / 離開
@@ -367,6 +521,8 @@ export function createTourRunner(deps) {
     run = null   // 先標成「已結束」：下面的 touch() 會觸發活動掛鉤（→ 再呼叫 stop），重入時在這裡直接回傳
     stopping = true
     try {
+      for (const off of r.offs) { try { off() } catch (e) { /* ignore */ } }
+      cancelSpeech(r)
       const takeover = reason === 'rec' || reason === 'external' || reason === 'option'
       let s = st()
       if (s.rec.mode === 'playing' && (r.own || !takeover)) s.stopPlayback()   // 我們的序列 → 停（並還原使用者暫存的錄製）
@@ -376,15 +532,18 @@ export function createTourRunner(deps) {
         s.applyParams(r.snap.params)                         // 再蓋回導覽前的參數（保留使用者微調過的值）
         s.setRecSpeed(r.snap.speed)
         if (s.persistParams) s.persistParams()               // 導覽期間主迴圈可能已把「導覽中的參數」寫進偏好，這裡寫回還原後的
+      } else if (r.frozen) {
+        s.setRecSpeed(r.snap.speed)                          // 接手時不還原海況，但「暫停用的極小倍速」一定要還回去，否則使用者自己的播放會像當掉一樣不動
       }
       touch()
-      emit({ running: false, caption: null, index: 0, total: 0, stopMs: 0 })
+      emit({ running: false, paused: false, caption: null, index: 0, total: 0, stopMs: 0, stopList: [] })
       log(reason === 'done' ? t('■ 資料導覽結束，已還原原本的海') : takeover ? t('■ 資料導覽中止（改由你接手）') : t('■ 資料導覽中止，已還原原本的海'))
     } finally { stopping = false }
     return true
   }
 
-  function start({ auto = false, opts } = {}) {
+  // opts：{ auto, opts（傳給 build）, at（起始站：0 起算的 index 或站 id；找不到 → 從 0）, hold（true = 到站後立即暫停：導覽員模式）}
+  function start({ auto = false, opts, at, hold = false } = {}) {
     api.lastFail = ''
     if (run) { api.lastFail = 'running'; return false }
     if (isRemote()) { api.lastFail = 'remote'; return false }
@@ -393,10 +552,19 @@ export function createTourRunner(deps) {
     if (s.rec.mode !== 'idle') { api.lastFail = 'busy'; return false }
     const stops = build(s.gov, opts)
     if (!stops || !stops.length) { api.lastFail = 'empty'; return false }
+    const first = resolveStopIndex(stops, at, 0)
     touch()                                                 // 手動開始也算一次互動：閒置計時從現在重算
-    run = { stops, i: -1, at: 0, own: false, expect: null, auto: !!auto, base: getActivity(), snap: { params: { ...s.params }, optionId: s.govOptionId, speed: s.rec.speed } }
+    const r = run = {
+      stops, i: -1, at: 0, own: false, expect: null, auto: !!auto, base: getActivity(), snap: { params: { ...s.params }, optionId: s.govOptionId, speed: s.rec.speed },
+      paused: !!hold, frozenMs: 0, frozen: false, spoke: false, waitFrom: null, offs: [],
+    }
     log(t('▶ 資料導覽開始（{n} 站）', { n: stops.length }))
-    begin(0)
+    emit({ stopList: stops.map((x) => ({ id: x.id, caption: x.caption })) })
+    // 語系切換（字幕文字已換語言）→ 重念；旁白開關切換 → 立刻念 / 立刻停。停止時一併取消訂閱。
+    try { r.offs.push(subLocale(() => { if (run === r) speakCurrent() })) } catch (e) { /* ignore */ }
+    try { r.offs.push(subSpeak(() => { if (run !== r) return; if (isSpeak()) speakCurrent(); else cancelSpeech(r) })) } catch (e) { /* ignore */ }
+    begin(first)
+    if (r.paused) log(t('資料導覽暫停（第 {n} 站）', { n: first + 1 }))
     return true
   }
 
@@ -404,18 +572,27 @@ export function createTourRunner(deps) {
   function tick(t0 = now()) {
     if (!run) return
     const s = st()
-    if (getActivity() > run.base) return stop('input')      // MIDI / 滑桿 / 3D 拖曳 / 遙控 / 手把：任何真實輸入
+    if (getActivity() > run.base) return stop('input')      // MIDI / 滑桿 / 3D 拖曳 / 遙控 / 手把：任何真實輸入（暫停中也一樣：暫停不是鎖定）
     if (s.rec.mode === 'recording') return stop('rec')      // 開始錄製 = 輸入
     if (run.own && s.rec.mode === 'idle') run.own = false   // 我們的序列播完了（或被按了停止）：停在終點直到本站結束
     else if (!run.own && s.rec.mode === 'playing') return stop('external')   // 使用者自己按了播放
     if (s.govOptionId !== run.expect) return stop('option') // 有人換了海況選項
-    if (t0 - run.at >= run.stops[run.i].durationMs) advance()
+    if (run.paused) return                                  // 暫停：計時凍結，不換站
+    if (t0 - run.at >= run.stops[run.i].durationMs) {
+      // 旁白還在念：最多再等 NARRATION_MAX_WAIT_MS 讓句子念完（只是延後換站，不算暫停；暫停 / 中止 / 跳站都會結束這段等待）
+      if (narrationBusy()) {
+        if (run.waitFrom === null) run.waitFrom = t0
+        if (t0 - run.waitFrom < NARRATION_MAX_WAIT_MS) return
+      }
+      next()
+    }
   }
 
   return Object.assign(api, {
-    start, stop, tick,
+    start, stop, tick, goto, next, prev, pause, resume,
     isRunning: () => !!run,
+    isPaused: () => !!(run && run.paused),
     isActive: () => !!run || stopping,   // 導覽進行中「或正在收尾」：觸覺回饋據此靜音（導覽自己的換站 / 播放 / 還原不是使用者的事件）
-    current: () => (run ? { index: run.i, total: run.stops.length, stop: run.stops[run.i], auto: run.auto } : null),
+    current: () => (run ? { index: run.i, total: run.stops.length, stop: run.stops[run.i], auto: run.auto, paused: run.paused } : null),
   })
 }
