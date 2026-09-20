@@ -151,6 +151,9 @@ export default function DataCard() {
           {opt.kind === 'dust' && (dustSpec
             ? <button className="gov-apply gov-series" onClick={playDust} disabled={recMode !== 'idle'} title={`播放 CI 累積的揚塵歷史（${dustSpec.label}）：每一步＝一次 3 小時取樣${dustSpec.label === '風速' ? '；PM10 感測器目前無效，改以風速驅動洋流與海水混濁' : ''}`}>▶ 播放揚塵歷史（{dustSpec.label}）{dustSpec.points.length} 筆</button>
             : <p className="hint gov-wait">揚塵歷史累積中（{dustHistN} 筆有效）：資料來源只提供「最新值」，排程每 3 小時累積一筆，累積 2 筆有效資料後即可播放（PM10 無效時改用風速）。</p>)}
+          {opt.kind === 'dust' && dustSpec && dustSpec.stats.max === dustSpec.stats.min && (
+            <p className="hint gov-wait">目前累積的 {dustSpec.points.length} 筆{dustSpec.label}數值完全相同（來源疑似凍結：時戳前進、數值不變），播放看不到變化，等來源更新後才會動。</p>
+          )}
           {opt.kind === 'moon' && moonSpec && (
             <button className="gov-apply gov-series" onClick={playMoon} disabled={recMode !== 'idle'}
                     title="CWA 月出月沒表：每一步＝一天；月亮依真實月出 / 中天 / 月沒時刻與方位在天空移動，中天越高海水越高（示意）">

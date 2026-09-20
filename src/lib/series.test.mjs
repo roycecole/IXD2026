@@ -113,3 +113,10 @@ test('describeBoard：月亮海況 → 今日月出 / 中天 / 月沒 + 由資�
   assert.match(stale.find((r) => r.k === '月亮').v, /不含今日，改用天文公式/)
   assert.equal(stale.some((r) => r.k === '位置'), false)
 })
+
+test('dust：來源凍結（時戳前進、數值不變）時序列仍可播放，但 stats 顯示無變化（UI 據此提示）', () => {
+  const frozen = seriesFromDust({ county: '雲林縣', history: hist([[T(9), null, 5.34, 30, 71.5], [T(10), null, 5.34, 30, 71.5]]) })
+  assert.ok(frozen); assert.equal(frozen.stats.max, frozen.stats.min)
+  const moving = seriesFromDust({ county: '雲林縣', history: hist([[T(9), null, 5.34, 30, 71.5], [T(10), null, 6.1, 30, 71.5]]) })
+  assert.ok(moving.stats.max > moving.stats.min)
+})
