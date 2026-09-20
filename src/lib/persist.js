@@ -20,6 +20,7 @@ export const LS = {
   view: 'ixd2026.view',           // 取景偏好：'full'（完整含光暈）| 'fill'（球填滿寬度）；?fit=full|fill|0 只覆寫一次（見 lib/cameraFit.js）
   diagnote: 'ixd2026.diagnote',   // 裝置診斷頁的「裝置備註」草稿（選填：型號 / 作業系統 / 瀏覽器 / 備註；只在使用者按複製 / 下載時才進報告）
   oplight: 'ixd2026.oplight',     // 展場角落防呆指示燈顯示偏好：'on' | 'off'（沒存過 → 展場模式顯示、一般不顯示；?oplight=1/0 只覆寫一次）
+  wavenav: 'ixd2026.wavenav',     // 相機手勢「揮手換站」開關：'on' | 'off'（沒存過 → 預設開；見 services/GestureService.jsx）
 }
 export const SS = {
   log: 'ixd2026.log',             // IN/OUT log（本 session）
