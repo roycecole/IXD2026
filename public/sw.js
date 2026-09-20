@@ -1,7 +1,7 @@
 // PWA service worker
 // - HTML 導覽 + JSON 資料：network-first（部署後立即拿到新版，離線才用快取）→ 避免舊版白屏
 // - 帶 hash 的靜態資產：stale-while-revalidate（秒開 + 背景更新）
-const CACHE = 'midisea-v6'
+const CACHE = 'midisea-v7'
 
 self.addEventListener('install', () => self.skipWaiting())
 
@@ -22,7 +22,7 @@ self.addEventListener('fetch', (e) => {
     e.respondWith(
       fetch(request)
         .then((res) => { const c = res.clone(); caches.open(CACHE).then((ca) => ca.put(request, c)); return res })
-        .catch(() => caches.match(request))
+        .catch(() => caches.match(request, isDoc ? { ignoreSearch: true } : undefined))   // 離線時 /?audience=1、分享連結（?s=…）也退回已快取的頁面（同一個 HTML）
     )
     return
   }

@@ -12,8 +12,8 @@ export default {
   '開始 / 停止資料導覽（快速鍵 T）': 'Start / stop the data tour (shortcut T)',
   '導覽需要海況資料，載入完成後才能使用': 'The tour needs the sea data and will be available once it has loaded',
   '等錄製 / 播放結束後才能導覽': 'Available once recording / playback has finished',
-  '第 {n} / {total} 站': 'Stop {n} / {total}',
-  '導覽中：任何操作都會停止並還原': 'Touring: any input stops it and restores your sea',
+  '第 {n} / {total} 站': 'Step {n} of {total}',
+  '導覽中：任何操作都會停止並還原': 'Tour running: any input stops it and restores your sea',
   '閒置 {s} 秒自動導覽': 'Auto tour after {s} s idle',
   '沒有動作 {s} 秒就自動開始，碰任何東西立即停止並還原；展場模式（?kiosk=1）預設開啟':
     'Starts after {s} seconds without input, and stops (restoring your sea) as soon as you touch anything. On by default in kiosk mode (?kiosk=1).',
