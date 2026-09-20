@@ -147,8 +147,8 @@ export default function DataCard() {
             </button>
           )}
           {opt.kind === 'dust' && (dustSpec
-            ? <button className="gov-apply gov-series" onClick={playDust} disabled={recMode !== 'idle'} title="播放 CI 累積的揚塵歷史（PM10 / 風速）：每一步＝一次 6 小時取樣">▶ 播放揚塵歷史 {dustSpec.points.length} 筆</button>
-            : <p className="hint gov-wait">揚塵歷史累積中（{(gov.dust && gov.dust.history ? gov.dust.history.length : 0)} 筆）：資料來源只提供「最新值」，排程每 6 小時累積一筆，累積 2 筆後即可播放。</p>)}
+            ? <button className="gov-apply gov-series" onClick={playDust} disabled={recMode !== 'idle'} title="播放 CI 累積的揚塵歷史（PM10 / 風速）：每一步＝一次 3 小時取樣">▶ 播放揚塵歷史 {dustSpec.points.length} 筆</button>
+            : <p className="hint gov-wait">揚塵歷史累積中（{(gov.dust && gov.dust.history ? gov.dust.history.length : 0)} 筆）：資料來源只提供「最新值」，排程每 3 小時累積一筆，累積 2 筆後即可播放。</p>)}
           {opt.kind === 'moon' && moonSpec && (
             <button className="gov-apply gov-series" onClick={playMoon} disabled={recMode !== 'idle'}
                     title="CWA 月出月沒表：每一步＝一天；月亮依真實月出 / 中天 / 月沒時刻與方位在天空移動，中天越高海水越高（示意）">
