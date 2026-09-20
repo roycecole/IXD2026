@@ -10,6 +10,7 @@ const ALL_SLIDERS = {
   seaLevel: '海水高度', current: '洋流速度', clarity: '海水清澈',
   jellyCount: '水母數量', fishCount: '魚群數量', swimSpeed: '游動速度',
   glow: '夢幻輝光', hue: '海色色相', trashCount: '垃圾數量',
+  birdCount: '鳥群數量', bgBlur: '背景模糊', bgClarity: '背景清澈',
 }
 const DEFAULT_PIDS = ['seaLevel', 'current', 'clarity', 'trashCount', 'glow', 'hue']
 const ACTIONS = [

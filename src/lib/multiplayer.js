@@ -15,9 +15,9 @@ if (import.meta.env.DEV) Object.defineProperty(window, '__peer', { get: () => pe
 // 聲部分工：每支加入的手機輪流分到一個聲部（樂團感）；free = 全部
 export const ROLES = [
   { id: 'ocean', label: '海 · 水位/洋流/清澈', pids: ['seaLevel', 'current', 'clarity'] },
-  { id: 'life', label: '生態 · 水母/魚群/游速', pids: ['jellyCount', 'fishCount', 'swimSpeed'] },
-  { id: 'mood', label: '氛圍 · 輝光/色相/垃圾', pids: ['glow', 'hue', 'trashCount'] },
-  { id: 'free', label: '自由 · 全部參數', pids: ['seaLevel', 'current', 'clarity', 'jellyCount', 'fishCount', 'swimSpeed', 'glow', 'hue', 'trashCount'] },
+  { id: 'life', label: '生態 · 水母/魚群/鳥群', pids: ['jellyCount', 'fishCount', 'birdCount', 'swimSpeed'] },
+  { id: 'mood', label: '氛圍 · 輝光/色相/背景', pids: ['glow', 'hue', 'trashCount', 'bgBlur', 'bgClarity'] },
+  { id: 'free', label: '自由 · 全部參數', pids: ['seaLevel', 'current', 'clarity', 'jellyCount', 'fishCount', 'birdCount', 'swimSpeed', 'glow', 'hue', 'trashCount', 'bgBlur', 'bgClarity'] },
 ]
 let roleIdx = 0
 let syncIv = null
