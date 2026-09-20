@@ -2,6 +2,8 @@
 //   1) classifyHand(landmarks)：由 MediaPipe 手部 21 個 landmark 分類「張手 / 捏合 / 其他」
 //   2) createGestureTracker()：時間軸狀態機（張手需持續 ≥0.5 秒才進入平靜、捏合上升緣觸發 + 冷卻 3 秒、
 //      手消失 >1 秒回 idle、平靜時把參數平滑推向平靜值並節流輸出）
+//   3) createWaveDetector()：「揮手換站」——資料導覽進行中，張開手掌快速橫掃（約 0.5 秒內位移超過門檻）→ 'left' / 'right'（以使用者自己的左右為準）；
+//      routeWave(dir, { runner, touchGuide })：把揮手接到導覽（向左揮＝下一站、向右揮＝上一站），走 touchGuide()（不是 touch()：touch 會讓導覽以 'input' 中止）
 // 分類只用「點與點的距離比值 / 夾角」——對平移、縮放、旋轉、鏡像（前鏡頭是鏡像的）與左右手都不變。
 // 21 點編號（MediaPipe Hands）：0 手腕；1-4 拇指（CMC、MCP、IP、指尖）；5-8 食指；9-12 中指；13-16 無名指；17-20 小指（各為 MCP、PIP、DIP、指尖）。
 
@@ -41,6 +43,28 @@ export const THRESH = {
   spreadMinEnter: 1,       // 每一對相鄰手指至少要有的夾角
   spreadMinStay: 0,
 }
+
+// ---- 揮手換站的門檻（判定規則與說明見下方 createWaveDetector）----
+// 【合成資料調校、需要真機調整：這些數值只用合成的手部 landmark 驗證過，沒有真機（不同鏡頭視角 / 距離 / 光線 / 裝置）驗證。】
+export const WAVE = {
+  windowMs: 500,        // 位移統計的時間窗：位移必須在這段時間內完成（越短越要求快）
+  minDx: 0.27,          // 窗內淨水平位移（占影像寬度）：手臂長度前約 25–30 公分的橫掃
+  maxSlope: 0.75,       // 垂直位移 / 水平位移 上限（兩者都換成「影像高度」單位比較）：主要是橫向的動作
+  maxWander: 1.5,       // 路徑總長 / 淨位移 上限：來回抖動、畫圈不算
+  minSamples: 4,        // 窗內至少要有幾幀（15 fps ≈ 0.27 秒）
+  minSpanMs: 200,       // 窗內首尾至少相隔這麼久
+  maxStepDx: 0.25,      // 相鄰兩幀的水平跳動上限（占影像寬度）：超過 = 偵測跳號，軌跡重來
+  gapMs: 300,           // 兩個有效幀相隔超過這麼久 = 手中間消失過，軌跡重來
+  entryMs: 300,         // 手出現（或軌跡重來）後，要先在畫面內待這麼久才可能判定揮手（手從畫面邊緣掃進來不算）
+  edge: 0.05,           // 手掌任何一點離影像左右邊緣小於這個距離 = 正在進出畫面，這一幀不算（並讓軌跡重來）
+  endMargin: 0.1,       // 揮動的終點（手掌中心）離影像左右邊緣至少這麼遠（手掃出畫面不算）
+  openRatio: 0.6,       // 窗內至少這個比例的幀是張開手掌（快速移動時偶爾有幀被判成其他手形）
+  cooldownMs: 1000,     // 觸發後的冷卻
+  settleMs: 150,        // 冷卻後，手掌中心在最近這段時間內幾乎不動才重新就緒
+  settleDx: 0.03,       // 「幾乎不動」：最近 settleMs 內水平移動範圍上限（占影像寬度）
+}
+export const WAVE_ACTION = { left: 'next', right: 'prev' }   // 使用者視角：向左揮＝下一站、向右揮＝上一站（像翻頁）
+
 
 // ---- 幾何 ----
 function toPts(lm, aspect) {
@@ -156,7 +180,7 @@ export const TRACKER_DEFAULTS = {
 }
 
 // 手勢時間軸狀態機（純函式風格：時間由呼叫端傳入，方便測試）。
-//   update(landmarks|null, nowMs, { readParam(pid)→0..1, aspect })
+//   update(landmarks|null, nowMs, { readParam(pid)→0..1, aspect, suppressCalm })   suppressCalm：true → 不進入平靜（見下方註解）
 //   → { state, calm, events, writes }
 //     state：'idle'（沒手 >1 秒）|'open_palm'|'pinch'|'other'
 //     calm：是否正在「平靜」（張手已持續 ≥ openHoldMs）
@@ -210,6 +234,8 @@ export function createGestureTracker(opts = {}) {
 
     // 張手中斷超過容忍時間 → 清計時
     if (openSince != null && (lastOpen == null || now - lastOpen > C.openGraceMs)) openSince = null
+    // 呼叫端要求暫停「平靜」（導覽進行中且開著揮手換站：要揮手就得先張開手掌，平靜的參數寫入會被當成真實輸入而中止導覽）：不累計張手時間，放手 / 導覽結束後要重新停留 0.5 秒才會平靜
+    if (ctx.suppressCalm) openSince = null
 
     const calm = openSince != null && now - openSince >= C.openHoldMs
     calmNow = calm
@@ -240,5 +266,106 @@ export function createGestureTracker(opts = {}) {
     reset: resetAll,
     get state() { return state },
     get calm() { return calmNow },
+  }
+}
+
+// =====================================================================
+// 揮手換站（導覽員手勢）
+// =====================================================================
+// 只在資料導覽進行中由 GestureService 餵幀；沒在導覽時完全不處理（不影響上面既有的張手 / 捏合對應）。
+// 判定：手掌保持張開，手掌中心（手腕 + 四指根的平均）的「水平位移」在 windowMs 內超過 minDx（占影像寬度的比例）→ 揮手。
+// 方向以「使用者自己的左右」為準（像翻頁）：向左揮＝下一站、向右揮＝上一站（WAVE_ACTION）。
+//   鏡像：MediaPipe 的 landmark 是相機「原始影像」座標（沒有鏡像）。人面對鏡頭時，他的左邊在原始影像的右邊（x 較大），
+//   所以預設（ctx.mirror !== false，前鏡頭 / 面對鏡頭的人）把 x 翻成 1 - x 再判斷方向——使用者手往自己的左邊移、在鏡像預覽裡也是往左。
+//   左右手：只看手掌中心的移動與「是否張開」（分類本身對鏡像 / 左右手不變），所以左手右手一樣。
+// 不算揮手：緩慢移動（位移只在 windowMs 內累計）、握拳 / 其他手形（張開比例不足）、只有手指在動（手掌中心不動）、來回抖動（路徑長 / 淨位移過大）、
+//   偵測跳號（單幀跳動過大 = 換手 / 誤偵測）、進出畫面（手掌貼到影像邊緣的幀不算；手出現後要先在畫面內穩定 entryMs；終點不能貼邊）。
+// 遲滯（一次揮動不會連發兩次、收手不會被當成反方向）：觸發後冷卻 cooldownMs，且冷卻後手掌還要「幾乎不動」settleMs 才重新就緒（就緒時視窗重新累計，不看收手的動作）。
+const PALM_POINTS = [LM.WRIST, LM.INDEX_MCP, LM.MIDDLE_MCP, LM.RING_MCP, LM.PINKY_MCP]
+
+// 手掌中心與外框（正規化影像座標；只用手腕與四指根，手指再怎麼動都不影響）
+export function palmBox(lm) {
+  let sx = 0, sy = 0, minX = Infinity, maxX = -Infinity
+  for (const i of PALM_POINTS) { const p = lm[i]; sx += p.x; sy += p.y; if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x }
+  return { cx: sx / PALM_POINTS.length, cy: sy / PALM_POINTS.length, minX, maxX }
+}
+
+// update(landmarks|null, nowMs, { aspect（影像寬 / 高，預設 1）, mirror（預設 true：原始影像是面對鏡頭的人，見上方說明）}) → { event: null | 'left' | 'right' }
+export function createWaveDetector(opts = {}) {
+  const C = { ...WAVE, ...opts }
+  let samples = []            // { t, x（使用者視角的 x：往右變大）, y, open }，只留最近 windowMs
+  let trackStart = null       // 這一段連續軌跡的起點時間
+  let lastSeen = null
+  let lastFire = null         // 冷卻跨越重置仍有效（不能靠遮住鏡頭再露出來繞過冷卻）
+  let armed = true
+  let prevGesture = GESTURE.OTHER
+
+  function resetTrack() { samples = []; trackStart = null; prevGesture = GESTURE.OTHER }
+  function reset() { resetTrack(); lastSeen = null; armed = true }
+
+  function update(lm, now, ctx = {}) {
+    const out = { event: null }
+    if (!validLandmarks(lm)) return out                                // 這一幀沒有手：什麼都不做（下一個有效幀會檢查 gapMs）
+    const aspect = ctx.aspect > 0 ? ctx.aspect : 1
+    const box = palmBox(lm)
+    if (box.minX < C.edge || box.maxX > 1 - C.edge) { resetTrack(); return out }   // 進 / 出畫面中
+    if (lastSeen != null && now - lastSeen > C.gapMs) resetTrack()
+    lastSeen = now
+
+    const ux = ctx.mirror === false ? box.cx : 1 - box.cx
+    const prev = samples.length ? samples[samples.length - 1] : null
+    if (prev && Math.abs(ux - prev.x) > C.maxStepDx) resetTrack()      // 偵測跳號
+    prevGesture = classifyHand(lm, { aspect, prev: prevGesture }).gesture
+    if (trackStart == null) trackStart = now
+    samples.push({ t: now, x: ux, y: box.cy, open: prevGesture === GESTURE.OPEN_PALM })
+    while (samples.length && now - samples[0].t > C.windowMs) samples.shift()
+
+    if (lastFire != null && now - lastFire < C.cooldownMs) return out  // 冷卻中
+    if (!armed) {                                                       // 冷卻過了：手要先幾乎不動一下才重新就緒（避開收手的動作）
+      const recent = samples.filter((s) => now - s.t <= C.settleMs)
+      if (recent.length < 2) return out
+      let lo = Infinity, hi = -Infinity
+      for (const s of recent) { if (s.x < lo) lo = s.x; if (s.x > hi) hi = s.x }
+      if (hi - lo > C.settleDx) return out
+      armed = true
+      samples = samples.slice(-1)                                       // 就緒：視窗重新累計，不看收手時的位移
+      return out
+    }
+
+    if (samples.length < C.minSamples) return out
+    const first = samples[0], last = samples[samples.length - 1]
+    if (last.t - first.t < C.minSpanMs) return out
+    if (first.t - trackStart < C.entryMs) return out                    // 手剛出現：先穩定一下（從邊緣掃進來的不算）
+    const dx = last.x - first.x, adx = Math.abs(dx)
+    if (adx < C.minDx) return out
+    if (last.x < C.endMargin || last.x > 1 - C.endMargin) return out   // 終點貼邊：手掃出畫面
+    if (Math.abs(last.y - first.y) > C.maxSlope * adx * aspect) return out   // x 是寬度的比例、y 是高度的比例：乘 aspect 換成同單位
+    let path = 0, open = 0
+    for (let i = 0; i < samples.length; i++) { if (i) path += Math.abs(samples[i].x - samples[i - 1].x); if (samples[i].open) open++ }
+    if (path > C.maxWander * adx) return out                            // 來回抖動
+    if (open / samples.length < C.openRatio) return out                 // 不是張開的手掌
+
+    lastFire = now; armed = false; samples = []
+    out.event = dx < 0 ? 'left' : 'right'
+    return out
+  }
+
+  return { update, reset, get armed() { return armed } }
+}
+
+// 把揮手接到導覽：runner = tourCore 的 tourRunner（或測試用假物件，方法一律「以方法呼叫」）。
+//   導覽沒在進行 → 什麼都不做、回傳 null（沒在導覽時完全不處理揮手）；進行中 → touchGuide()（只記「有人在場」，不是 touch()：touch 會中止導覽）並換站，回傳 { dir, action }。
+//   最後一站再揮「下一站」＝ runner.next() 的既有行為（手動導覽結束並還原；自動導覽回到第一站）。任何例外都不外洩。
+export function routeWave(dir, { runner, touchGuide } = {}) {
+  const action = WAVE_ACTION[dir]
+  if (!action) return null
+  try {
+    if (!runner || !runner.isRunning()) return null
+    try { if (typeof touchGuide === 'function') touchGuide() } catch (e) { /* 只是記時間 */ }
+    if (action === 'next') runner.next()
+    else runner.prev()
+    return { dir, action }
+  } catch (e) {
+    return null
   }
 }

@@ -5,10 +5,12 @@
 import { useStore } from '../store/useStore.js'
 import { dispatch } from './remoteDispatch.js'
 import { PEER_CONFIG } from './ice.js'
+import { makeGuideToken, buildRemoteUrl } from './tourRemote.js'
 import { bumpStat } from '../store/stats.js'
 import { t, T } from '../i18n/index.js'
 
-export const multiState = { on: false, id: null, count: 0 }
+// count = 所有已連線的手機（含導覽員）；guide = 導覽員 token（每個 host session 一個，存記憶體；host 重建時換新）；guides = 已通過驗證的導覽員連線數
+export const multiState = { on: false, id: null, count: 0, guide: null, guides: 0 }
 
 // 開發輔助：主控台可用 window.__peer 取得目前 host 的 Peer（測試斷線重連 / 銷毀重建；正式建置會被移除）
 if (import.meta.env.DEV) Object.defineProperty(window, '__peer', { get: () => peer, configurable: true })
@@ -32,6 +34,20 @@ const listeners = new Set()
 const notify = () => listeners.forEach((f) => { try { f() } catch (e) {} })
 export function onHostChange(fn) { listeners.add(fn); return () => listeners.delete(fn) }
 
+// 導覽員遙控（手機當導覽員遙控器）：驗證 / 指令 / 連線集合的邏輯在 lib/tourRemote.js 的 createGuideHost（純函式，Node 可測），
+// 由 services/TourRemoteService.jsx 建立（它需要導覽模組）並在掛載時 attach 進來；這裡只做接線：
+//   收到 hello / g 訊息 → guideHost.handle；連線關閉 / 錯誤 → guideHost.remove；host 重建 → guideHost.clear（token 也換新）。
+let guideHost = null
+export function attachGuideHost(gh) {
+  guideHost = gh
+  const off = gh.onChange(() => { multiState.guides = gh.size(); notify() })
+  multiState.guides = gh.size()
+  notify()
+  return () => { off(); if (guideHost === gh) { guideHost = null; multiState.guides = 0; notify() } }
+}
+export function sendToGuides(msg) { try { return guideHost ? guideHost.broadcast(msg) : 0 } catch (e) { return 0 } }   // 推給所有已通過驗證的導覽員連線
+export function guideConns() { try { return guideHost ? guideHost.conns() : [] } catch (e) { return [] } }             // 目前所有已通過驗證的導覽員連線
+
 // 遙控訊息 → store 的派送（dispatch）在 lib/remoteDispatch.js（不含 PeerJS / import.meta.env，Node 測得到）；這裡保留匯出以維持原本的 API。
 export { dispatch }
 
@@ -54,8 +70,8 @@ function wire(p) {
       notify()
       useStore.getState().pushLog('in', t('遙控器加入 · 聲部「{part}」（{n} 人連線）', { part: t(role.label).split(' ')[0], n: multiState.count }))
     })
-    c.on('data', (m) => dispatch(m, c.peer))
-    const drop = () => { conns = conns.filter((x) => x !== c); multiState.count = conns.filter((x) => x.open).length; notify() }
+    c.on('data', (m) => { if (guideHost && guideHost.handle(c, m)) return; dispatch(m, c.peer) })   // hello / 導覽員指令由 guideHost 處理，其餘照舊走 dispatch
+    const drop = () => { if (guideHost) { try { guideHost.remove(c) } catch (e) {} } conns = conns.filter((x) => x !== c); multiState.count = conns.filter((x) => x.open).length; notify() }
     c.on('close', drop)
     c.on('error', drop) // 從未 open 的連線（ICE 失敗）PeerJS 不會發 close → 只能靠 error / 逾時清掉，否則展場 24h 會累積
   })
@@ -65,6 +81,9 @@ function wire(p) {
   p.on('close', () => {
     if (peer !== p) return
     peer = null; multiState.on = false; multiState.id = null; conns = []; multiState.count = 0; starting = null
+    multiState.guide = null   // host session 結束：token 失效（下一個 session 換新，舊的導覽員 QR 作廢）
+    if (guideHost) { try { guideHost.clear() } catch (e) {} }
+    multiState.guides = 0
     notify()
     setTimeout(() => { if (!peer) startHost().catch(() => {}) }, 2500)  // 被銷毀 → 換新 ID 重建（QR 會自動重畫）
   })
@@ -105,6 +124,7 @@ export function startHost() {
         })
         peer = p
         multiState.on = true; multiState.id = p.id
+        multiState.guide = makeGuideToken() || null   // 導覽員 token：每個 host session 隨機一個（crypto）；取不到安全亂數 → null（導覽員功能停用）
         wire(p); ensureSync(); notify()
         return multiState
       } catch (e) {
@@ -118,7 +138,9 @@ export function startHost() {
   return starting
 }
 
-export function remoteUrl() {
+// 一般遙控網址；{ guide: true } → 導覽員網址（#remote=<id>&guide=<token>），沒有 token（host 還沒起來 / 沒有安全亂數）時回傳 ''
+export function remoteUrl({ guide = false } = {}) {
   if (!multiState.id) return ''
-  return `${location.origin}${location.pathname}#remote=${multiState.id}`
+  if (guide && !multiState.guide) return ''
+  return buildRemoteUrl(`${location.origin}${location.pathname}`, multiState.id, guide ? multiState.guide : null)
 }

@@ -9,7 +9,7 @@
 // 觀眾視窗（remote）不跑導覽：字幕由 lib/tour.js 註冊的 mirror 切片送過來。
 import { useEffect } from 'react'
 import { useTourStore } from '../lib/tour.js'
-import { tourRunner, attachRunningGuards, attachTourGuards, linkStarter } from './tourCore.js'
+import { tourRunner, attachRunningGuards, attachTourGuards, linkStarter, armNarrationUnlock } from './tourCore.js'
 
 export { tourRunner, startTour, stopTour, toggleTour, tourIdleTick, copyTourLink } from './tourCore.js'
 
@@ -34,6 +34,9 @@ export default function TourService() {
 
   // 每站連結：?tourstop= → 資料載入後（gov 有 options）只啟動一次；卸載時退訂並清掉計時器
   useEffect(() => linkStarter.attach(), [])
+
+  // 旁白的 iOS 解鎖：偏好已開且尚未解鎖 → 第一次使用者手勢時無聲解鎖；cleanup 取消（StrictMode 雙掛載安全）
+  useEffect(() => armNarrationUnlock({ win: window }), [])
 
   return null
 }

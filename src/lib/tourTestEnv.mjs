@@ -122,3 +122,65 @@ export function makeNarrator({ supported = true, speakMode = 'ok' } = {}) {
     count: (name) => log.filter((x) => x[0] === name).length,
   })
 }
+
+// ---- 假旁白（含 iOS 解鎖介面）：makeNarrator 的超集，多了 unlock / isUnlocked / unlockOnFirstGesture（與 lib/narration.js 的契約 C6 同介面，方法都檢查 this）----
+//   unlockMode：'ok'（unlock 回傳 resolve('done') 的 Promise）| 'throw'（同步丟）| 'reject'（Promise 被 reject）| 'sync'（回傳非 Promise）
+export function makeUnlockNarrator({ unlocked = false, unlockMode = 'ok', ...rest } = {}) {
+  const n = makeNarrator(rest)
+  const events = []
+  let isUnlockedFlag = unlocked
+  n.events = events
+  n.unlock = function unlock(text) {
+    if (this !== n) throw illegal()
+    events.push(['unlock', text])
+    if (unlockMode === 'throw') throw new Error('unlock boom')
+    if (unlockMode === 'reject') return Promise.reject(new Error('unlock rejected'))
+    if (unlockMode === 'sync') return 'done'
+    isUnlockedFlag = true
+    return Promise.resolve('done')
+  }
+  n.isUnlocked = function isUnlocked() { if (this !== n) throw illegal(); return isUnlockedFlag }
+  n.offs = 0
+  n.unlockOnFirstGesture = function unlockOnFirstGesture(win) {
+    if (this !== n) throw illegal()
+    events.push(['unlockOnFirstGesture', win])
+    return () => { n.offs++ }
+  }
+  return n
+}
+
+// ---- 在 Node 載入 .jsx（React 元件）做伺服器端渲染（SSR）標記測試 ----
+// Node 不認得 .jsx / .css：註冊一個載入器（module.register），.jsx 用 esbuild 轉成 JS（automatic JSX runtime）、.css 當空模組。
+// 只在「呼叫 importJsx 時」才註冊（一次）；已經載入過的模組（例如 lib/tour.js、store）不受影響，元件 import 到的是同一份實例——測試可以直接用 store 設定狀態再渲染。
+let jsxReady = null
+export function installJsxLoader() {
+  if (jsxReady) return jsxReady
+  jsxReady = (async () => {
+    const { register, createRequire } = await import('node:module')
+    const { pathToFileURL } = await import('node:url')
+    const req = createRequire(import.meta.url)
+    const esbuildUrl = pathToFileURL(req.resolve('esbuild')).href
+    const hooks = `
+      import { readFileSync } from 'node:fs'
+      import { fileURLToPath } from 'node:url'
+      import esbuild from ${JSON.stringify(esbuildUrl)}
+      export async function load(url, context, nextLoad) {
+        if (url.endsWith('.css')) return { format: 'module', source: 'export default {}', shortCircuit: true }
+        if (url.startsWith('file:') && url.endsWith('.jsx')) {
+          const file = fileURLToPath(url)
+          const out = await esbuild.transform(readFileSync(file, 'utf8'), { loader: 'jsx', jsx: 'automatic', format: 'esm', sourcefile: file })
+          return { format: 'module', source: out.code, shortCircuit: true }
+        }
+        return nextLoad(url, context)
+      }`
+    register('data:text/javascript,' + encodeURIComponent(hooks))
+  })()
+  return jsxReady
+}
+export async function importJsx(url) { await installJsxLoader(); return import(url) }
+
+// zustand 4.5 在伺服器端渲染（renderToStaticMarkup）時讀的是 api.getServerState || api.getInitialState——也就是 store「建立當下」的初始狀態物件，不是目前狀態。
+// SSR 測試要渲染「先用 setState 設好的狀態」時，渲染前呼叫這個把目前狀態複製進那個初始狀態物件（原地覆寫；只影響這個測試程序、只有 SSR 快照會讀它）。
+export function liveSsr(...stores) {
+  for (const s of stores) { try { Object.assign(s.getInitialState(), s.getState()) } catch (e) { /* 沒有 getInitialState（舊版 zustand）就算了 */ } }
+}

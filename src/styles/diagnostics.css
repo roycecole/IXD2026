@@ -7,6 +7,7 @@
   border: 1px solid var(--accent); color: var(--accent); background: #0f2a22; font-size: 12.5px; text-decoration: none;
 }
 .diag-sec .diag-open:hover { filter: brightness(1.12); }
+.diag-sec .diag-open.guided { background: var(--accent); color: #062018; }
 .diag-sec .diag-last { font-size: 12px; color: var(--muted); }
 
 /* ---- 頁面外觀：styles.css 對 body 設了 overflow:hidden 與 height:100%（給全螢幕的主畫面），診斷頁要能捲動 ---- */

@@ -1,9 +1,9 @@
 // 每站連結（lib/tourLink.js）的單元測試。執行：node --test src/lib/tourLink.test.mjs
 // 涵蓋：parseTourLink 全部分支（序號 / 站 id / 大小寫 / 非法值 / hold）、buildTourLink（去掉一次性旗標與 hash 與帳密、只帶 tourstop / tourhold / lang、壞輸入）、
-// hasTourLink、copyText（Clipboard API → 退回 textarea + execCommand → 都失敗；用「會檢查 this 的假環境」——脫離原物件呼叫會丟 Illegal invocation）。
+// hasTourLink、linkBase（帶導覽腳本的連結 lib/tourPlan.js 與 buildTourLink 共用的網址骨架）、copyText（Clipboard API → 退回 textarea + execCommand → 都失敗；用「會檢查 this 的假環境」——脫離原物件呼叫會丟 Illegal invocation）。
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { parseTourLink, buildTourLink, hasTourLink, copyText, TOUR_STOP_IDS } from './tourLink.js'
+import { parseTourLink, buildTourLink, hasTourLink, copyText, linkBase, TOUR_STOP_IDS } from './tourLink.js'
 import { makeCopyEnv } from './tourTestEnv.mjs'
 
 // =============================================================================================
@@ -102,6 +102,18 @@ test('buildTourLink：站 id 不在白名單 / 沒給 → \'\'；href 不是合�
   assert.equal(buildTourLink(), '')
   assert.equal(buildTourLink({}), '')
   assert.equal(buildTourLink({ href: 'file:///Users/x/midisea/index.html?kiosk=1', stopId: 'air' }), 'file:///Users/x/midisea/index.html?tourstop=air')
+})
+
+// =============================================================================================
+// linkBase
+// =============================================================================================
+test('linkBase：只回 origin + 路徑（去掉查詢、hash、帳密）；不合法的網址 → \'\'；file: 之類沒有 origin 的網址不丟錯；buildTourLink 與它同一套骨架', () => {
+  assert.equal(linkBase('https://midisea.shyetech.com/'), 'https://midisea.shyetech.com/')
+  assert.equal(linkBase('https://user:secret@midisea.shyetech.com/x/y.html?kiosk=1&s=abc#remote=peer'), 'https://midisea.shyetech.com/x/y.html')
+  assert.equal(linkBase('http://localhost:5173/?a=1'), 'http://localhost:5173/')
+  assert.equal(linkBase('file:///Users/x/midisea/index.html?kiosk=1'), 'file:///Users/x/midisea/index.html')
+  for (const bad of [undefined, null, '', 'not a url', '/relative/path', 'http://', 5, {}]) assert.equal(linkBase(bad), '', String(bad))
+  assert.equal(buildTourLink({ href: 'https://a.test/x/?k=1#h', stopId: 'air' }), linkBase('https://a.test/x/?k=1#h') + '?tourstop=air')
 })
 
 // =============================================================================================

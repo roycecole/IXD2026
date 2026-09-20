@@ -1,0 +1,95 @@
+/* 資料導覽 · 導覽腳本：字幕上的備註（TourCaption）＋ 面板卡片裡可摺疊的腳本編輯器（TourPlanEditor）＋「目前腳本」。
+   載入順序：一律在 tour.css、tourpresenter.css 之後（每個 import 本檔的元件都先 import 那兩個）。 */
+
+/* ---- 字幕：導覽員的備註（原文，不翻譯）。較小字、暖色（與說明的白字區分）、最多兩行，超出省略。 ---- */
+.tour-cap-note {
+  max-width: 100%; margin-top: 2px; padding-top: 5px; border-top: 1px dashed rgba(255, 255, 255, 0.18);
+  font-size: 13.5px; line-height: 1.5; color: #f2d9a6; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden;
+}
+/* 出處與授權（空氣品質站的模型 vs 觀測比較句用了環境部測站觀測時）：小字、暗色，不搶說明的視線 */
+.tour-cap-src { max-width: 100%; font-size: 11.5px; line-height: 1.4; color: var(--muted); overflow-wrap: anywhere; }
+/* 說明比平常長（例如空氣品質站多了「模型 vs 觀測」的一句）：放寬到 3 行，誠實的比較句才不會被省略號吃掉 */
+.tour-cap-body[data-long='true'] { -webkit-line-clamp: 3; line-clamp: 3; }
+@media (max-width: 820px) {
+  .tour-cap-note { font-size: 11.5px; line-height: 1.4; padding-top: 3px; }
+  .tour-cap-src { font-size: 10px; line-height: 1.3; }
+}
+/* 短螢幕橫向：字幕靠左下的窄卡；備註字更小（選擇器多一層 .canvas-wrap，與 tourpresenter.css 的橫向規則同一個權重） */
+@media (orientation: landscape) and (max-height: 460px) {
+  .app .canvas-wrap .tour-cap-note { font-size: 10.5px; line-height: 1.35; padding-top: 2px; text-align: left; }
+  .app .canvas-wrap .tour-cap-src { font-size: 9.5px; text-align: left; }
+  .app .canvas-wrap .tour-cap-body[data-long='true'] { -webkit-line-clamp: 3; line-clamp: 3; }
+}
+
+/* ---- 面板卡片：目前腳本 ---- */
+.tour-plan-now { margin: 0 0 8px; padding: 5px 8px; border-radius: 7px; font-size: 11.5px; line-height: 1.5; color: #f2d9a6; background: rgba(242, 217, 166, 0.08); border: 1px solid rgba(242, 217, 166, 0.28); }
+.tour-plan-warn { color: var(--amber); }
+.tour-plan-warn-block { margin: 0 0 8px; font-size: 11.5px; line-height: 1.5; }
+
+/* ---- 編輯器 ---- */
+.tour-plan { margin-top: 10px; border-top: 1px solid var(--line2); padding-top: 6px; }
+.tour-plan-head {
+  display: flex; align-items: center; gap: 6px; width: 100%; min-height: 36px; padding: 4px 4px; text-align: left;
+  font-size: 12px; color: var(--muted); background: none; border: 0; border-radius: 6px;
+}
+.tour-plan-head:hover { background: rgba(255, 255, 255, 0.05); color: var(--text); border: 0; }
+.tour-plan-head:focus-visible, .tour-plan-btn:focus-visible, .tour-plan-mv:focus-visible, .tour-plan-text:focus-visible, .tour-plan-select:focus-visible, .tour-plan-check input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tour-plan-head-txt { flex: 1 1 auto; }
+.tour-plan-chev { display: inline-flex; transition: transform .2s ease; }
+.tour-plan-chev.open { transform: rotate(90deg); }
+.tour-plan-ico { display: block; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.tour-plan-badge { padding: 1px 8px; border-radius: 999px; font-size: 10.5px; line-height: 1.5; color: var(--accent); border: 1px solid rgba(93, 202, 165, 0.55); background: rgba(93, 202, 165, 0.1); }
+.tour-plan-body { padding: 2px 0 2px; }
+.tour-plan-lock { margin: 6px 0; padding: 6px 8px; border-radius: 7px; font-size: 11.5px; line-height: 1.5; color: var(--amber); border: 1px solid rgba(255, 157, 43, 0.5); background: rgba(255, 157, 43, 0.08); }
+.tour-plan-fs { min-width: 0; margin: 0; padding: 0; border: 0; }
+.tour-plan-fs:disabled { opacity: .55; }
+.tour-plan-field { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; }
+.tour-plan-lab { font-size: 11px; color: var(--muted); }
+.tour-plan-select.gov-select { margin-bottom: 0; }
+.tour-plan-input { position: relative; display: flex; align-items: center; min-width: 0; }
+.tour-plan-text {
+  flex: 1 1 auto; width: 100%; min-width: 0; box-sizing: border-box; padding: 6px 66px 6px 8px; font: inherit; font-size: 12px;
+  color: var(--text); background: var(--bg); border: 1px solid var(--line2); border-radius: 6px;
+}
+.tour-plan-text::placeholder { color: var(--dim); }
+.tour-plan-text[readonly] { padding-right: 8px; color: var(--muted); }
+.tour-plan-cnt { position: absolute; right: 8px; font-family: var(--mono); font-size: 10px; color: var(--dim); pointer-events: none; }
+
+/* 站序清單：第 1 行 = 核取方塊 + 站名（左）與上移 / 下移（右）；第 2 行 = 備註輸入（整列寬） */
+.tour-plan-list { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.tour-plan-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; align-items: center; padding: 7px 8px; border-radius: 8px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--line); }
+.tour-plan-row.on { border-color: rgba(93, 202, 165, 0.35); background: rgba(93, 202, 165, 0.05); }
+.tour-plan-check { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 32px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+.tour-plan-row.on .tour-plan-check { color: var(--text); }
+.tour-plan-check input { width: auto; flex: 0 0 auto; accent-color: var(--accent); }
+.tour-plan-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tour-plan-nodata { flex: 0 0 auto; padding: 0 6px; border-radius: 999px; font-size: 10px; line-height: 1.6; color: var(--amber); border: 1px solid rgba(255, 157, 43, 0.45); white-space: nowrap; }
+.tour-plan-move { display: inline-flex; gap: 4px; }
+.tour-plan-mv { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; border-radius: 8px; }
+.tour-plan-notewrap { grid-column: 1 / -1; }
+.tour-plan-row:not(.on) .tour-plan-notewrap { opacity: .7; }
+
+.tour-plan-count { margin: 6px 0 0; font-size: 11px; color: var(--dim); }
+.tour-plan-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.tour-plan-btn { flex: 1 1 auto; min-height: 36px; padding: 6px 10px; font-size: 12px; border-radius: 8px; white-space: nowrap; }
+.tour-plan-btn.primary { color: var(--accent); border-color: var(--accent); background: #0f2a22; }
+.tour-plan-btn.primary:hover { background: #133b30; }
+.tour-plan-btn.danger { color: #ff9a7a; border-color: rgba(255, 138, 106, 0.7); background: #2a1814; }
+.tour-plan-msg { min-height: 1.5em; margin: 8px 0 0; font-size: 11.5px; line-height: 1.5; color: var(--accent); }
+.tour-plan-msg.warn { color: var(--amber); }
+.tour-plan-msg.err { color: #ff9a7a; }
+.tour-plan-linkbox { margin-top: 6px; }
+
+/* 手機：觸控目標 ≥ 40px；輸入框字級 16px（iOS 聚焦時字級 < 16px 會自動放大整頁） */
+@media (max-width: 820px) {
+  .tour-plan-head { min-height: 44px; font-size: 13px; }
+  .tour-plan-mv { width: 40px; height: 40px; }
+  .tour-plan-check { min-height: 40px; font-size: 13.5px; }
+  .tour-plan-btn { min-height: 44px; font-size: 13.5px; }
+  .tour-plan-text, .tour-plan-select.gov-select { font-size: 16px; min-height: 44px; }
+  .tour-plan-cnt { font-size: 10.5px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tour-plan-chev { transition: none; }
+}

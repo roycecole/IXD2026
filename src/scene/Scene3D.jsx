@@ -12,7 +12,8 @@ import { registerPickSource, collectCandidates, pickSources, pickTarget, createT
 import { createPenForce, createPenFlow } from '../lib/pointerExpr.js'   // 觸控筆：壓力 → 浪勁、傾斜 → 洋流方向
 import { useQualityStore } from '../lib/qualityStore.js'
 import { flagOn } from '../lib/urlFlags.js'
-import { createCameraRig, fitEnabled, shellScale, stationLayout } from '../lib/cameraFit.js'   // 視角自動取景（窄畫布把相機拉遠，讓整顆球可見）
+import { createCameraRig, shellScale, stationPlacement } from '../lib/cameraFit.js'   // 視角自動取景（窄畫布把相機拉遠，讓整顆球可見）
+import { getViewState } from '../lib/viewPrefs.js'   // 取景模式（完整 / 填滿）與 ?fit= 覆寫；「裝置」面板的「取景」一節讀寫同一份
 import { trigger as hapticTrigger } from '../lib/haptics.js'   // 點擊亮星的輕觸感（受總開關 / 節流管理）
 import { tierFx, dprRange } from '../lib/quality.js'
 
@@ -29,7 +30,6 @@ const bioNodes = []   // 生物節點（供 BioNetwork 科技連線）
 const _cl = new THREE.Vector3()
 const poke = { dir: new THREE.Vector3(0, 0, 1), str: 0, target: 0, vel: 0 } // 果凍壓凹（球殼柔軟壓回）
 const camFit = { v: 1 }  // 自動取景的「目前」相機距離倍率（CameraRig 每幀更新、跟著相機一起平滑；寬螢幕恆為 1）：霧的遠近跟著放大，球拉遠後不會被霧吃掉
-const FIT_ON = fitEnabled(typeof location !== 'undefined' ? location.search : '')   // ?fit=0 關閉自動取景（除錯用）
 const BG_LAYER = 1     // 背景層（星空 / 銀河 / 流星 / 月亮）；球體、生物、水體、鳥群在預設層 0
 const REDUCED = (() => { try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches } catch (e) { return false } })()
 
@@ -1387,13 +1387,9 @@ function StationStars() {
     if (!list || !list.length || !grp.current) return
     const key = list.length + ':' + list[0].n
     if (cache.key !== key) { cache.key = key; build(list) }
-    // 位置：右側；依可視範圍夾取。窄畫面（手機直式，長寬比 <= 0.8）球右側放不下 → 改放到球的上方（空間不夠時縮小），不會被夾到球後面（規則在 lib/cameraFit.js stationLayout；長寬比 >= 0.95 與原公式完全相同）
-    const dist = Math.max(4, camera.position.z - STN_Z)
-    const halfH = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * dist
-    const asp = size.width / Math.max(1, size.height)
-    const halfW = halfH * asp
-    const sphereR = 2.02 * (dist / Math.max(3, camera.position.z))                  // 球體在此深度平面的投影半徑：星座要排在球體右側之外才看得出台灣輪廓
-    const lay = stationLayout({ halfW, halfH, sphereR, aspect: asp })
+    // 位置：右側；依可視範圍夾取。窄畫面（手機直式，長寬比 <= 0.8）球右側放不下 → 改放到球的上方（空間不夠時縮小、且落在頂端資料 HUD 條之下），不會被夾到球後面
+    // （規則在 lib/cameraFit.js stationPlacement / stationLayout；長寬比 >= 0.95 與原公式完全相同）。點選拾取（registerPickSource('station')）讀這個群組的矩陣 → 與畫出來的一致。
+    const lay = stationPlacement({ camY: camera.position.y, camZ: camera.position.z, planeZ: STN_Z, fovDeg: camera.fov, width: size.width, height: size.height })
     grp.current.position.set(lay.x, lay.y, STN_Z)
     grp.current.scale.setScalar(lay.s)
     grp.current.rotation.y = Math.sin(state.clock.elapsedTime * 0.05) * 0.08   // 極慢的視差擺動
@@ -1746,16 +1742,19 @@ function BackdropFX({ hide }) {
 
 // 相機：距離 = zoom 公式（4.6 + (1 - zoom) * 4）* 自動取景倍率 fit。
 // fit 由「目前畫布長寬比」算出（lib/cameraFit.js）：寬螢幕恆為 1（與改版前完全相同）；窄畫布（手機直式全螢幕）> 1，
-// 相機沿原視線後退，讓半徑 2.42 的球（含輝光）完整落在視野內。zoom 滑桿 / 雙指縮放仍是比例運作（在直式手機上也能拉近拉遠）。
-// 第一幀直接就位（不從 7 慢慢滑進來，直式手機一開始球不會被切掉）；之後維持既有的 lerp 平滑。?fit=0 關閉。
+// 相機沿原視線後退：「完整」模式（預設）讓半徑 2.42 的球（含輝光）完整落在視野內；「填滿」模式讓球殼（半徑 2.02）填滿較窄的那一邊、光暈被邊緣裁掉（見 lib/viewPrefs.js）。
+// zoom 滑桿 / 雙指縮放仍是比例運作（在直式手機上也能拉近拉遠）。
+// 第一幀直接就位（不從 7 慢慢滑進來，直式手機一開始球不會被切掉）；之後維持既有的 lerp 平滑（切換模式也是平滑移過去）。?fit=0 關閉。
 function CameraRig() {
   const { camera, gl } = useThree()
-  const rig = useMemo(() => createCameraRig({ enabled: FIT_ON }), [])   // 狀態機在 lib/cameraFit.js（第一幀就位 / lerp / 尺寸變了才重算 fit），可用 node 測
+  const view = useMemo(() => getViewState(), [])                        // 取景模式（完整 / 填滿）：偏好 / ?fit= 覆寫；「裝置」面板改了就立即反映在下一幀（目標倍率變了，相機用同一個 lerp 平滑過去）
+  const rig = useMemo(() => createCameraRig({ enabled: view.get().enabled }), [view])   // 狀態機在 lib/cameraFit.js（第一幀就位 / lerp / 尺寸或模式變了才重算 fit），可用 node 測；?fit=0 → enabled = false
   // WebXR 桌面放置時相機由 XR（手機姿態）控制，這裡不能動；結束後由 XrRuntime 還原相機再交回這裡
   useFrame((state) => {
     if (gl.xr.isPresenting) return
-    const r = rig.step(camera.position, { width: state.size.width, height: state.size.height, zoom: useStore.getState().params.zoom ?? 0.5, fovDeg: camera.fov })
+    const r = rig.step(camera.position, { width: state.size.width, height: state.size.height, zoom: useStore.getState().params.zoom ?? 0.5, fovDeg: camera.fov, mode: view.get().mode })
     if (!r) return                                            // 畫布還沒量到尺寸：等量到再就位
+    view.setCanvas(state.size.width, state.size.height)       // 讓「裝置」面板知道目前的視窗比例會不會受取景影響（只有結論改變才通知）
     camFit.v = r.shown
     camera.lookAt(0, 0, 0)
   })

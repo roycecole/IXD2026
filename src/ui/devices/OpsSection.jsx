@@ -1,9 +1,13 @@
-// 「裝置」面板的一節：展場維運（版本 / 載入時間 / 資料更新時間 / 崩潰紀錄 / 目前啟用的防呆 / 立即重新載入 / 立即檢查更新 / 清除崩潰紀錄）。
+// 「裝置」面板的一節：展場維運（版本 / 載入時間 / 資料更新時間 / 崩潰紀錄與熔斷冷卻 / 目前啟用的防呆 / 角落指示燈開關 / 立即重新載入 / 立即檢查更新 / 清除崩潰紀錄）。
 // 狀態來自 lib/resilience.js 的 opsStatus（由 services/ResilienceService.jsx 啟動的防呆寫入）與崩潰紀錄（localStorage 環狀 20 筆）；這一節只讀取與顯示。
+// 唯一會寫東西的是「角落指示燈」開關（LS.oplight 偏好；指示燈本體在 ui/OpsLight.jsx）與「清除崩潰紀錄」。
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { useT, useLocale, localeTag, T } from '../../i18n/index.js'
 import { useStore } from '../../store/useStore.js'
-import { BUILD_ID, opsStatus, guardControls, getCrashLog, summarizeCrashes, resolveConfig, GL_RESTORE_MS, IDLE_MIN_MS } from '../../lib/resilience.js'
+import {
+  BUILD_ID, opsStatus, guardControls, getCrashLog, summarizeCrashes, resolveConfig, cooldownMinutes, resolveOpLightPref, readOpLightSaved, setOpLightPref,
+  GL_RESTORE_MS, IDLE_MIN_MS, REMOTE_PRESENCE_MS,
+} from '../../lib/resilience.js'
 import '../../styles/resilience.css'
 
 // 靜態表：用 T() 標記，顯示時再 t()
@@ -11,8 +15,9 @@ const KIND_LABEL = {
   render: T('畫面錯誤'), webgl: T('顯示引擎失效'), watchdog: T('畫面卡死'),
   error: T('未捕捉的錯誤'), rejection: T('未處理的 Promise 拒絕'), reload: T('自動重新載入'),
 }
-const RELOAD_WHY = { version: T('新版本'), daily: T('每日重載') }
-const BUSY_WHY = { modal: T('有視窗開著'), active: T('有人操作中'), recording: T('錄製中'), tour: T('導覽中'), playing: T('播放中'), xr: T('AR 桌面使用中'), fullscreen: T('觀眾視窗全螢幕中') }
+const RELOAD_WHY = { version: T('新版本'), daily: T('每日重載'), cooldown: T('熔斷冷卻後重試') }
+// 「等閒置」的原因（evaluateIdle 的 reason）；ui/OpsLight.jsx 的角落指示燈也用這張表
+export const BUSY_WHY = { modal: T('有視窗開著'), active: T('有人操作中'), remote: T('遙控器使用中'), recording: T('錄製中'), tour: T('導覽中'), playing: T('播放中'), xr: T('AR 桌面使用中'), fullscreen: T('觀眾視窗全螢幕中') }
 
 const has = (obj, k) => Object.prototype.hasOwnProperty.call(obj, k)
 const two = (n) => String(n).padStart(2, '0')
@@ -27,6 +32,14 @@ export default function OpsSection() {
   const [checking, setChecking] = useState(false)
   const refresh = useCallback(() => setList(getCrashLog().list()), [])
   useEffect(() => { refresh() }, [st.crashRev, refresh])
+  // 熔斷冷卻倒數是分鐘級：面板開著時每 15 秒重畫一次就夠
+  const cooling = !!(st.halted && st.haltRetryAt)
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    if (!cooling) return undefined
+    const id = setInterval(() => setTick((n) => n + 1), 15000)
+    return () => clearInterval(id)
+  }, [cooling])
 
   const fmt = (ms) => (ms ? new Date(ms).toLocaleString(localeTag(loc), { hour12: false }) : '—')
   const busy = (r) => (r && has(BUSY_WHY, r) ? t(BUSY_WHY[r]) : '')
@@ -67,7 +80,13 @@ export default function OpsSection() {
     setChecking(true)
     try { await c.checkNow() } finally { setChecking(false) }
   }
-  const clearCrashes = () => { getCrashLog().clear(); opsStatus.set({ crashRev: opsStatus.get().crashRev + 1, halted: false }); refresh() }
+  const clearCrashes = () => { getCrashLog().clear(); opsStatus.set({ crashRev: opsStatus.get().crashRev + 1, halted: false, haltRetryAt: 0 }); refresh() }
+  // 角落指示燈：開關顯示的是「偏好」（存下來的選擇，沒選過 = 預設：展場開、一般關）；這一次網址若帶 ?oplight，畫面以網址為準（不改偏好）
+  const lightPref = resolveOpLightPref({ search: '', saved: readOpLightSaved(), kiosk: cfg.kiosk })
+  const lightNow = resolveOpLightPref({ search: location.search, saved: readOpLightSaved(), kiosk: cfg.kiosk })
+  const haltText = st.halted
+    ? (st.haltRetryAt ? t('已停止快速重新載入，約 {m} 分鐘後會再試一次', { m: cooldownMinutes(st.haltRetryAt) }) : t('已停止自動重新載入'))
+    : ''
 
   return (
     <section className="dev-sec ops-sec" aria-labelledby="ops-title">
@@ -80,7 +99,7 @@ export default function OpsSection() {
           <dt>{t('海況資料時間')}</dt><dd className="mono">{govAt || '—'}</dd>
           <dt>{t('資料檢查')}</dt><dd>{dataText}</dd>
           <dt>{t('版本檢查')}</dt><dd>{versionText}</dd>
-          <dt>{t('崩潰紀錄')}</dt><dd>{t('共 {n} 筆 · 近 10 分鐘重新載入 {m} 次', { n: sum.total, m: sum.fatal10 })}{st.halted ? ' · ' + t('已停止自動重新載入') : ''}</dd>
+          <dt>{t('崩潰紀錄')}</dt><dd>{t('共 {n} 筆 · 近 10 分鐘重新載入 {m} 次', { n: sum.total, m: sum.fatal10 })}{haltText ? ' · ' + haltText : ''}</dd>
         </dl>
 
         <ul className="ops-guards" aria-label={t('目前啟用的防呆')}>
@@ -89,7 +108,20 @@ export default function OpsSection() {
           <li className={cfg.version.check ? '' : 'off'}><b>{t('自動更新版本')}</b>{autoText}</li>
           <li><b>{t('資料更新')}</b>{dataEvery}</li>
           <li className={cfg.reloadHour === null ? 'off' : ''}><b>{t('每日重新載入')}</b>{dailyText}</li>
+          <li><b>{t('熔斷後復原')}</b>{cooling
+            ? t('冷卻中：約 {m} 分鐘後會自動重新載入一次', { m: cooldownMinutes(st.haltRetryAt) })
+            : t('待命（10 分鐘內累積 5 次異常就停止快速重試，10 分 30 秒後自動再試一次）')}</li>
+          <li><b>{t('遙控器在場')}</b>{t('手機遙控器 {m} 分鐘內有操作，就算有人在（延後重新載入與資料更新）', { m: REMOTE_PRESENCE_MS / 60000 })}</li>
         </ul>
+
+        <label className="ops-toggle">
+          <input type="checkbox" checked={lightPref.show} onChange={(e) => setOpLightPref(e.target.checked ? 'on' : 'off')} />
+          <span>{t('在畫面右下角顯示維運指示燈')}</span>
+        </label>
+        <p className="dev-sec-hint ops-light-hint">
+          {t('綠色圓點＝正常、琥珀色空心圓＝有事在等待、紅色三角＝異常、灰色虛線圓＝防呆未啟用。展場模式（?kiosk）預設顯示。')}
+          {lightNow.source === 'flag' ? ' ' + t('這一次網址帶了 ?oplight，畫面以網址為準（不會改這個偏好）。') : ''}
+        </p>
 
         <details className="ops-crashes">
           <summary>{t('最近 {n} 筆紀錄', { n: recent.length })}</summary>

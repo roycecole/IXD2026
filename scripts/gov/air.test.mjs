@@ -273,7 +273,8 @@ test('真實 public/data/ocean.json：air 區塊符合資料契約、history 100
   assert.ok(h.length >= 100 && h.length <= 120, `history ${h.length}`)
   assert.ok(h.filter((x) => typeof x.pm25 === 'number').length >= 100)
   for (const x of h) {
-    assert.deepEqual(Object.keys(x), ['t', 'pm10', 'pm25', 'dust', 'aqi'])
+    assert.deepEqual(Object.keys(x).slice(0, 5), ['t', 'pm10', 'pm25', 'dust', 'aqi'])                 // 之後可再接 wind / windDir（逐時風速，見 airWind.test.mjs）
+    assert.ok([5, 7].includes(Object.keys(x).length), Object.keys(x).join())
     assert.match(x.t, /^\d{4}-\d{2}-\d{2}T\d{2}:00:00\+08:00$/)
     for (const k of ['pm10', 'pm25', 'dust', 'aqi']) assert.ok(x[k] === null || (typeof x[k] === 'number' && x[k] >= 0 && x[k] <= 1000), `${x.t} ${k}=${x[k]}`)
   }

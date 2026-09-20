@@ -15,7 +15,12 @@
 //     藍牙 / 網路 MIDI 埠與手把有時以擁有者命名，所以貼出報告前請看一眼（測試釘住：diagnostics.test.mjs「報告的隱私範圍」）。
 //
 // 註冊表（getChecks）在函式裡才建立、不在模組頂層呼叫任何函式：主畫面只 import diagnosticsSummary.js，不會把這個檔案拉進主 bundle。
-import { T, t } from '../i18n/index.js'
+import { T, t, translate } from '../i18n/index.js'
+import { classifyHand } from './gestures.js'                 // 純函式（21 點 → 張手 / 捏合 / 其他）：相機手勢檢查用
+import { narrator } from './narration.js'                    // 旁白器（import 時不碰 window / navigator）
+import { watchdogVerdict, resolveConfig, WATCHDOG_STALL_MS, WATCHDOG_CHECK_MS, WATCHDOG_STRIKES } from './resilience.js'   // 看門狗的純判斷與網址設定（不 import store / three）
+import { WASM_BASE, MODEL_URL, errorKey as gestureErrorKey } from './hands.js'   // MediaPipe 資源位置與錯誤說明（模組本身只有 zustand + i18n，MediaPipe 仍是按下按鈕後才動態載入）
+import { noteForReport } from './diagnosticsNote.js'
 export { DIAG_LS_KEY, loadSummary, saveSummary, sanitizeSummary, formatWhen, diagnosticsHref } from './diagnosticsSummary.js'
 
 export const DIAG_VERSION = 1
@@ -35,6 +40,9 @@ export const LIMITS = {
   gamepadPollMs: 80, emitMs: 100,
   fsHoldMs: 1200, fsMs: 3000, rumbleMs: 3000,
   vibratePattern: [200, 100, 200, 100, 400],
+  speakMs: 20000, voicesMs: 1500,   // 語音旁白：等念完的上限 / 等聲音清單載入
+  watchdogMs: 3000,                 // 看門狗自我檢查：rAF 取樣長度
+  gestureMs: 8000, gestureStepMs: 16, gestureLoadMs: 60000, gestureFpsMin: 8, gestureMaxFails: 5,   // 相機手勢：偵測長度 / 每輪間隔 / 模型載入上限 / 最低可接受幀率 / 連續失敗幾次放棄
 }
 
 // ───────────────────────────── 小工具 ─────────────────────────────
@@ -176,6 +184,8 @@ export function browserEnv(g = globalThis) {
     makeFile: isFn(g.File) ? () => new g.File(['x'], 'midisea-diagnostics.png', { type: 'image/png' }) : null,
     getStorage: () => g.localStorage,   // 隱私模式讀這個屬性就可能丟 SecurityError：由檢查自己 try/catch
     randomId: () => Math.random().toString(36).slice(2, 10),
+    WebAssembly: g.WebAssembly || null,
+    importVision: () => import('@mediapipe/tasks-vision'),   // 相機手勢檢查才會呼叫（使用者按下按鈕後）；Vite 拆成獨立 chunk，與主畫面的手勢共用
   }
 }
 
@@ -1172,6 +1182,317 @@ async function fullscreenBody(api) {
   return { status: 'pass', msg: d(T('進入與離開全螢幕都成功')) }
 }
 
+// ---- 語音旁白（念一句）----
+// 測試句（中文原文；依「辨識語言」翻成對應語系再念，所以英文介面念英文）。標記給 i18n 掃描器：畫面 / 朗讀時才 translate()。
+export const NARRATION_LINE = T('這是旁白測試。如果你聽得到這句話，代表語音旁白可以使用。')
+
+// 聲音清單 → 各語系數量與是否有離線（localService）聲音。lang 容忍 zh_TW / zh-Hant-TW 寫法。只計數，不記聲音名稱。
+export function summarizeVoices(voices) {
+  const s = { total: 0, zhTW: 0, enUS: 0, zhTWLocal: 0, enUSLocal: 0, local: 0 }
+  for (const v of Array.from(voices || [])) {
+    if (!v) continue
+    s.total++
+    const tag = String(v.lang || '').replace(/_/g, '-').toLowerCase()
+    const local = v.localService === true
+    if (local) s.local++
+    if (tag === 'zh-tw' || tag === 'zh-hant-tw') { s.zhTW++; if (local) s.zhTWLocal++ }
+    else if (tag === 'en-us') { s.enUS++; if (local) s.enUSLocal++ }
+  }
+  return s
+}
+const readVoices = (synth) => safe(() => { const v = synth.getVoices(); return v && typeof v.length === 'number' ? Array.prototype.slice.call(v) : [] }) || []
+const narrationSupported = (env) => { const nar = env.narrator || narrator; return isFn(nar.supported) && isFn(nar.speak) && nar.supported() === true }
+const NO_SYNTH = () => ({ status: 'unsupported', msg: d(T('沒有語音合成（speechSynthesis）：旁白無法出聲，字幕仍然可用')) })
+
+function voiceMsgs(info, lang) {
+  const zh = !/^en/i.test(lang)
+  const want = zh ? info.zhTW : info.enUS, wantLocal = zh ? info.zhTWLocal : info.enUSLocal
+  return [
+    d(T('聲音清單：zh-TW {zh} 個（離線 {zhL}）、en-US {en} 個（離線 {enL}）'), { zh: info.zhTW, zhL: info.zhTWLocal, en: info.enUS, enL: info.enUSLocal }),
+    info.total === 0 ? d(T('聲音清單是空的：這個瀏覽器可能還沒載入聲音，或沒有安裝任何語音'))
+      : want === 0 ? d(T('沒有 {lang} 的聲音：會改用系統預設聲音，可能念得很怪或不出聲'), { lang })
+        : wantLocal === 0 ? d(T('{lang} 的聲音都不是離線聲音：斷網時旁白可能念不出來'), { lang })
+          : d(T('{lang} 有離線聲音：斷網也能念'), { lang }),
+  ]
+}
+
+async function narrationBody(api) {
+  const { env, opts } = api
+  const nar = env.narrator || narrator
+  if (!narrationSupported(env)) return NO_SYNTH()
+  const synth = env.win ? env.win.speechSynthesis : null
+  const lang = typeof opts.lang === 'string' && opts.lang ? opts.lang : 'zh-TW'
+  const text = translate(/^en/i.test(lang) ? 'en' : 'zh', NARRATION_LINE)
+  api.cleanup(() => { safe(() => nar.cancel()); if (isFn(nar.dispose)) safe(() => nar.dispose()) })   // 中途停止 / 離開頁面 → 立刻閉嘴、拿掉 voiceschanged 監聽
+  const speaking = nar.speak(text, { lang })   // 同步呼叫（仍在使用者按下按鈕的手勢內）：iOS 才允許出聲；narrator 自己處理 Chrome 的 cancel 延遲
+  api.emit({ phase: 'speaking', lang })
+  let voices = synth ? readVoices(synth) : []
+  if (!voices.length && synth && isFn(synth.addEventListener)) {   // Chrome 的聲音清單一開始常是空的：等 voiceschanged（有上限）
+    let wake
+    const changed = new Promise((r) => { wake = r })
+    const on = () => wake()
+    synth.addEventListener('voiceschanged', on)
+    api.cleanup(() => safe(() => synth.removeEventListener('voiceschanged', on)))
+    await api.until(changed, LIMITS.voicesMs)
+    safe(() => synth.removeEventListener('voiceschanged', on))
+    voices = readVoices(synth)
+  }
+  if (api.cancelled) return null
+  const info = summarizeVoices(voices)
+  let voice = null
+  try { const v = isFn(nar.pickVoice) ? nar.pickVoice(lang) : null; if (v) voice = { name: String(v.name || '').slice(0, 60), lang: String(v.lang || ''), local: v.localService === true } } catch (e) { voice = null }
+  api.emit({ voices: info, lang })
+  const data = { lang, voices: info, voice }
+  let outcome
+  try { outcome = await api.race(speaking, LIMITS.speakMs) } catch (e) {
+    if (api.cancelled) return null
+    if (errName(e) === 'TimeoutError') return { status: 'fail', msg: [d(T('{s} 秒內沒有念完：語音引擎沒有回應'), { s: round(LIMITS.speakMs / 1000) }), ...voiceMsgs(info, lang)], data: { ...data, outcome: 'timeout' } }
+    return failFromError(e)
+  }
+  if (api.cancelled) return null
+  data.outcome = String(outcome)
+  switch (outcome) {
+    case 'done': return { status: 'needs-action', msg: [d(T('已念出測試句（{lang}），請回答有沒有聽到'), { lang }), ...voiceMsgs(info, lang)], data }
+    case 'unsupported': return NO_SYNTH()
+    case 'cancelled': return { status: 'fail', msg: [d(T('測試句念到一半被中斷')), ...voiceMsgs(info, lang)], data }
+    default: return { status: 'fail', msg: [d(T('念不出聲：被瀏覽器擋下，或語音引擎沒有回應。iPhone / iPad 請直接點按鈕、確認沒有靜音且音量不是 0，然後再試一次')), ...voiceMsgs(info, lang)], data }
+  }
+}
+
+// ---- 看門狗自我檢查（不會真的卡死頁面）----
+const WATCHDOG_REASON = {
+  'flag-off': T('網址有 ?watchdog=0：明確關閉'),
+  flag: T('網址有 ?watchdog=1'),
+  kiosk: T('展場模式 ?kiosk'),
+  audience: T('觀眾視窗 ?audience=1'),
+  default: T('一般使用的預設值：不啟用'),
+}
+// 三組合成狀態（正常 / 卡死 / 分頁隱藏）→ watchdogVerdict 的預期判定。時間為假的：不需要真的等、也不會卡死任何東西。
+const WATCHDOG_CASES = [
+  { id: 'normal', expect: 'ok', input: { enabled: true, visible: true, now: 100000, lastFrameAt: 99950, visibleSince: 90000 } },
+  { id: 'stalled', expect: 'stalled', input: { enabled: true, visible: true, now: 100000, lastFrameAt: 60000, visibleSince: 60000 } },
+  { id: 'hidden', expect: 'hidden', input: { enabled: true, visible: false, now: 100000, lastFrameAt: 0, visibleSince: 0 } },
+]
+export function checkWatchdogVerdicts(fn = watchdogVerdict) {
+  const cases = WATCHDOG_CASES.map((c) => {
+    let got
+    try { got = fn({ ...c.input }) } catch (e) { got = 'error' }
+    return { id: c.id, expect: c.expect, got: String(got), ok: got === c.expect }
+  })
+  return { ok: cases.every((c) => c.ok), cases }
+}
+// 診斷頁自己的網址參數去掉 diagnostics / guided 之後，就是「同樣參數的主畫面」：問 resolveConfig 這樣會不會啟用看門狗
+const mainSearchOf = (search) => { try { const q = new URLSearchParams(search || ''); q.delete('diagnostics'); q.delete('guided'); const s = q.toString(); return s ? '?' + s : '' } catch (e) { return '' } }
+export function watchdogConfigInfo(env, res = { resolveConfig }) {
+  const loc = env && env.win ? env.win.location : null
+  const search = mainSearchOf(String((loc && loc.search) || ''))
+  const cfg = res.resolveConfig({ search, hash: '' })
+  const examples = ['?kiosk=1', '?watchdog=1'].map((s) => ({ search: s, on: !!res.resolveConfig({ search: s, hash: '' }).watchdog.on }))
+  return { on: !!cfg.watchdog.on, reason: String(cfg.watchdog.reason || 'default'), examples }
+}
+
+// rAF 取樣 ms 毫秒：幀數、平均 FPS、最大幀間隔（含「最後一幀之後到結束」那一段：rAF 停了也算進去）。取消 / 逾時 / 結束都放掉 rAF 與計時器。
+function sampleFrames(api, ms) {
+  const env = api.env
+  const push = api.throttled((p) => api.emit(p), 250)
+  return new Promise((resolve) => {
+    let first = null, last = null, frames = 0, maxGap = 0, id = null, timer = null, done = false
+    const finish = (cancelled) => {
+      if (done) return
+      done = true
+      if (timer != null) tclear(env, timer)
+      if (id != null && isFn(env.cancelRaf)) safe(() => env.cancelRaf(id))
+      const tail = last != null ? Math.max(0, tnow(env) - last) : 0
+      const span = first != null && last != null ? last - first : 0
+      resolve({ cancelled: !!cancelled, frames, maxGapMs: Math.round(Math.max(maxGap, tail)), spanMs: Math.round(span), fps: frames > 1 && span > 0 ? (frames - 1) / (span / 1000) : 0 })
+    }
+    api.cleanup(() => finish(true))
+    const tick = (ts) => {
+      if (done) return
+      const n = num(ts) != null ? ts : tnow(env)
+      frames++
+      if (first == null) first = n; else maxGap = Math.max(maxGap, n - last)
+      last = n
+      push({ frames, maxGapMs: Math.round(maxGap), elapsedMs: Math.round(n - first) })
+      if (n - first >= ms) return finish(false)
+      id = env.raf(tick)
+    }
+    id = env.raf(tick)
+    timer = tset(env, () => finish(false), ms + LIMITS.fpsGraceMs)   // rAF 一直不來（背景分頁 / 被節流）：時間到就結算
+  })
+}
+
+async function watchdogBody(api) {
+  const { env } = api
+  const res = { watchdogVerdict, resolveConfig, WATCHDOG_STALL_MS, WATCHDOG_CHECK_MS, WATCHDOG_STRIKES, ...(env.resilience || {}) }
+  const cfg = watchdogConfigInfo(env, res)
+  const vc = checkWatchdogVerdicts(res.watchdogVerdict)
+  const stallMs = res.WATCHDOG_STALL_MS
+  const note = d(T('注意：這不會模擬真的卡死；實機卡死復原要在主畫面加 ?watchdog=1 手動驗'))
+  const cfgMsgs = [
+    d(cfg.on ? T('主畫面用這個網址的參數會啟用看門狗（{reason}）') : T('主畫面用這個網址的參數不會啟用看門狗（{reason}）'), { reason: d(WATCHDOG_REASON[cfg.reason] || WATCHDOG_REASON.default) }),
+    d(T('展場請用 {a}（或 {b}）；觀眾視窗 {c} 一律啟用；診斷頁本身不會啟動看門狗'), { a: '?kiosk=1', b: '?watchdog=1', c: '?audience=1' }),
+    d(T('門檻：可見分頁連續 {s} 秒沒有畫面幀，連續 {n} 次檢查（每 {c} 秒一次）都卡死才會自動重載'), { s: round(stallMs / 1000), n: res.WATCHDOG_STRIKES, c: round(res.WATCHDOG_CHECK_MS / 1000) }),
+  ]
+  const verdictMsg = vc.ok
+    ? d(T('判定邏輯驗證：正常 → {a}、卡死 → {b}、分頁隱藏 → {c}，3 組都符合預期'), { a: vc.cases[0].got, b: vc.cases[1].got, c: vc.cases[2].got })
+    : d(T('判定邏輯不符預期：正常 → {a}（應為 ok）、卡死 → {b}（應為 stalled）、分頁隱藏 → {c}（應為 hidden）'), { a: vc.cases[0].got, b: vc.cases[1].got, c: vc.cases[2].got })
+  const base = { verdicts: Object.fromEntries(vc.cases.map((c) => [c.id, c.got])), verdictOk: vc.ok, config: cfg, stallMs }
+  if (!isFn(env.raf)) return { status: 'unsupported', msg: [d(T('沒有 requestAnimationFrame')), verdictMsg, ...cfgMsgs, note], data: { ...base, sampled: false } }
+  if (env.doc && env.doc.hidden === true) return { status: 'skipped', msg: d(T('分頁在背景：瀏覽器不會產生畫面幀，請把這個分頁留在前景再測')), data: { ...base, sampled: false } }
+  api.emit({ phase: 'sampling', frames: 0, maxGapMs: 0, elapsedMs: 0 })
+  const sm = await sampleFrames(api, LIMITS.watchdogMs)
+  if (api.cancelled || sm.cancelled) return null
+  const half = stallMs / 2
+  const data = { ...base, sampled: true, frames: sm.frames, maxGapMs: sm.maxGapMs, avgFps: round(sm.fps, 1), sampleMs: LIMITS.watchdogMs }
+  const frameMsg = d(T('取樣 {s} 秒：{frames} 幀，平均 {fps} FPS，最大幀間隔 {gap} ms'), { s: round(LIMITS.watchdogMs / 1000), frames: sm.frames, fps: round(sm.fps, 1), gap: sm.maxGapMs })
+  const problems = []
+  if (sm.frames < 3) problems.push(d(T('取樣期間幾乎沒有畫面幀（{n} 幀）：分頁可能在背景、被節流，或畫面已經卡住'), { n: sm.frames }))
+  else if (sm.maxGapMs >= half) problems.push(d(T('最大幀間隔已超過看門狗門檻的一半（{half} ms）：這台裝置在展場可能被誤判為卡死'), { half: Math.round(half) }))
+  const ok = !problems.length && vc.ok   // 判定邏輯不符已由 verdictMsg 說明
+  return { status: ok ? 'pass' : 'fail', msg: [frameMsg, ...problems, verdictMsg, ...cfgMsgs, note], data }
+}
+
+// ---- 相機手勢（MediaPipe）----
+// 按下按鈕才：請求相機 → 動態載入辨識程式（@mediapipe/tasks-vision，Vite 拆成獨立 chunk）→ 下載 WASM 與模型（第一次約 8 MB）→ 偵測 gestureMs。
+// 影像只在本機做辨識與預覽（不錄影、不上傳）；報告只記：載入時間 / 幀率 / 最多同時偵測幾隻手 / 看過哪些手勢。任何結束路徑都會停掉 track、放掉預覽與辨識器。
+export const HAND_BONES = [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8], [5, 9], [9, 10], [10, 11], [11, 12], [9, 13], [13, 14], [14, 15], [15, 16], [13, 17], [17, 18], [18, 19], [19, 20], [0, 17]]
+const GESTURE_NAMES = { open_palm: T('張手'), pinch: T('捏合') }
+
+function gestureUnsupported(env) {
+  const md = env.nav && env.nav.mediaDevices
+  if (!md || !isFn(md.getUserMedia)) return mediaUnsupported(env, d(T('相機裝置')))
+  if (!env.WebAssembly) return { status: 'unsupported', msg: d(gestureErrorKey('no-wasm')) }
+  if (!isFn(env.importVision)) return { status: 'unsupported', msg: d(T('沒有可以載入手勢辨識模組的環境')) }
+  return null
+}
+function gestureLoadFailure(env, e) {
+  const offline = safe(() => env.nav && env.nav.onLine === false) === true
+  return { status: 'fail', msg: [d(gestureErrorKey(offline ? 'offline' : 'load')), d(T('詳細：{err}'), { err: errText(e) })], data: { error: errName(e), phase: 'model', offline } }
+}
+
+async function gestureBody(api) {
+  const { env, opts } = api
+  const sup = gestureUnsupported(env)
+  if (sup) return sup
+  const md = env.nav.mediaDevices
+  // 先開始下載辨識程式（很小），與相機授權並行；相機被拒就不會下載模型
+  let visionP
+  try { visionP = Promise.resolve(env.importVision()) } catch (e) { visionP = Promise.reject(e) }
+  visionP.catch(() => {})
+  api.emit({ phase: 'camera' })
+  let stream
+  try {
+    try { stream = await api.race(md.getUserMedia({ video: { facingMode: 'user', width: 640, height: 480 }, audio: false }), LIMITS.permMs, stopStream) } catch (e) {
+      if (errName(e) === 'OverconstrainedError' && !api.cancelled) stream = await api.race(md.getUserMedia({ video: true, audio: false }), LIMITS.permMs, stopStream)   // 裝置不支援指定解析度 / 鏡頭方向 → 放寬（與主畫面手勢一致）
+      else throw e
+    }
+  } catch (e) { return api.cancelled ? null : mediaError(e, d(T('相機裝置'))) }
+  api.cleanup(() => stopStream(stream))   // 一定停掉（若 stop() 早就被呼叫，cleanup 會立刻執行）
+  if (api.cancelled) return null
+  const vt = safe(() => stream.getVideoTracks()[0])
+  if (!vt) return { status: 'fail', msg: d(T('取得了串流，但裡面沒有視訊軌')) }
+  api.cleanup(() => safe(() => { vt.onended = null }))
+  safe(() => { vt.onended = () => api.emit({ ended: true }) })
+  api.cleanup(() => { if (isFn(opts.draw)) safe(() => opts.draw([])) })     // 清掉骨架
+  api.cleanup(() => { if (isFn(opts.detach)) safe(() => opts.detach()) })   // 先放掉預覽，再停 track（cleanup 反向執行）
+  let video = null
+  if (isFn(opts.attach)) { try { video = await api.race(opts.attach(stream), LIMITS.attachMs) } catch (e) { video = null } }
+  if (api.cancelled) return null
+  if (!video) return { status: 'fail', msg: d(T('沒有可用的預覽畫面，無法辨識手勢')) }
+
+  // 模型：GPU 優先，失敗退 CPU（與主畫面一致）；逾時 / 取消時遲到的辨識器立刻 close
+  api.emit({ phase: 'loading' })
+  const tLoad = tnow(env)
+  let lm = null, delegate = null
+  const closeLm = (x) => { if (x && isFn(x.close)) safe(() => x.close()) }
+  try {
+    const vision = await api.race(visionP, LIMITS.gestureLoadMs)
+    const FR = vision && (vision.FilesetResolver || (vision.default && vision.default.FilesetResolver))
+    const HL = vision && (vision.HandLandmarker || (vision.default && vision.default.HandLandmarker))
+    if (!FR || !HL) throw new Error('MediaPipe API missing')
+    const fileset = await api.race(FR.forVisionTasks(WASM_BASE), LIMITS.gestureLoadMs)
+    const make = (dg) => api.race(HL.createFromOptions(fileset, { baseOptions: { modelAssetPath: MODEL_URL, delegate: dg }, runningMode: 'VIDEO', numHands: 2 }), LIMITS.gestureLoadMs, closeLm)
+    try { lm = await make('GPU'); delegate = 'GPU' } catch (e) {
+      if (api.cancelled || errName(e) === 'TimeoutError' || errName(e) === 'CancelledError') throw e
+      lm = await make('CPU'); delegate = 'CPU'
+    }
+  } catch (e) { if (api.cancelled) return null; return gestureLoadFailure(env, e) }
+  api.cleanup(() => { const x = lm; lm = null; closeLm(x) })
+  if (api.cancelled) return null
+  const modelMs = Math.round(tnow(env) - tLoad)
+
+  // 偵測：每輪至少間隔 gestureStepMs，畫面有新幀才推論；分頁被藏起來（瀏覽器停掉相機 / 動畫）就中止，不報不準的結果
+  const push = api.throttled((p) => api.emit(p), 200)
+  const t0 = tnow(env)
+  api.emit({ phase: 'running', modelMs, delegate, aspect: video.videoHeight > 0 ? round(video.videoWidth / video.videoHeight, 3) : null })
+  let frames = 0, withHand = 0, handsMax = 0, fails = 0, lastErr = null, lastTs = 0, lastVideoTime = -1, hidden = false
+  const seen = new Set(), prev = []
+  while (!api.cancelled) {
+    const now = tnow(env)
+    if (now - t0 >= LIMITS.gestureMs) break
+    if (env.doc && env.doc.hidden === true) { hidden = true; break }
+    if (video.readyState >= 2 && video.videoWidth > 0 && video.currentTime !== lastVideoTime) {
+      lastVideoTime = video.currentTime
+      const ts = Math.max(now, lastTs + 1); lastTs = ts   // MediaPipe VIDEO 模式要求時間戳嚴格遞增
+      let out = null
+      try { out = lm.detectForVideo(video, ts); fails = 0 } catch (e) { fails++; lastErr = e; if (fails >= LIMITS.gestureMaxFails) break }
+      if (out) {
+        const hands = Array.isArray(out.landmarks) ? out.landmarks.filter((p) => Array.isArray(p)) : []
+        const aspect = video.videoWidth / Math.max(1, video.videoHeight)
+        frames++; if (hands.length) withHand++
+        handsMax = Math.max(handsMax, hands.length)
+        prev.length = hands.length
+        hands.forEach((pts, i) => { const g = classifyHand(pts, { aspect, prev: prev[i] }).gesture; prev[i] = g; if (g in GESTURE_NAMES) seen.add(g) })
+        if (isFn(opts.draw)) safe(() => opts.draw(hands))
+        const secs = (tnow(env) - t0) / 1000
+        push({ frames, fps: secs > 0 ? round(frames / secs, 1) : 0, hands: hands.length, handsMax, gestures: Array.from(seen).sort(), elapsedMs: Math.round(secs * 1000) })
+      }
+    }
+    if (!(await api.sleep(LIMITS.gestureStepMs))) break
+  }
+  if (api.cancelled) return null
+  const secs = Math.max(0.001, (tnow(env) - t0) / 1000)
+  const fps = frames / secs
+  const gestures = Array.from(seen).sort()
+  const data = { modelMs, delegate, frames, framesWithHand: withHand, fps: round(fps, 1), seconds: round(secs, 1), handsMax, gestures, width: num(video.videoWidth), height: num(video.videoHeight) }
+  if (hidden) return { status: 'skipped', msg: d(T('分頁在背景：瀏覽器暫停了相機與畫面，結果不準；請把這個分頁留在前景再測')), data }
+  if (fails >= LIMITS.gestureMaxFails) return { status: 'fail', msg: [d(gestureErrorKey('detect')), d(T('詳細：{err}'), { err: errText(lastErr) })], data: { ...data, error: errName(lastErr) } }
+  if (frames < 3) return { status: 'fail', msg: [d(T('取樣期間幾乎沒有辨識到畫面（{n} 幀）：相機沒有影像，或畫面被瀏覽器節流'), { n: frames }), d(T('手勢模型載入 {s} 秒（{delegate}）'), { s: round(modelMs / 1000, 1), delegate })], data }
+  const lines = [
+    d(T('手勢模型載入 {s} 秒（{delegate}）'), { s: round(modelMs / 1000, 1), delegate }),
+    d(T('辨識幀率 {fps} FPS（{n} 幀 / {s} 秒）'), { fps: data.fps, n: frames, s: data.seconds }),
+    d(T('最多同時偵測 {n} 隻手'), { n: handsMax }),
+    handsMax > 0 ? (gestures.length ? d(T('看到的手勢：{list}'), { list: gestures.map((g) => d(GESTURE_NAMES[g])) }) : d(T('偵測到手，但沒有看到「張手」或「捏合」'))) : null,
+  ]
+  if (fps < LIMITS.gestureFpsMin) return { status: 'fail', msg: [...lines, d(T('低於 {n} FPS：手勢會不順（舊手機 / 舊 iPad 常見）'), { n: LIMITS.gestureFpsMin })], data }
+  if (handsMax === 0) return { status: 'needs-action', msg: [...lines, d(T('沒有偵測到手：請把手放在鏡頭前（張開手掌、捏合拇指與食指）後再測一次'))], data }
+  return { status: 'pass', msg: lines, data }
+}
+
+// ---- 導引模式的「這台裝置能不能做」（互動檢查各自的必要 API；不開權限、不開裝置）----
+// 回傳 null（可以做）或 { status:'unsupported', msg }（與檢查本體遇到缺 API 時回的結果同一份文字；測試核對兩邊一致）
+const SUPPORT = {
+  narration: (env) => (narrationSupported(env) ? null : NO_SYNTH()),
+  watchdog: (env) => (isFn(env.raf) ? null : { status: 'unsupported', msg: d(T('沒有 requestAnimationFrame')) }),
+  gesture: gestureUnsupported,
+  cam: (env) => { const md = env.nav && env.nav.mediaDevices; return md && isFn(md.getUserMedia) ? null : mediaUnsupported(env, d(T('相機裝置'))) },
+  mic: (env) => { const md = env.nav && env.nav.mediaDevices; return md && isFn(md.getUserMedia) ? null : mediaUnsupported(env, d(T('麥克風裝置'))) },
+  speech: (env) => { const w = env.win; return w && isFn(w.SpeechRecognition || w.webkitSpeechRecognition) ? null : { status: 'unsupported', msg: d(T('這個瀏覽器沒有語音辨識（Firefox 沒有）；請改用 Chrome、Edge 或 Safari')) } },
+  vibrate: (env) => (env.nav && isFn(env.nav.vibrate) ? null : { status: 'unsupported', msg: d(T('沒有震動 API（iPhone Safari 就是如此）')) }),
+  screens: (env) => (env.win && isFn(env.win.getScreenDetails) ? null : { status: 'unsupported', msg: d(T('沒有 getScreenDetails（Safari、Firefox 與非 https 沒有）：仍可手動把觀眾視窗拖到投影機')) }),
+  popup: (env) => (env.win && isFn(env.win.open) ? null : { status: 'unsupported', msg: d(T('沒有 window.open')) }),
+  fullscreen: (env) => { const el = env.doc && env.doc.documentElement; return el && (isFn(el.requestFullscreen) || isFn(el.webkitRequestFullscreen)) ? null : { status: 'unsupported', msg: d(T('沒有全螢幕 API（iPhone Safari 不支援網頁全螢幕）')) } },
+  midi: (env) => (env.nav && isFn(env.nav.requestMIDIAccess) ? null : { status: 'unsupported', msg: d(T('沒有 Web MIDI（Safari、iPhone 與 Firefox 預設沒有）；請用桌面版 Chrome / Edge')) }),
+  gamepad: (env) => (env.nav && isFn(env.nav.getGamepads) ? null : { status: 'unsupported', msg: d(T('沒有 Gamepad API')) }),
+  rumble: (env) => (env.nav && isFn(env.nav.getGamepads) ? null : { status: 'unsupported', msg: d(T('沒有 Gamepad API')) }),
+  orient: (env) => { const w = env.win; return w && (isFn(w.DeviceOrientationEvent) || isFn(w.DeviceMotionEvent)) ? null : { status: 'unsupported', msg: d(T('沒有 DeviceOrientation / DeviceMotion 事件（桌機通常沒有感測器）')) } },
+}
+export function guideSupport(id, env) {
+  const fn = SUPPORT[id]
+  return fn ? fn(env || {}) : null   // 沒列在表裡（觸控畫板…）= 一定可以做
+}
+
 // ───────────────────────────── 註冊表 ─────────────────────────────
 export function getGroups() {
   return [
@@ -1183,6 +1504,7 @@ export function getGroups() {
     { id: 'input', title: T('MIDI、手把與觸控筆（互動）'), kind: 'interactive' },
     { id: 'sense', title: T('震動與感測器（互動）'), kind: 'interactive' },
     { id: 'display', title: T('螢幕與視窗（互動）'), kind: 'interactive' },
+    { id: 'guard', title: T('展場防呆（互動）'), kind: 'interactive' },
   ]
 }
 
@@ -1221,40 +1543,64 @@ function buildChecks() {
 
     inter('cam', 'media', T('相機（視訊預覽）'), cameraBody, {
       hint: T('按下後瀏覽器會詢問相機權限；畫面只顯示在這裡，不會錄影或上傳。'), startLabel: T('開啟相機'), stopLabel: T('關閉相機'),
+      guide: T('按下並允許相機，確認看得到自己的畫面。'),
       verdict: { ask: T('畫面看起來正常嗎？'), ...okBad, okNote: T('使用者確認：畫面正常'), badNote: T('使用者回報：畫面不正常'), required: false },
     }),
     inter('mic', 'media', T('麥克風（音量條）'), micBody, {
       hint: T('按下後收音 3 秒並顯示音量條，請對著麥克風說話；聲音不會被錄下或上傳。'), startLabel: T('測試麥克風'), stopLabel: T('停止'),
+      guide: T('按下並允許麥克風，對著麥克風說話 3 秒。'),
     }),
     inter('speech', 'media', T('語音辨識（收音 5 秒）'), speechBody, {
       hint: T('按下後收音 5 秒並顯示辨識文字，請說一句話。Chrome 的語音辨識會把聲音送到雲端服務；報告只記字數，不記內容。'), startLabel: T('開始收音'), stopLabel: T('停止'),
+      guide: T('按下並允許麥克風，清楚說一句話。'),
+    }),
+    inter('narration', 'media', T('語音旁白（念一句）'), narrationBody, {
+      hint: T('按下後用旁白念一句測試句，請確認有聽到。iPhone / iPad 需要先點一下頁面才會出聲：請直接按這顆按鈕。'), startLabel: T('念一句'), stopLabel: T('停止'),
+      guide: T('按「念一句」，確認聽得到聲音。'),
+      verdict: { ask: T('有聽到嗎？'), ok: T('有'), bad: T('沒有'), okNote: T('使用者確認：有聽到旁白'), badNote: T('使用者回報：沒有聽到旁白'), required: true },
+    }),
+    inter('gesture', 'media', T('相機手勢（MediaPipe，約 8 秒）'), gestureBody, {
+      hint: T('按下後才會請求相機並下載手勢模型（第一次約 8 MB，需要網路）；請把手放在鏡頭前，張開手掌、再捏合拇指與食指。影像只在這裡辨識與預覽，不會錄影或上傳。'), startLabel: T('開始手勢檢查'), stopLabel: T('關閉相機'),
+      guide: T('按下並允許相機，把手放在鏡頭前，張開手掌再捏合。'),
     }),
     inter('midi', 'input', T('Web MIDI 裝置清單'), midiBody, {
       hint: T('接上 MIDI 控制器後按下；轉動旋鈕或按鍵可以看到收到的訊息數。'), startLabel: T('列出 MIDI 裝置'), stopLabel: T('停止監聽'),
+      guide: T('接上 MIDI 控制器後按下，轉動旋鈕或按幾個鍵。'),
     }),
     inter('gamepad', 'input', T('手把（即時按鍵與搖桿）'), gamepadBody, {
       hint: T('接上手把後按一下任意按鍵，會列出手把並即時顯示按鍵與搖桿數值。'), startLabel: T('開始偵測手把'), stopLabel: T('停止偵測'),
+      guide: T('接上手把後按下，再按幾個鍵、推一下搖桿。'),
     }),
     inter('rumble', 'input', T('手把震動測試'), rumbleBody, {
       hint: T('對第一支支援震動的手把送出一段雙馬達震動。'), startLabel: T('震動測試'), stopLabel: T('停止'),
+      guide: T('按下後，手把會震動一下。'),
     }),
-    { id: 'pointer', group: 'input', kind: 'interactive', custom: 'pointer', title: T('觸控筆與觸控畫板'), hint: T('在下方畫板用手指、滑鼠或觸控筆畫畫；偵測到觸控筆才算通過。') },
+    { id: 'pointer', group: 'input', kind: 'interactive', custom: 'pointer', title: T('觸控筆與觸控畫板'), hint: T('在下方畫板用手指、滑鼠或觸控筆畫畫；偵測到觸控筆才算通過。'), guide: T('用手指、滑鼠或觸控筆在畫板上畫畫；沒有觸控筆就略過。') },
     inter('vibrate', 'sense', T('手機震動（實測）'), vibrateBody, {
       hint: T('按下後手機會震動約 1 秒，接著請回答有沒有震到。'), startLabel: T('震動一下'), stopLabel: T('停止'),
+      guide: T('按下後，手機會震動約 1 秒，再回答有沒有震到。'),
       verdict: { ask: T('有震到嗎？'), ok: T('是，有震到'), bad: T('否，沒震到'), okNote: T('使用者確認：有感覺到震動'), badNote: T('使用者回報：沒有感覺到震動'), required: true },
     }),
     inter('orient', 'sense', T('方向與動作感測器'), orientBody, {
       hint: T('iPhone / iPad 會先詢問權限；搖動或旋轉裝置，數值會即時變化。'), startLabel: T('開始讀取感測器'), stopLabel: T('停止讀取'),
+      guide: T('按下後，搖動或旋轉裝置。'),
     }),
     inter('screens', 'display', T('螢幕清單（getScreenDetails）'), screensBody, {
       hint: T('按下後瀏覽器可能詢問「視窗管理」權限；接上投影機或開啟延伸桌面後應看到 2 個以上的螢幕。'), startLabel: T('列出螢幕'), stopLabel: T('停止'),
+      guide: T('按下後，列出目前接上的螢幕。'),
     }),
     inter('popup', 'display', T('彈出視窗測試'), popupBody, {
       hint: T('開啟一個空白視窗並立刻關閉，確認觀眾視窗不會被彈出視窗封鎖擋住。'), startLabel: T('測試彈出視窗'), stopLabel: T('停止'),
+      guide: T('按下後，測試能不能開出彈出視窗。'),
     }),
     inter('fullscreen', 'display', T('全螢幕進入與離開'), fullscreenBody, {
       hint: T('進入全螢幕約 1 秒後自動離開。'), startLabel: T('測試全螢幕'), stopLabel: T('停止'),
+      guide: T('按下後，畫面會進入全螢幕約 1 秒再離開。'),
       verdict: { ask: T('全螢幕的畫面正常嗎？'), ...okBad, okNote: T('使用者確認：全螢幕畫面正常'), badNote: T('使用者回報：全螢幕畫面不正常'), required: false },
+    }),
+    inter('watchdog', 'guard', T('看門狗自我檢查（3 秒）'), watchdogBody, {
+      hint: T('取樣 3 秒的畫面幀，並驗證看門狗的判定邏輯；不會真的卡死頁面。實機卡死復原要在主畫面加 ?watchdog=1 手動驗。'), startLabel: T('開始自我檢查'), stopLabel: T('停止'),
+      guide: T('按下後等 3 秒，看結果。'), detailList: true,
     }),
   ]
 }
@@ -1332,8 +1678,27 @@ export function collectMeta(env, now = Date.now()) {
 const cell = (s) => String(s == null ? '' : s).replace(/\r?\n/g, ' ').replace(/\|/g, '\\|')
 const screenLine = (s) => `${s.width ?? '—'}×${s.height ?? '—'} @${s.dpr ?? '—'}x; viewport ${s.viewportWidth ?? '—'}×${s.viewportHeight ?? '—'}`
 
-// 報告：Markdown 表格 + JSON。results：id → 結果（含使用者判斷）。不含任何個資 / IP / 影像 / 音訊。
-export function buildReport({ checks = getChecks(), results = {}, meta = {}, tr = t, locale = 'zh' } = {}) {
+// 「裝置備註」段落的欄位標籤（有填的欄位才會列出；key 是 T() 標記過的中文原文，顯示時再 tr()）
+const NOTE_LABELS = { model: T('裝置型號：{v}'), os: T('作業系統與版本：{v}'), browser: T('瀏覽器與版本：{v}'), tester: T('測試人：{v}'), memo: T('備註：{v}') }
+const NOTE_ORDER = ['model', 'os', 'browser', 'tester', 'memo']
+// Markdown 的備註段落：單行欄位一行；備註可能多行 → 續行縮排 2 格（仍在同一個清單項目內）
+function noteLines(fields, tr) {
+  const lines = ['## ' + tr(T('裝置備註'))]
+  for (const k of NOTE_ORDER) {
+    if (!fields[k]) continue
+    const parts = String(fields[k]).split('\n').filter((x) => x.trim() !== '')
+    const head = '- ' + tr(NOTE_LABELS[k], { v: parts[0] || '' })
+    lines.push(head, ...parts.slice(1).map((x) => '  ' + x))
+  }
+  lines.push('')
+  return lines
+}
+
+// 報告：Markdown 表格 + JSON。results：id → 結果（含使用者判斷）。不含任何個資 / IP / 影像 / 音訊；
+// 唯一的例外是使用者自己填的 note（裝置備註）：只有「填了的欄位」才會出現（Markdown 的「裝置備註」段落 + JSON 的 deviceNote），全空 = 完全沒有這一段，
+// 有備註時隱私聲明改成「除了你自己填寫的裝置備註」，不會說謊。
+export function buildReport({ checks = getChecks(), results = {}, meta = {}, tr = t, locale = 'zh', note = null } = {}) {
+  const deviceNote = noteForReport(note)
   const groups = new Map(getGroups().map((g) => [g.id, g]))
   const rows = checks.map((c) => {
     const r = results[c.id]
@@ -1353,6 +1718,7 @@ export function buildReport({ checks = getChecks(), results = {}, meta = {}, tr 
     generatedAt: meta.generatedAt || null, url: meta.url || '', locale,
     userAgent: meta.userAgent || '', platform: meta.platform || '', language: meta.language || '', timeZone: meta.timeZone || null,
     screen: meta.screen || null, summary,
+    ...(deviceNote ? { deviceNote } : {}),
     results: rows.map(({ groupTitle, ...r }) => r),
   }
   const lines = [
@@ -1363,8 +1729,9 @@ export function buildReport({ checks = getChecks(), results = {}, meta = {}, tr 
     '- ' + tr(T('瀏覽器 UA：{v}'), { v: json.userAgent || '—' }),
     '- ' + tr(T('螢幕與視窗：{v}'), { v: meta.screen ? screenLine(meta.screen) : '—' }),
     '- ' + tr(T('摘要：通過 {pass}、失敗 {fail}、不支援 {unsupported}、尚未測 {pending}（共 {total} 項）'), summary),
-    '- ' + tr(T('本報告不含個人資料、IP、影像或音訊。')),
+    '- ' + tr(deviceNote ? T('本報告不含個人資料、IP、影像或音訊（你自己填寫的裝置備註除外）。') : T('本報告不含個人資料、IP、影像或音訊。')),
     '',
+    ...(deviceNote ? noteLines(deviceNote, tr) : []),
     tr(T('| 群組 | 項目 | 狀態 | 詳情 | 耗時 (ms) |')),
     '| --- | --- | --- | --- | ---: |',
     ...rows.map((r) => `| ${cell(r.groupTitle)} | ${cell(r.title)} | ${cell(tr(statusKey(r.status)))} | ${cell(r.detail)} | ${r.ms == null ? '' : r.ms} |`),

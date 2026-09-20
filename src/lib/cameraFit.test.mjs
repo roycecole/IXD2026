@@ -4,9 +4,11 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import * as THREE from 'three'
 import {
-  FIT_FOV, FIT_RADIUS, FIT_BASE_DIST, FIT_MAX,
+  FIT_FOV, FIT_RADIUS, FIT_BASE_DIST, FIT_MAX, FILL_RADIUS, FIT_MODES, DEFAULT_FIT_MODE, STATION_Z, STATION_HUD_PX,
   validAspect, halfAngles, fitDist, fitScale, aspectOf, rigTarget, createCameraRig, fitEnabled, shellScale, stationLayout,
+  fitMode, modeRadius, planeYAtRow, stationPlacement,
 } from './cameraFit.js'
+import { readFileSync } from 'node:fs'
 
 const SHELL = 2.02           // 與 Scene3D 的 SHELL 相同：球殼半徑
 const TAN_V = Math.tan((FIT_FOV * Math.PI) / 360)
@@ -441,4 +443,382 @@ test('shellScale：桌面（相機 4.6 ~ 8.6）恆為 1；相機拉遠後星殼�
   for (const bad of [NaN, undefined, null, 'x', -5]) assert.ok(shellScale(bad, 12) >= 1 && Number.isFinite(shellScale(bad, 12)), String(bad))
   assert.equal(shellScale(10, 0), 1)
   assert.equal(shellScale(10, NaN), 1)
+})
+
+// =============================================================================================
+// 取景模式：'full'（完整含光暈，預設）/ 'fill'（球殼填滿較窄的那一邊）
+// =============================================================================================
+const PHONE_SIZES = [['375x812', 375, 812], ['390x844', 390, 844], ['412x915', 412, 915], ['360x800', 360, 800]]
+const SIZE_TABLE = [...PHONE_SIZES, ['768x1024', 768, 1024], ['1024x768', 1024, 768], ['300x1000 (0.3)', 300, 1000], ['200x1000 (0.2)', 200, 1000]]
+
+// 與加入 mode 之前完全相同的算式（獨立重寫一份，用來證明預設路徑逐位元不變）
+const legacyFit = (aspect) => Math.min(Math.max(1, fitDist({ aspect, radius: FIT_RADIUS }) / FIT_BASE_DIST), FIT_MAX)
+
+test('fitMode / modeRadius：只有 "fill" 是填滿，其餘（缺省 / 亂給）一律當 "full"；半徑 2.02 / 2.42', () => {
+  assert.deepEqual(FIT_MODES, ['full', 'fill'])
+  assert.equal(DEFAULT_FIT_MODE, 'full')
+  assert.equal(fitMode('fill'), 'fill')
+  for (const v of ['full', 'FILL', 'Fill', '', undefined, null, 0, 1, {}, [], 'x', true]) assert.equal(fitMode(v), 'full', String(v))
+  assert.equal(FILL_RADIUS, SHELL)                                       // 與 Scene3D 的球殼半徑相同
+  assert.equal(modeRadius('fill'), 2.02)
+  assert.equal(modeRadius('full'), FIT_RADIUS)
+  assert.equal(modeRadius(undefined), FIT_RADIUS)
+})
+
+test('fitScale mode = "full" / 缺省 / 亂給：與加入 mode 之前逐位元相同（0.02 ~ 5 全掃，用 strictEqual）', () => {
+  for (let a = 0.02; a <= 5; a += 0.013) {
+    const want = legacyFit(a)
+    assert.strictEqual(fitScale({ aspect: a }), want, `預設 ${a}`)
+    assert.strictEqual(fitScale({ aspect: a, mode: 'full' }), want, `full ${a}`)
+    assert.strictEqual(fitScale({ aspect: a, mode: 'bogus' }), want, `bogus ${a}`)
+    assert.strictEqual(fitScale({ aspect: a, mode: undefined }), want, `undefined ${a}`)
+  }
+  for (const a of [NaN, 0, -1, undefined]) assert.strictEqual(fitScale({ aspect: a, mode: 'fill' }), 1, '無效長寬比 fill：' + a)
+})
+
+test('fill：寬螢幕（長寬比 >= 0.95）兩種模式完全相同（fit === 1，與現況逐位元相同）；fill 更早（約 0.776）就回到 1', () => {
+  for (let a = 0.952; a <= 6; a += 0.01) {                                // full 的邊界是 0.9515（既有測試）：從那裡起兩種模式都嚴格等於 1
+    assert.strictEqual(fitScale({ aspect: a, mode: 'fill' }), 1, String(a))
+    assert.strictEqual(fitScale({ aspect: a, mode: 'full' }), 1, String(a))
+  }
+  assert.strictEqual(fitScale({ aspect: 0.95, mode: 'fill' }), 1)
+  assert.ok(fitScale({ aspect: 0.95, mode: 'full' }) - 1 < 0.0015, '0.95 ~ 0.9515 之間 full 只多拉遠 0.13%（肉眼看不出）')
+  for (const a of [16 / 9, 4 / 3, 1, 21 / 9, 1024 / 768, 1600 / 900]) assert.strictEqual(fitScale({ aspect: a, mode: 'fill' }), fitScale({ aspect: a }), String(a))
+  assert.strictEqual(fitScale({ aspect: 0.8, mode: 'fill' }), 1)
+  assert.strictEqual(fitScale({ aspect: 0.9, mode: 'fill' }), 1)          // 過渡帶（0.78 ~ 0.95）：full 還在拉遠，fill 已經是 1
+  assert.ok(fitScale({ aspect: 0.9, mode: 'full' }) > 1.04)
+  assert.ok(fitScale({ aspect: 0.77, mode: 'fill' }) > 1)
+})
+
+test('fill 倍率表（回報用）：375x812 / 390x844 / 412x915 / 360x800 / 768x1024 / 1024x768 / 0.3 / 0.2 —— 與解析式一致，且 <= full', () => {
+  const want = { '375x812': 1.629, '390x844': 1.628, '412x915': 1.669, '360x800': 1.670, '768x1024': 1.032, '1024x768': 1, '300x1000 (0.3)': 2.482, '200x1000 (0.2)': 3.707 }
+  const rows = []
+  for (const [k, w, h] of SIZE_TABLE) {
+    const a = aspectOf(w, h)
+    const fill = fitScale({ aspect: a, mode: 'fill' }), full = fitScale({ aspect: a, mode: 'full' })
+    assert.ok(Math.abs(fill - want[k]) < 0.0006, `${k}：fill ${fill} vs ${want[k]}`)
+    assert.ok(Math.abs(fill - Math.max(1, refDist(a, FILL_RADIUS) / FIT_BASE_DIST)) < 1e-12, k + ' 解析式')
+    assert.ok(fill >= 1 && fill <= full + 1e-12, `${k}：fill ${fill} 必須落在 [1, full ${full}]`)
+    rows.push(`${k.padEnd(16)} aspect ${a.toFixed(3)}  full ${full.toFixed(3)}  fill ${fill.toFixed(3)}  相機 z ${rigTarget(0.5, fill).z.toFixed(2)}（full ${rigTarget(0.5, full).z.toFixed(2)}）`)
+  }
+  console.log(rows.join('\n'))
+})
+
+test('fill：連續無跳變、單調（越窄越大）、<= full、上限 FIT_MAX；明確給 radius 時 radius 優先', () => {
+  let prev = Infinity, prevF = null
+  for (let a = 0.03; a <= 2; a += 0.001) {
+    const f = fitScale({ aspect: a, mode: 'fill' }), full = fitScale({ aspect: a })
+    assert.ok(f >= 1 && f <= FIT_MAX && f <= full + 1e-12, String(a))
+    assert.ok(f <= prev + 1e-12, `aspect ${a} fill 倍率 ${f} 不該比更窄的 ${prev} 大`)
+    if (prevF !== null) assert.ok(Math.abs(f - prevF) <= (1.2 * 0.001 * f) / a + 1e-12, `aspect ${a.toFixed(3)} 跳了 ${Math.abs(f - prevF)}`)   // 連續：長寬比每步 0.001，倍率 ∝ 1 / 長寬比，相對變化 <= 約 0.001 / a
+    prev = f; prevF = f
+  }
+  assert.equal(fitScale({ aspect: 0.02, mode: 'fill' }), FIT_MAX)
+  assert.equal(fitScale({ aspect: 0.02, mode: 'fill', maxFit: 3 }), 3)
+  assert.equal(fitScale({ aspect: 0.5, mode: 'fill', radius: FIT_RADIUS }), fitScale({ aspect: 0.5 }))   // 明確的 radius 蓋過 mode
+  assert.equal(fitScale({ aspect: 0.5, mode: 'fill', radius: -1 }), fitScale({ aspect: 0.5, mode: 'fill' }))   // 無效 radius → 用模式的半徑
+})
+
+test('真實投影（fill）：需要拉遠的窄畫布，球殼螢幕直徑 = 畫布寬度的 98 ~ 100%；含輝光的 2.42 被邊緣裁掉一圈；full 則整顆連光暈都在畫面內', () => {
+  const rows = []
+  for (const [k, w, h] of SIZE_TABLE) {
+    const a = aspectOf(w, h)
+    const fill = project(a, { r: SHELL, n: 5000, fit: fitScale({ aspect: a, mode: 'fill' }) })
+    const glowFill = project(a, { r: FIT_RADIUS, n: 3000, fit: fitScale({ aspect: a, mode: 'fill' }) })
+    const full = project(a, { r: SHELL, n: 5000, fit: fitScale({ aspect: a, mode: 'full' }) })
+    const glowFull = project(a, { r: FIT_RADIUS, n: 3000, fit: fitScale({ aspect: a, mode: 'full' }) })
+    const occ = Math.max(fill.mx, fill.my)
+    assert.equal(fill.behind, 0, k)
+    assert.ok(occ <= 1 + 1e-9, `${k}：球殼超出畫布 ${occ}`)                                        // 球殼永遠完整可見
+    assert.ok(Math.max(glowFull.mx, glowFull.my) <= 1 + 1e-9, `${k}：full 的光暈應完整在畫面內`)
+    if (fitScale({ aspect: a, mode: 'fill' }) > 1) {
+      assert.ok(occ >= 0.98, `${k}：fill 球殼只佔寬度的 ${(occ * 100).toFixed(2)}%`)
+      assert.ok(Math.max(glowFill.mx, glowFill.my) > 1.15, `${k}：fill 的光暈（2.42）應被邊緣裁掉，佔比 ${Math.max(glowFill.mx, glowFill.my).toFixed(3)}`)
+      assert.ok(occ > Math.max(full.mx, full.my) * 1.15, `${k}：fill 的球應比 full 大至少 15%`)
+    } else {
+      assert.equal(fill.dist, full.dist, `${k}：不需要拉遠 → 兩種模式相機距離相同`)
+    }
+    rows.push(`${k.padEnd(16)} fill 球殼直徑 ${(occ * w).toFixed(0)}px（${(occ * 100).toFixed(1)}% 寬）  full ${(Math.max(full.mx, full.my) * w).toFixed(0)}px（${(Math.max(full.mx, full.my) * 100).toFixed(1)}%）  fill 光暈 ${(Math.max(glowFill.mx, glowFill.my) * 100).toFixed(0)}%`)
+  }
+  console.log(rows.join('\n'))
+  // 375 寬：fill 約 375px、full 約 311px（規格書的背景數字）
+  const p = project(375 / 812, { r: SHELL, n: 5000, fit: fitScale({ aspect: 375 / 812, mode: 'full' }) })
+  assert.ok(Math.abs(Math.max(p.mx, p.my) * 375 - 311) < 3, '375 寬 full 約 311px')
+})
+
+test('真實投影（fill）：掃 0.2 ~ 3 的長寬比與各種 zoom 預設 0.5，球殼永遠整顆可見（不論模式）；寬螢幕距離與現況相同', () => {
+  for (let a = 0.2; a <= 3; a += 0.05) {
+    const r = project(a, { r: SHELL, n: 800, fit: fitScale({ aspect: a, mode: 'fill' }) })
+    assert.equal(r.behind, 0, 'aspect ' + a)
+    assert.ok(r.mx <= 1 + 1e-9 && r.my <= 1 + 1e-9, `aspect ${a}：|x|max=${r.mx} |y|max=${r.my}`)
+    if (a >= 0.95) assert.equal(r.dist, Math.hypot(6.6, 0.4), `aspect ${a}：寬螢幕距離必須與現況相同`)
+  }
+})
+
+test('fill 不會因為 fog / far plane / 星殼出問題：相機只比 full 更近；霧的近端佔比不高於 full；星殼 / 銀河外緣遠小於 far = 1000', () => {
+  const clarities = [0, 0.5, 1]
+  const foggy = (dist, fit, clar) => {                                    // FogDriver 同式：near = (3.5 - (1 - clar) * 1.5) * fit、far = (9 + clar * 6) * fit；水體（半徑 WR）最近點的霧濃度 0..1
+    const near = (3.5 - (1 - clar) * 1.5) * fit, far = (9 + clar * 6) * fit
+    return Math.min(1, Math.max(0, (dist - 1.95 * 0.985 - near) / (far - near)))
+  }
+  for (let a = 0.05; a <= 1.2; a += 0.025) {
+    for (const zoom of [0, 0.5, 1]) {
+      const ff = fitScale({ aspect: a, mode: 'fill' }), fu = fitScale({ aspect: a, mode: 'full' })
+      const gFill = rigTarget(zoom, ff), gFull = rigTarget(zoom, fu)
+      const dFill = Math.hypot(gFill.y, gFill.z), dFull = Math.hypot(gFull.y, gFull.z)
+      assert.ok(dFill <= dFull + 1e-9, `aspect ${a} zoom ${zoom}：fill 相機不該比 full 遠`)
+      for (const c of clarities) assert.ok(foggy(dFill, ff, c) <= foggy(dFull, fu, c) + 1e-9, `aspect ${a} zoom ${zoom} clar ${c}：fill 的霧不該比 full 濃`)
+      for (const [inner, span] of [[12, 30], [16, 26]]) {                // Stars（半徑 12 ~ 42）/ Galaxy（16 ~ 42）
+        const k = shellScale(dFill, inner)
+        assert.ok(inner * k - dFill >= 3.3 - 1e-9, `星殼內緣仍在相機外 aspect ${a} zoom ${zoom}`)
+        assert.ok((inner + span) * k + dFill < 1000, `星殼外緣 ${(inner + span) * k + dFill} 超過 far plane（R3F 預設 1000）`)
+      }
+    }
+  }
+})
+
+test('MoonSky（Scene3D 同式）在 fill 模式：長寬比 >= 0.33 月亮圓盤（半徑 1.25）完整在畫面內（更窄的畫布與 full 一樣會被切一點，屬既有限制）', () => {
+  const geom = (aspect, mode, zPlane = -9) => {
+    const fit = fitScale({ aspect, mode }), camZ = rigTarget(0.5, fit).z, dist = Math.max(4, camZ - zPlane), halfH = TAN_V * dist
+    return { halfH, halfW: halfH * aspect }
+  }
+  for (let a = 0.33; a <= 3; a += 0.03) {
+    const g = geom(a, 'fill')
+    const xr = Math.max(2, Math.min(6.4, g.halfW - 1.6)), ymax = Math.max(1.5, g.halfH - 1.6)
+    assert.ok(xr + 1.25 <= g.halfW + 1e-9, `aspect ${a.toFixed(2)}：月亮右緣 ${(xr + 1.25).toFixed(2)} > halfW ${g.halfW.toFixed(2)}`)
+    assert.ok(Math.min(ymax, 0.6 + 3.4) + 1.25 <= g.halfH, `aspect ${a.toFixed(2)}：月亮上緣超出`)
+  }
+  // 手機直式：月亮比 full 更靠中間（相機更近 → 可視半寬較小），但仍在畫面內
+  const f = geom(375 / 812, 'full'), l = geom(375 / 812, 'fill')
+  assert.ok(l.halfW < f.halfW)
+  assert.ok(Math.max(2, Math.min(6.4, l.halfW - 1.6)) < Math.max(2, Math.min(6.4, f.halfW - 1.6)))
+})
+
+// ---- createCameraRig 的模式切換 ----
+test('CameraRig：切換模式 = 目標倍率改變，相機用同一個 lerp 平滑過去（不跳）；來回切換回到原位', () => {
+  const pos = { x: 0, y: 0.4, z: 7 }
+  const rig = createCameraRig()
+  const phone = { width: 375, height: 812, zoom: 0.5, fovDeg: 45 }
+  const rFull = rig.step(pos, { ...phone, mode: 'full' })
+  assert.strictEqual(pos.z, rigTarget(0.5, fitScale({ aspect: 375 / 812 })).z)     // 第一幀就位在 full
+  const zFull = pos.z
+  const r1 = rig.step(pos, { ...phone, mode: 'fill' })
+  const fillFit = fitScale({ aspect: 375 / 812, mode: 'fill' })
+  assert.equal(r1.fit, fillFit)
+  assert.ok(pos.z < zFull && zFull - pos.z < (zFull - rigTarget(0.5, fillFit).z) * 0.061, '第一步只走 6%，不跳')
+  assert.ok(r1.shown < rFull.shown && r1.shown > fillFit, '霧倍率也跟著相機平滑')
+  stepN(rig, pos, { ...phone, mode: 'fill' }, 700)
+  assert.ok(Math.abs(pos.z - rigTarget(0.5, fillFit).z) < 1e-9)
+  assert.ok(Math.abs(pos.y - rigTarget(0.5, fillFit).y) < 1e-9)
+  stepN(rig, pos, { ...phone, mode: 'full' }, 700)                                  // 切回來
+  assert.ok(Math.abs(pos.z - zFull) < 1e-9)
+})
+
+test('CameraRig：mode 缺省 = full（與加入模式之前相同）；建立時的 mode 是預設、step 的 mode 逐幀覆寫；寬螢幕切模式相機一動也不動；?fit=0 兩種模式都是 1', () => {
+  const phone = { width: 375, height: 812, zoom: 0.5, fovDeg: 45 }
+  const a = createCameraRig(), b = createCameraRig({ mode: 'fill' }), c = createCameraRig({ mode: 'fill' })
+  const pa = { x: 0, y: 0.4, z: 7 }, pb = { ...pa }, pc = { ...pa }
+  assert.equal(a.step(pa, phone).fit, fitScale({ aspect: 375 / 812 }))
+  assert.equal(b.step(pb, phone).fit, fitScale({ aspect: 375 / 812, mode: 'fill' }))
+  assert.equal(c.step(pc, { ...phone, mode: 'full' }).fit, fitScale({ aspect: 375 / 812 }))   // step 的 mode 蓋過建立時的
+  // 寬螢幕：每一幀切換模式，位置逐位元不變
+  const wide = { width: 1600, height: 900, zoom: 0.5, fovDeg: 45 }
+  const pw = { x: 0, y: 0.4, z: 7 }, rw = createCameraRig()
+  rw.step(pw, { ...wide, mode: 'full' })
+  const snap = { ...pw }
+  for (let i = 0; i < 50; i++) { const r = rw.step(pw, { ...wide, mode: i % 2 ? 'fill' : 'full' }); assert.strictEqual(r.fit, 1) }
+  assert.deepEqual(pw, { x: 0, y: 0.4, z: 6.6 })
+  assert.strictEqual(snap.z, 6.6)
+  // ?fit=0（enabled: false）
+  for (const mode of ['full', 'fill']) {
+    const p = { x: 0, y: 0.4, z: 7 }, rig = createCameraRig({ enabled: false })
+    assert.equal(rig.step(p, { ...phone, mode }).fit, 1)
+    assert.strictEqual(p.z, 6.6)
+  }
+})
+
+// =============================================================================================
+// 測站星座 × 頂端資料 HUD：直式時星座最高點的螢幕 y >= 68px（精確透視投影驗證）
+// =============================================================================================
+const HUD_LIMIT_PX = 68
+// 用真的 PerspectiveCamera 擺位（CameraRig 同式）→ 把「群組（StationStars 同式：position / scale / 極慢擺動 rotation.y）」內的一組點投影成螢幕列 / 欄（px）
+function stationScreen(w, h, zoom, mode, pts, { sways = [-0.08, 0, 0.08] } = {}) {
+  const a = w / h, fit = fitScale({ aspect: a, mode }), g = rigTarget(zoom, fit)
+  const lay = stationPlacement({ camY: g.y, camZ: g.z, planeZ: STATION_Z, fovDeg: FIT_FOV, width: w, height: h })
+  const cam = new THREE.PerspectiveCamera(FIT_FOV, a, 0.1, 1000)
+  cam.position.set(g.x, g.y, g.z); cam.lookAt(0, 0, 0); cam.updateMatrixWorld(true); cam.updateProjectionMatrix()
+  const rows = [], cols = []
+  const grp = new THREE.Group(); grp.position.set(lay.x, lay.y, STATION_Z); grp.scale.setScalar(lay.s)
+  const v = new THREE.Vector3()
+  for (const sway of sways) {
+    grp.rotation.y = sway; grp.updateMatrixWorld(true)
+    for (const [px, py] of pts) { v.set(px, py, 0).applyMatrix4(grp.matrixWorld).project(cam); rows.push(((1 - v.y) / 2) * h); cols.push(((v.x + 1) / 2) * w) }
+  }
+  return { lay, rows, cols, fit, cam, g }
+}
+const CORNERS = [[0, 2.7], [1.36, 2.7], [-1.36, 2.7], [0, -2.7], [1.36, -2.7], [-1.36, -2.7], [1.36, 0], [-1.36, 0]]   // 星座外框（縮放後 x ±1.36、y ±2.7）
+const shellTopRow = (w, h, zoom, mode) => {                                                                     // 球殼（半徑 2.02）最高點的螢幕列
+  const a = w / h, g = rigTarget(zoom, fitScale({ aspect: a, mode }))
+  const cam = new THREE.PerspectiveCamera(FIT_FOV, a, 0.1, 1000)
+  cam.position.set(g.x, g.y, g.z); cam.lookAt(0, 0, 0); cam.updateMatrixWorld(true); cam.updateProjectionMatrix()
+  let top = Infinity; for (const p of spherePoints(2500, SHELL)) top = Math.min(top, ((1 - p.clone().project(cam).y) / 2) * h)
+  return top
+}
+
+test('planeYAtRow：與 THREE.PerspectiveCamera 的投影互為反函數（各尺寸 / zoom / 模式；誤差 < 1e-6 px）；畫面中心 = camY * planeZ / camZ（預設 zoom 約 -0.64，不是 0）', () => {
+  for (const [w, h] of [[375, 812], [1024, 768], [768, 1024]]) {
+    for (const zoom of [0, 0.5, 1]) for (const mode of ['full', 'fill']) {
+      const a = w / h, g = rigTarget(zoom, fitScale({ aspect: a, mode }))
+      const cam = new THREE.PerspectiveCamera(FIT_FOV, a, 0.1, 1000)
+      cam.position.set(g.x, g.y, g.z); cam.lookAt(0, 0, 0); cam.updateMatrixWorld(true); cam.updateProjectionMatrix()
+      for (const row of [0, 30, STATION_HUD_PX, h / 4, h / 2, h * 0.9, h]) {
+        const y = planeYAtRow({ camY: g.y, camZ: g.z, planeZ: STATION_Z, fovDeg: FIT_FOV, height: h, row })
+        const got = ((1 - new THREE.Vector3(0, y, STATION_Z).project(cam).y) / 2) * h
+        assert.ok(Math.abs(got - row) < 1e-6, `${w}x${h} zoom ${zoom} ${mode} row ${row}：投影回來是 ${got}`)
+      }
+      const yc = planeYAtRow({ camY: g.y, camZ: g.z, planeZ: STATION_Z, height: h, row: h / 2 })
+      assert.ok(Math.abs(yc - (g.y * STATION_Z) / g.z) < 1e-9)
+      if (zoom === 0.5) assert.ok(Math.abs(yc + 0.6364) < 0.001, '預設 zoom：畫面中心約在 y = -0.636，與 fit / 模式無關：' + yc)
+    }
+  }
+  for (const bad of [{}, { camY: NaN, camZ: 6, planeZ: -10, height: 800, row: 5 }, { camY: 0.4, camZ: 0, planeZ: -10, height: 800, row: 5 }, { camY: 0.4, camZ: 6, planeZ: -10, height: 0, row: 5 }, { camY: 0.4, camZ: 6, planeZ: -10, height: 800, row: NaN }]) assert.ok(Number.isNaN(planeYAtRow(bad)), JSON.stringify(bad))
+  assert.equal(planeYAtRow(), NaN)
+})
+
+test('stationPlacement：長寬比 >= 0.95 與改版前 Scene3D 內的公式逐位元相同（版位完全不變），不論 zoom / 模式 / 高度', () => {
+  for (const a of [0.95, 1, 1.2, 4 / 3, 1.5, 16 / 9, 2, 21 / 9, 3]) {
+    for (const zoom of [0, 0.25, 0.5, 0.75, 1]) for (const mode of ['full', 'fill']) for (const h of [300, 768, 900, 1440]) {
+      const w = a * h, g = rigTarget(zoom, fitScale({ aspect: aspectOf(w, h), mode }))
+      // 改版前的內聯算式（Scene3D StationStars 原文，含 THREE.MathUtils.degToRad）
+      const camera = { position: { z: g.z, y: g.y }, fov: 45 }, size = { width: w, height: h }
+      const dist = Math.max(4, camera.position.z - -10.5)
+      const halfH = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * dist
+      const asp = size.width / Math.max(1, size.height), halfW = halfH * asp
+      const sphereR = 2.02 * (dist / Math.max(3, camera.position.z))
+      const want = stationLayout({ halfW, halfH, sphereR, aspect: asp })
+      const got = stationPlacement({ camY: g.y, camZ: g.z, planeZ: -10.5, fovDeg: 45, width: w, height: h })
+      assert.deepEqual(got, want, `aspect ${a} zoom ${zoom} ${mode} h ${h}`)
+      assert.strictEqual(got.y, -0.3); assert.strictEqual(got.s, 1)
+    }
+  }
+})
+
+test('直式手機（375x812 / 390x844 / 412x915 / 360x800）× 兩種模式 × zoom 0 ~ 1：星座最高點螢幕 y >= 68px（含極慢擺動），左右完整在畫布內、水平置中', () => {
+  const rows = []
+  for (const [k, w, h] of PHONE_SIZES) for (const mode of ['full', 'fill']) for (const zoom of [0, 0.25, 0.5, 0.75, 1]) {
+    const r = stationScreen(w, h, zoom, mode, CORNERS)
+    const top = Math.min(...r.rows), bot = Math.max(...r.rows), left = Math.min(...r.cols), right = Math.max(...r.cols)
+    assert.ok(top >= HUD_LIMIT_PX, `${k} ${mode} zoom ${zoom}：星座最高點在 ${top.toFixed(1)}px（< ${HUD_LIMIT_PX}）`)
+    assert.ok(top <= HUD_LIMIT_PX + 8, `${k} ${mode} zoom ${zoom}：星座離頂端 ${top.toFixed(1)}px，不該空出太多`)
+    assert.ok(left >= 0 && right <= w, `${k} ${mode} zoom ${zoom}：水平超出 [${left.toFixed(0)}, ${right.toFixed(0)}] vs 0..${w}`)
+    assert.ok(bot <= h, `${k} ${mode} zoom ${zoom}：星座掉出畫布下緣`)
+    assert.ok(Math.abs((left + right) / 2 - w / 2) < 3, `${k} ${mode} zoom ${zoom}：星座沒有水平置中`)
+    assert.equal(r.lay.x, 0)
+    if (zoom === 0.5) rows.push(`${k} ${mode.padEnd(4)} s=${r.lay.s.toFixed(3)}  星座列 ${top.toFixed(0)}..${bot.toFixed(0)}px  欄 ${left.toFixed(0)}..${right.toFixed(0)}px`)
+  }
+  console.log(rows.join('\n'))
+})
+
+test('直式手機 zoom 0.5：星座的下緣最多蓋到球頂的 13%（球半徑）——大部分留在球的上方', () => {
+  for (const [k, w, h] of PHONE_SIZES) for (const mode of ['full', 'fill']) {
+    const r = stationScreen(w, h, 0.5, mode, CORNERS, { sways: [0] })
+    const bot = Math.max(...r.rows), sTop = shellTopRow(w, h, 0.5, mode), sR = h / 2 - sTop
+    assert.ok(bot - sTop <= sR * 0.13, `${k} ${mode}：下緣 ${bot.toFixed(0)}px、球頂 ${sTop.toFixed(0)}px、球半徑 ${sR.toFixed(0)}px`)
+  }
+})
+
+test('掃長寬比 0.3 ~ 0.95 × 多種畫布高度 × 兩種模式 × zoom：星座最高點 >= 68px、水平不出畫布（HUD 之下；過渡帶也成立）', () => {
+  for (const mode of ['full', 'fill']) for (const h of [520, 640, 812, 1000, 1400]) for (const zoom of [0, 0.5, 1]) {
+    for (let a = 0.3; a < 0.95; a += 0.01) {
+      const w = a * h
+      const r = stationScreen(w, h, zoom, mode, CORNERS)
+      const top = Math.min(...r.rows)
+      assert.ok(top >= HUD_LIMIT_PX, `aspect ${a.toFixed(2)} h ${h} ${mode} zoom ${zoom}：最高點 ${top.toFixed(1)}px`)
+      assert.ok(Math.min(...r.cols) >= 0 && Math.max(...r.cols) <= w + 1e-6, `aspect ${a.toFixed(2)} h ${h}：水平超出`)
+    }
+  }
+})
+
+test('平板直式（768x1024）與極窄（0.3）也在 HUD 之下；星座縮小但不小於下限 0.3（可讀）', () => {
+  for (const [w, h] of [[768, 1024], [300, 1000], [600, 900]]) for (const mode of ['full', 'fill']) for (const zoom of [0, 0.5, 1]) {
+    const r = stationScreen(w, h, zoom, mode, CORNERS)
+    assert.ok(Math.min(...r.rows) >= HUD_LIMIT_PX, `${w}x${h} ${mode} zoom ${zoom}：${Math.min(...r.rows).toFixed(1)}px`)
+    assert.ok(r.lay.s >= 0.3 && r.lay.s <= 1, `s=${r.lay.s}`)
+  }
+})
+
+test('stationPlacement 連續：長寬比連續變化（固定高度）位置 / 縮放不跳（拖曳分隔線、轉螢幕）；兩種模式', () => {
+  for (const mode of ['full', 'fill']) for (const h of [640, 900]) {
+    let prev = null
+    for (let a = 0.3; a <= 1.3; a += 0.002) {
+      const w = a * h, g = rigTarget(0.5, fitScale({ aspect: a, mode }))
+      const lay = stationPlacement({ camY: g.y, camZ: g.z, planeZ: STATION_Z, fovDeg: FIT_FOV, width: w, height: h })
+      if (prev) {
+        assert.ok(Math.abs(lay.x - prev.x) < 0.12, `${mode} h ${h} aspect ${a.toFixed(3)} x 跳 ${Math.abs(lay.x - prev.x).toFixed(3)}`)
+        assert.ok(Math.abs(lay.y - prev.y) < 0.12, `${mode} h ${h} aspect ${a.toFixed(3)} y 跳 ${Math.abs(lay.y - prev.y).toFixed(3)}`)
+        assert.ok(Math.abs(lay.s - prev.s) < 0.02, `${mode} h ${h} aspect ${a.toFixed(3)} s 跳`)
+      }
+      prev = lay
+    }
+  }
+})
+
+test('stationLayout 選用參數：沒給 yc / yTop = 改版前（既有測試已涵蓋）；給了 → 上緣剛好在 yTop（長寬比 <= 0.8）、寬螢幕仍不變', () => {
+  const base = { halfW: 4.4, halfH: 9.5, sphereR: 3.6, aspect: 0.46 }
+  const old = stationLayout(base)
+  assert.deepEqual(stationLayout({ ...base, yc: 0, yTop: undefined }), old)
+  const lay = stationLayout({ ...base, yc: -0.64, yTop: 6.5 })
+  assert.ok(Math.abs(lay.y + 2.7 * lay.s - 6.5) < 1e-12, '上緣 = yTop')
+  assert.equal(lay.x, 0)
+  // 寬螢幕：yc / yTop 完全不影響
+  for (const a of [0.95, 1, 1.78]) assert.deepEqual(stationLayout({ ...base, aspect: a, yc: -0.64, yTop: 1 }), stationLayout({ ...base, aspect: a }))
+  // yTop 不是數字 → 當沒給
+  for (const bad of [NaN, null, 'x', undefined]) assert.deepEqual(stationLayout({ ...base, yTop: bad }), old)
+})
+
+test('stationPlacement 容錯：畫布尺寸 0 / NaN / 高度缺省 → 不丟例外、回傳有限數字（不套用 HUD 規則，退回舊行為）', () => {
+  for (const [w, h] of [[0, 0], [300, 0], [NaN, NaN], [undefined, undefined], [375, NaN]]) {
+    let r
+    assert.doesNotThrow(() => { r = stationPlacement({ camY: 0.4, camZ: 6.6, width: w, height: h }) }, `${w},${h}`)
+    assert.ok(Number.isFinite(r.x) && Number.isFinite(r.y) && Number.isFinite(r.s), `${w},${h}：${JSON.stringify(r)}`)
+  }
+  assert.doesNotThrow(() => stationPlacement({ camZ: 6.6, width: 375, height: 812 }))            // camY 缺省
+})
+
+test('真實測站資料（public/data/ocean.json 的 188 站）：直式手機上每一顆星都在 HUD 之下；拾取用的世界座標與畫出來的是同一份（群組矩陣）', () => {
+  let list
+  try { list = JSON.parse(readFileSync(new URL('../../public/data/ocean.json', import.meta.url), 'utf8')).stations.list } catch (e) { list = null }
+  if (!list || !list.length) return                                    // 資料檔不在 → 略過（不是這個功能的責任）
+  const STN_S = 5.4
+  for (const [k, w, h] of PHONE_SIZES) for (const mode of ['full', 'fill']) {
+    const pts = list.map((q) => [q.x * STN_S, q.y * STN_S])
+    const r = stationScreen(w, h, 0.5, mode, pts)
+    assert.ok(Math.min(...r.rows) >= HUD_LIMIT_PX, `${k} ${mode}：最高的星在 ${Math.min(...r.rows).toFixed(1)}px`)
+    // 拾取：Scene3D 的 registerPickSource('station') 用 group.matrixWorld 把 (x * 5.4, y * 5.4, 0) 換成世界座標，再投影成螢幕座標——與繪製同一條路徑
+    const grp = new THREE.Group(); grp.position.set(r.lay.x, r.lay.y, STATION_Z); grp.scale.setScalar(r.lay.s); grp.updateMatrixWorld(true)
+    const v = new THREE.Vector3()
+    for (const q of list.slice(0, 40)) {
+      v.set(q.x * STN_S, q.y * STN_S, 0).applyMatrix4(grp.matrixWorld)
+      assert.ok(Math.abs(v.x - (q.x * STN_S * r.lay.s + r.lay.x)) < 1e-9 && Math.abs(v.y - (q.y * STN_S * r.lay.s + r.lay.y)) < 1e-9 && v.z === STATION_Z)
+      const sy = ((1 - v.project(r.cam).y) / 2) * h
+      assert.ok(sy >= HUD_LIMIT_PX - 1.5, `${k} ${mode}：拾取座標的螢幕列 ${sy.toFixed(1)}`)
+    }
+  }
+})
+
+test('Scene3D 接線（原始碼）：CameraRig 讀取景狀態並傳 mode；StationStars 用 stationPlacement（星座位置單一來源，拾取讀群組矩陣）；不再有 FIT_ON', () => {
+  const src = readFileSync(new URL('../scene/Scene3D.jsx', import.meta.url), 'utf8')
+  assert.match(src, /import \{ createCameraRig, shellScale, stationPlacement \} from '\.\.\/lib\/cameraFit\.js'/)
+  assert.match(src, /import \{ getViewState \} from '\.\.\/lib\/viewPrefs\.js'/)
+  assert.doesNotMatch(src, /FIT_ON/)
+  assert.doesNotMatch(src, /fitEnabled/)
+  assert.match(src, /mode: view\.get\(\)\.mode/)
+  assert.match(src, /createCameraRig\(\{ enabled: view\.get\(\)\.enabled \}\)/)
+  assert.match(src, /view\.setCanvas\(state\.size\.width, state\.size\.height\)/)
+  assert.match(src, /const lay = stationPlacement\(\{ camY: camera\.position\.y, camZ: camera\.position\.z, planeZ: STN_Z, fovDeg: camera\.fov, width: size\.width, height: size\.height \}\)/)
+  assert.match(src, /grp\.current\.position\.set\(lay\.x, lay\.y, STN_Z\)/)
+  assert.match(src, /grp\.current\.scale\.setScalar\(lay\.s\)/)
+  assert.match(src, /registerPickSource\('station'[\s\S]{0,400}g\.updateWorldMatrix\(true, false\)[\s\S]{0,300}applyMatrix4\(g\.matrixWorld\)/)
+  assert.equal(STATION_Z, -10.5)
+  assert.match(src, /const STN_Z = -10\.5/)                                   // Scene3D 的平面深度與 cameraFit.STATION_Z 一致
 })

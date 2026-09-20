@@ -809,3 +809,332 @@ test('speechText：與 tour.js 實際的 captionText 整合（中英文皆無殘
     assert.ok(checked >= captions.length, `只檢查了 ${checked} 段字幕`)
   } finally { setLocale('zh') }
 })
+
+// ===============================================================================================
+// iOS 解鎖：unlock() / isUnlocked() / unlockOnFirstGesture()
+// ===============================================================================================
+import guidecmdEn from '../i18n/en/guidecmd.js'
+import { UNLOCK_TEXT, SILENT_TEXT, SILENT_WORD, GESTURE_UNLOCK_EVENTS, MAX_GESTURE_TRIES } from './narration.js'
+
+// 假 window：方法會檢查 this；removeEventListener 和真的一樣要「type + 函式 + capture 旗標」都相同才移得掉
+class FakeWindow {
+  #brand = true
+  static #check(o) { if (o === null || typeof o !== 'object' || !(#brand in o)) throw new TypeError('Illegal invocation') }
+  constructor() { this.list = []; this.adds = 0; this.removes = 0; this.failAdd = false }
+  addEventListener(type, fn, opts) {
+    FakeWindow.#check(this)
+    if (this.failAdd) throw new Error('nope')
+    const capture = typeof opts === 'boolean' ? opts : !!(opts && opts.capture)
+    if (!this.list.some((x) => x.type === type && x.fn === fn && x.capture === capture)) this.list.push({ type, fn, capture })
+    this.adds++
+  }
+  removeEventListener(type, fn, opts) {
+    FakeWindow.#check(this)
+    const capture = typeof opts === 'boolean' ? opts : !!(opts && opts.capture)
+    this.list = this.list.filter((x) => !(x.type === type && x.fn === fn && x.capture === capture))
+    this.removes++
+  }
+  count(type) { return this.list.filter((x) => !type || x.type === type).length }
+  dispatch(type, ev = {}) { for (const x of [...this.list]) if (x.type === type) x.fn({ type, ...ev }) }
+}
+
+test('假 window：脫離原物件呼叫會丟 Illegal invocation；capture 旗標不同就移不掉', () => {
+  const w = new FakeWindow()
+  const { addEventListener } = w
+  assert.throws(() => addEventListener('keydown', () => {}, true), /Illegal invocation/)
+  const fn = () => {}
+  w.addEventListener('keydown', fn, { capture: true, passive: true })
+  w.removeEventListener('keydown', fn, false); assert.equal(w.count(), 1)
+  w.removeEventListener('keydown', fn, true); assert.equal(w.count(), 0)
+})
+
+test('確認語：預設「旁白已開啟」/ "Narration on"，字典與內建英文一致；監聽事件是 pointerdown / keydown / touchend', () => {
+  assert.equal(UNLOCK_TEXT.zh, '旁白已開啟'); assert.equal(UNLOCK_TEXT.en, 'Narration on')
+  assert.equal(guidecmdEn[UNLOCK_TEXT.zh], UNLOCK_TEXT.en)
+  assert.deepEqual(GESTURE_UNLOCK_EVENTS, ['pointerdown', 'keydown', 'touchend'])
+  assert.equal(MAX_GESTURE_TRIES, 3)
+})
+
+test('unlock：「同步」speak——不 cancel、不經 CANCEL_DELAY_MS 延遲（延遲會讓 speak 落在使用者手勢視窗之外）', async () => {
+  const { n, synth, clock } = makeEnv()
+  const p = n.unlock()
+  assert.equal(synth.spoken.length, 1, '呼叫 unlock 的同一個呼叫堆疊內就已經交給引擎')
+  assert.equal(synth.cancels, 0, '不先 cancel')
+  assert.equal(clock.now(), 0, '沒有等任何時間')
+  const u = synth.last
+  assert.deepEqual([u.text, u.lang, u.volume, u.rate, u.pitch], ['旁白已開啟', 'zh-TW', 1, 1, 1])
+  assert.equal(n.isUnlocked(), false)
+  u.onend()
+  assert.equal(await p, 'done')
+  assert.equal(n.isUnlocked(), true)
+  assert.equal(clock.pending(), 0, '逾時計時器已清掉')
+})
+
+test('unlock：英文語系念 "Narration on"（en-US）；自訂文字覆寫；語系用注入的 getLocale', async () => {
+  const env = makeEnv({ locale: 'en' })
+  let p = env.n.unlock(); assert.deepEqual([env.synth.last.text, env.synth.last.lang], ['Narration on', 'en-US']); env.synth.last.onend(); assert.equal(await p, 'done')
+  p = env.n.unlock('  Hello   there '); assert.equal(env.synth.last.text, 'Hello there'); env.synth.last.onend(); await p
+  env.state.locale = 'zh'
+  p = env.n.unlock('   '); assert.equal(env.synth.last.text, '旁白已開啟'); env.synth.last.onend(); await p          // 空白 → 預設
+  p = env.n.unlock(42); assert.equal(env.synth.last.text, '旁白已開啟'); env.synth.last.onend(); await p              // 非字串 → 預設
+})
+
+test('unlock：onstart 就算成功（不必等念完）；之後的 onend 不會重複作用', async () => {
+  const { n, synth } = makeEnv()
+  let res = null
+  const p = n.unlock(); p.then((r) => { res = r })
+  synth.last.onstart(); await flush()
+  assert.equal(res, 'done'); assert.equal(n.isUnlocked(), true)
+  assert.equal(synth.last.onend, null, '結束後 handler 已清掉')
+})
+
+test('unlock：被擋（not-allowed 等）→ error，旗標維持 false；不丟例外、沒有殘留計時器', async () => {
+  for (const code of ['not-allowed', 'synthesis-failed', 'audio-busy', undefined]) {
+    const { n, synth, clock } = makeEnv()
+    const p = n.unlock()
+    assert.doesNotThrow(() => synth.last.onerror(code === undefined ? undefined : { error: code }))
+    assert.equal(await p, 'error', String(code)); assert.equal(n.isUnlocked(), false, String(code)); assert.equal(clock.pending(), 0)
+  }
+})
+
+test('unlock：speak() 已被接受、之後才被別句 cancel（interrupted / canceled）→ 仍算解鎖（WebKit 在手勢內呼叫 speak 的當下就解除限制）', async () => {
+  for (const code of ['interrupted', 'canceled', 'cancelled']) {
+    const { n, synth } = makeEnv()
+    const p = n.unlock(); synth.last.onerror({ error: code })
+    assert.equal(await p, 'done', code); assert.equal(n.isUnlocked(), true, code)
+  }
+})
+
+test('unlock：引擎丟例外 / 建構子丟例外 / 計時器丟例外 → error，不丟例外', async () => {
+  const a = makeEnv(); a.synth.speakError = new Error('engine down')
+  assert.equal(await a.n.unlock(), 'error'); assert.equal(a.n.isUnlocked(), false); assert.equal(a.clock.pending(), 0)
+  const clock = makeClock(), synth = new FakeSynth()
+  class BadUtt { constructor() { throw new Error('nope') } }
+  assert.equal(await createNarrator({ synth: () => synth, Utterance: BadUtt, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout }).unlock(), 'error')
+  assert.equal(await createNarrator({ synth: () => synth, Utterance: () => FakeUtterance, setTimeout: () => { throw new Error('no timers') }, clearTimeout: clock.clearTimeout }).unlock(), 'error')
+  assert.equal(synth.spoken.length, 0)
+})
+
+test('unlock：沒有 speechSynthesis / Utterance → unsupported（不碰引擎）', async () => {
+  const synth = new FakeSynth()
+  assert.equal(await createNarrator({ synth: () => null, Utterance: () => FakeUtterance }).unlock(), 'unsupported')
+  assert.equal(await createNarrator({ synth: () => synth, Utterance: () => null }).unlock(), 'unsupported')
+  assert.equal(await createNarrator({ synth: () => { throw new Error('blocked') }, Utterance: () => FakeUtterance }).unlock(), 'unsupported')
+  assert.equal(synth.spoken.length, 0)
+  assert.equal(await narrator.unlock(), 'unsupported')          // 共用實例在 Node（沒有 speechSynthesis）
+  assert.equal(narrator.isUnlocked(), false)
+})
+
+test('unlock：引擎沒有任何事件（iOS 被擋時可能靜悄悄）→ 逾時 error；沒有別句進行中才 cancel 引擎', async () => {
+  const { n, synth, clock } = makeEnv()
+  let res = null
+  const p = n.unlock(); p.then((r) => { res = r })
+  clock.advance(estimateSpeechMs('旁白已開啟', 'zh-TW') - 1); await flush(); assert.equal(res, null)
+  clock.advance(1); await flush()
+  assert.equal(res, 'error'); assert.equal(synth.cancels, 1); assert.equal(n.isUnlocked(), false); assert.equal(clock.pending(), 0)
+  // 逾時時正好有一句字幕在念：不能被解鎖的逾時 cancel 掉
+  const e2 = makeEnv()
+  e2.n.unlock()
+  const sp = e2.n.speak('這是一句比較長的字幕，念得比確認語久很多，所以確認語的逾時會先到'); e2.clock.advance(CANCEL_DELAY_MS)
+  const c0 = e2.synth.cancels
+  e2.clock.advance(estimateSpeechMs('旁白已開啟', 'zh-TW')); await flush()
+  assert.equal(e2.synth.cancels, c0, '字幕進行中：不 cancel')
+  assert.equal(e2.n.speaking(), true)
+  e2.synth.last.onend(); assert.equal(await sp, 'done')
+})
+
+test('unlock 不動 cur / speaking：字幕進行中呼叫不會把字幕變成 cancelled；unlock 自己也不讓 speaking 變 true', async () => {
+  const { n, synth, clock } = makeEnv()
+  const events = []; n.onChange((v) => events.push(v))
+  const up = n.unlock()
+  assert.equal(n.speaking(), false); assert.deepEqual(events, [], '確認語不算「旁白進行中」')
+  const sp = startSpeak({ n, clock }, '字幕')                 // speak 會 cancel 引擎：解鎖那句被 interrupted
+  synth.spoken[0].onerror({ error: 'interrupted' })
+  assert.equal(await up, 'done'); assert.equal(n.isUnlocked(), true)
+  assert.equal(n.speaking(), true)
+  synth.last.onend(); assert.equal(await sp, 'done')
+  assert.deepEqual(events, [true, false])
+})
+
+test('unlock：旁白正在念且已經出過聲 → 直接 done（不念確認語、不排在字幕後面）', async () => {
+  const { n, synth, clock } = makeEnv()
+  const sp = startSpeak({ n, clock }, '字幕'); synth.last.onstart()
+  assert.equal(n.isUnlocked(), true); assert.equal(n.speaking(), true)
+  const before = synth.spoken.length
+  assert.equal(await n.unlock(), 'done'); assert.equal(synth.spoken.length, before)
+  synth.last.onend(); await sp
+  assert.equal(await (async () => { const p = n.unlock(); synth.last.onend(); return p })(), 'done')   // 沒在念時照常念確認語
+})
+
+test('isUnlocked：一般 speak() 的 onstart / onend 也算「念過一次」；被擋的 speak 不算', async () => {
+  const a = makeEnv()
+  assert.equal(a.n.isUnlocked(), false)
+  const p = startSpeak(a, '你好'); a.synth.last.onstart(); assert.equal(a.n.isUnlocked(), true); a.synth.last.onend(); await p
+  const b = makeEnv()
+  const q = startSpeak(b, '你好'); b.synth.last.onerror({ error: 'not-allowed' }); assert.equal(await q, 'error'); assert.equal(b.n.isUnlocked(), false)
+  const c = makeEnv()
+  const r = startSpeak(c, '你好'); c.synth.last.onend(); await r; assert.equal(c.n.isUnlocked(), true)
+})
+
+test('unlock / isUnlocked / unlockOnFirstGesture 可以脫離 narrator 物件呼叫（不依賴 this）', async () => {
+  const { n, synth } = makeEnv()
+  const { unlock, isUnlocked, unlockOnFirstGesture } = n
+  const p = unlock(); synth.last.onend(); assert.equal(await p, 'done'); assert.equal(isUnlocked(), true)
+  assert.equal(typeof unlockOnFirstGesture(new FakeWindow()), 'function')
+})
+
+test('dispose：進行中的解鎖 utterance 被結束（error）、計時器清乾淨；已解鎖的事實不會被重設', async () => {
+  const { n, synth, clock } = makeEnv()
+  const p = n.unlock()
+  n.dispose()
+  assert.equal(await p, 'error'); assert.equal(clock.pending(), 0)
+  const p2 = n.unlock(); synth.last.onend(); assert.equal(await p2, 'done')
+  n.dispose(); assert.equal(n.isUnlocked(), true)
+})
+
+// ---- unlockOnFirstGesture ----
+const gestureEnv = (o) => { const e = makeEnv(o); e.win = new FakeWindow(); return e }
+
+test('unlockOnFirstGesture：掛 pointerdown / keydown / touchend 三個 capture 監聽；沒有手勢就完全不出聲、不碰引擎', () => {
+  const { n, synth, win } = gestureEnv()
+  const off = n.unlockOnFirstGesture(win)
+  assert.equal(typeof off, 'function')
+  assert.deepEqual(win.list.map((x) => x.type).sort(), ['keydown', 'pointerdown', 'touchend'])
+  assert.ok(win.list.every((x) => x.capture === true))
+  assert.equal(synth.spoken.length, 0); assert.equal(synth.cancels, 0)
+  assert.equal(n.isUnlocked(), false)
+  off(); assert.equal(win.count(), 0)
+})
+
+test('unlockOnFirstGesture：第一次手勢「同步」無聲解鎖（音量 0 的空白 utterance，不 cancel），立刻拆掉所有監聽（一次性）；念完後 isUnlocked', async () => {
+  const { n, synth, win, clock } = gestureEnv()
+  n.unlockOnFirstGesture(win)
+  win.dispatch('pointerdown', { pointerType: 'mouse' })
+  assert.equal(synth.spoken.length, 1, '手勢事件的同一個呼叫堆疊內就 speak')
+  assert.equal(synth.cancels, 0)
+  const u = synth.last
+  assert.deepEqual([u.text, u.volume], [SILENT_TEXT, 0]); assert.equal(SILENT_TEXT.trim(), '')
+  assert.equal(win.count(), 0, '第一次手勢後全部拆掉')
+  win.dispatch('keydown', { key: 'a' }); win.dispatch('touchend')
+  assert.equal(synth.spoken.length, 1, '一次性：之後的手勢不再處理')
+  assert.equal(n.isUnlocked(), false)
+  u.onend(); await flush()
+  assert.equal(n.isUnlocked(), true); assert.equal(win.count(), 0); assert.equal(clock.pending(), 0)
+  assert.equal(n.speaking(), false, '無聲解鎖不算旁白進行中')
+})
+
+test('unlockOnFirstGesture：觸控的 pointerdown 不算啟用手勢（iOS 要等 touchend）；鍵盤只有修飾鍵 / Esc 不算', () => {
+  const a = gestureEnv()
+  a.n.unlockOnFirstGesture(a.win)
+  a.win.dispatch('pointerdown', { pointerType: 'touch' }); a.win.dispatch('pointerdown', { pointerType: 'pen' })
+  assert.equal(a.synth.spoken.length, 0); assert.equal(a.win.count(), 3, '監聽還在等下一個手勢')
+  a.win.dispatch('touchend'); assert.equal(a.synth.spoken.length, 1); assert.equal(a.win.count(), 0)
+
+  const b = gestureEnv()
+  b.n.unlockOnFirstGesture(b.win)
+  for (const key of ['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Escape']) b.win.dispatch('keydown', { key })
+  assert.equal(b.synth.spoken.length, 0)
+  b.win.dispatch('keydown', { key: 'Enter' }); assert.equal(b.synth.spoken.length, 1); assert.equal(b.win.count(), 0)
+
+  const c = gestureEnv()                                        // 沒有 pointerType 的事件（舊瀏覽器 / 合成事件）當滑鼠
+  c.n.unlockOnFirstGesture(c.win); c.win.dispatch('pointerdown'); assert.equal(c.synth.spoken.length, 1)
+})
+
+test('unlockOnFirstGesture：off() 移除所有監聽、之後手勢不再解鎖；off() 可重複呼叫', () => {
+  const { n, synth, win } = gestureEnv()
+  const off = n.unlockOnFirstGesture(win)
+  off(); assert.equal(win.count(), 0)
+  win.dispatch('pointerdown'); assert.equal(synth.spoken.length, 0)
+  assert.doesNotThrow(() => { off(); off() })
+  assert.equal(win.adds, win.removes)                          // 無洩漏：掛幾個拆幾個
+})
+
+test('unlockOnFirstGesture：重複註冊安全——同一個 window 只掛一組，以參照計數；StrictMode 雙掛載（掛 → 拆 → 掛）正常', () => {
+  const { n, synth, win } = gestureEnv()
+  const off1 = n.unlockOnFirstGesture(win), off2 = n.unlockOnFirstGesture(win)
+  assert.equal(win.count(), 3, '沒有重複掛')
+  off1(); assert.equal(win.count(), 3, '還有人需要')
+  off1(); assert.equal(win.count(), 3, '同一個 off 只算一次')
+  off2(); assert.equal(win.count(), 0)
+  const off3 = n.unlockOnFirstGesture(win)                     // 雙掛載的第二次
+  assert.equal(win.count(), 3)
+  win.dispatch('keydown', { key: 'x' }); assert.equal(synth.spoken.length, 1); assert.equal(win.count(), 0)
+  assert.doesNotThrow(() => off3())                            // 觸發後才呼叫舊的 off：安全
+  assert.equal(win.adds, win.removes)
+})
+
+test('unlockOnFirstGesture：不支援（沒有 speechSynthesis）或已經解鎖 → 直接回 no-op，不掛任何監聽', async () => {
+  const win = new FakeWindow()
+  const off = createNarrator({ synth: () => null, Utterance: () => FakeUtterance }).unlockOnFirstGesture(win)
+  assert.equal(typeof off, 'function'); assert.equal(win.count(), 0); assert.doesNotThrow(off)
+  const { n, synth } = makeEnv()
+  const p = n.unlock(); synth.last.onend(); await p
+  const w2 = new FakeWindow(); n.unlockOnFirstGesture(w2); assert.equal(w2.count(), 0, '已解鎖不必再等手勢')
+  assert.doesNotThrow(() => n.unlockOnFirstGesture(null)); assert.doesNotThrow(() => n.unlockOnFirstGesture({}))   // 壞的 window
+})
+
+test('unlockOnFirstGesture：被擋（第一下可能不是瀏覽器認可的手勢）→ 重新掛監聽，最多再試到 MAX_GESTURE_TRIES 次；成功就停', async () => {
+  const { n, synth, win } = gestureEnv()
+  n.unlockOnFirstGesture(win)
+  for (let i = 1; i <= MAX_GESTURE_TRIES; i++) {
+    assert.equal(win.count(), 3, `第 ${i} 次嘗試前監聽在`)
+    win.dispatch('touchend'); assert.equal(synth.spoken.length, i)
+    assert.deepEqual([synth.last.text, synth.last.volume], [i === 1 ? SILENT_TEXT : SILENT_WORD, 0], '第一次空白；被擋後改用音量 0 的單字（引擎不接受空白時的退路）')
+    assert.equal(win.count(), 0, '嘗試當下先拆')
+    synth.last.onerror({ error: 'not-allowed' }); await flush()
+  }
+  assert.equal(win.count(), 0, '試滿就放棄，不再監聽'); assert.equal(n.isUnlocked(), false)
+  // 第二次成功的情形
+  const e = gestureEnv(); e.n.unlockOnFirstGesture(e.win)
+  e.win.dispatch('touchend'); e.synth.last.onerror({ error: 'not-allowed' }); await flush(); assert.equal(e.win.count(), 3)
+  e.win.dispatch('touchend'); e.synth.last.onend(); await flush()
+  assert.equal(e.win.count(), 0); assert.equal(e.n.isUnlocked(), true); assert.equal(e.synth.spoken.length, 2)
+})
+
+test('unlockOnFirstGesture：等結果的期間被 off() / dispose() / 別條路徑解鎖 → 不會再重新掛監聽（無洩漏）', async () => {
+  const a = gestureEnv(); const offA = a.n.unlockOnFirstGesture(a.win)
+  a.win.dispatch('touchend'); offA(); a.synth.last.onerror({ error: 'not-allowed' }); await flush()
+  assert.equal(a.win.count(), 0)
+  const b = gestureEnv(); b.n.unlockOnFirstGesture(b.win)
+  b.win.dispatch('touchend'); b.n.dispose(); await flush(); assert.equal(b.win.count(), 0)
+  const c = gestureEnv(); c.n.unlockOnFirstGesture(c.win)
+  const up = c.n.unlock(); c.synth.last.onend(); await up                  // 按鈕的解鎖先成功：等手勢的監聽跟著拆掉
+  assert.equal(c.n.isUnlocked(), true); assert.equal(c.win.count(), 0)
+  const d = gestureEnv(); d.n.unlockOnFirstGesture(d.win); d.n.dispose(); assert.equal(d.win.count(), 0)
+  for (const e of [a, b, c, d]) assert.equal(e.win.adds, e.win.removes)
+})
+
+test('unlockOnFirstGesture：監聽掛到一半丟例外 → 撤掉已掛的、回 no-op、不丟例外', () => {
+  const { n, win } = gestureEnv()
+  win.failAdd = true
+  let off
+  assert.doesNotThrow(() => { off = n.unlockOnFirstGesture(win) })
+  assert.equal(win.count(), 0); assert.doesNotThrow(off)
+  win.failAdd = false
+  n.unlockOnFirstGesture(win); assert.equal(win.count(), 3)        // 之後仍可正常註冊
+})
+
+test('unlockOnFirstGesture：win 省略 → 在「呼叫當下」才讀全域 window（先建立、後出現也行）', () => {
+  const { n, synth } = makeEnv()
+  const w = new FakeWindow()
+  globalThis.window = w
+  try {
+    const off = n.unlockOnFirstGesture()
+    assert.equal(w.count(), 3)
+    w.dispatch('keydown', { key: 'a' }); assert.equal(synth.spoken.length, 1)
+    off()
+  } finally { delete globalThis.window }
+  assert.doesNotThrow(() => n.unlockOnFirstGesture())              // 沒有 window：no-op
+})
+
+test('unlock 與 unlockOnFirstGesture：無聲解鎖的 utterance 用語系對應的 lang；不設 voice（音量 0 不需要）', () => {
+  const { n, synth, win, state } = gestureEnv({ voices: [V('zh-TW', true, 'tw')] })
+  state.locale = 'en'
+  n.unlockOnFirstGesture(win); win.dispatch('touchend')
+  assert.equal(synth.last.lang, 'en-US'); assert.equal(synth.last.voice, null)
+})
+
+test('unlock 的確認語會挑聲音（有合適的聲音時）', async () => {
+  const { n, synth } = makeEnv({ voices: [V('zh-TW', true, 'tw'), V('en-US', true)] })
+  const p = n.unlock(); assert.equal(synth.last.voice.name, 'tw'); synth.last.onend(); await p
+})

@@ -1,6 +1,7 @@
 // 資料導覽（Data Tour）：閒置時依序巡演真實資料，畫面下方用字幕說明「現在看的是什麼、球為什麼長這樣」。
 // 本檔是純邏輯（可在 Node 測試）：瀏覽器 API（store、時鐘、活動時間戳）一律以參數注入。
-//   buildTour(gov, opts)       → stops[]：依資料產生導覽站（缺什麼資料就略過那一站，不會丟錯）
+//   buildTour(gov, opts)       → stops[]：依資料產生導覽站（缺什麼資料就略過那一站，不會丟錯）；opts.plan = 導覽腳本（lib/tourPlan.js）：只導覽腳本列出的站、依腳本順序、每站帶導覽員的備註（caption.p.note）
+//   captionNote(caption)       → 導覽員自訂備註（caption.p.note 的原文；不翻譯）；captionSpeech(caption, locale) → 朗讀用的 { title, body }（備註接在 body 後面一起念）
 //   captionText(caption)       → { title, body }：字幕文字。caption 只存「資料」{ key, p }，顯示時才依「當下語系」翻譯，
 //                                所以語系中途切換字幕會跟著換；也因此能安全地鏡像到觀眾視窗（JSON 可序列化、與語系無關）
 //   createTourRunner(deps)     → 導覽執行器：start / tick / stop；負責套用海況、播放序列、偵測中斷、還原導覽前的狀態。
@@ -17,6 +18,8 @@ import { LS, loadLS, saveLS } from './persist.js'
 import { t, getLocale, useLocaleStore } from '../i18n/index.js'
 import { nameText, lunarLabelText, tideRangeText } from '../i18n/data.js'
 import { narrator as sharedNarrator, speechText as sharedSpeechText } from './narration.js'
+import { airCompare as sharedAirCompare, airCompareVerdict } from './airCompare.js'
+import { normalizePlan, isDefaultPlan, cleanText, PLAN_LIMITS, resolveInitialPlan, loadPlanStore, savePlanStore, findPlan, savePlanAs, updatePlan, removePlan, setActive } from './tourPlan.js'
 
 // ---------------------------------------------------------------------------------------------
 // 常數
@@ -95,17 +98,22 @@ function moonStop(gov, options, now) {
 }
 
 // 揚塵：有 ≥2 筆有效歷史 → 播放；否則只做靜態，字幕誠實說明（PM10 感測器無效 → 改看風速；歷史累積中）
-function dustStop(gov, options) {
+function dustStop(gov, options, dustSeries) {
   const opt = options.find((o) => o.kind === 'dust')
   if (!opt || !gov.dust) return null
-  const spec = seriesFromDust(gov.dust)
+  // 第三個參數 gov.air：水利署 IoW 的風速無效 / 凍結、而 air.history 有逐時模型風速時，series.js 回傳 extra.metric === 'wind-model' 的序列（Open-Meteo 模型資料）；
+  // 其餘情況（沒有 air、沒有模型風速、IoW 風速正常）行為與只傳兩個參數完全相同。字幕據此誠實標明「模型風速，非政府觀測」。
+  const spec = dustSeries(gov.dust, undefined, gov.air)
   const hist = Array.isArray(gov.dust.history) ? gov.dust.history : []
   const histN = hist.filter((h) => h && (isNum(h.pm10) || isNum(h.wind))).length
   if (spec) {
     const { min, max } = spec.stats
+    const m = spec.extra && spec.extra.metric
+    const p = { name: opt.name, mode: 'play', metric: m === 'pm10' ? 'pm10' : m === 'wind-model' ? 'wind-model' : 'wind', lo: round1(min), hi: round1(max), frozen: max === min }
+    if (m === 'wind-model' && spec.extra.reason === 'invalid') p.reason = 'invalid'   // 水利署根本沒有有效風速（不是「凍結」）：字幕要說對原因；沒給 reason / 'frozen' → 凍結
     return {
-      opt, kind: 'series', series: 'dust', spec,
-      caption: { key: 'dust', p: { name: opt.name, mode: 'play', metric: spec.extra && spec.extra.metric === 'pm10' ? 'pm10' : 'wind', lo: round1(min), hi: round1(max), frozen: max === min } },
+      opt, kind: 'series', series: 'dust', spec, ownSpec: m === 'wind-model',   // ownSpec：這份序列 store 自己的 playDust 不一定組得出來 → stop 帶著它，執行器直接播放（見 PLAY.dust）
+      caption: { key: 'dust', p },
     }
   }
   const sum = safe(() => dustSummary(gov.dust))
@@ -119,15 +127,19 @@ function dustStop(gov, options) {
 // 空氣品質：Open-Meteo Air Quality（CAMS 全球大氣模型）的逐時 PM2.5——「模型資料」，不是政府觀測值，字幕一定要講清楚。
 // 沒有 gov.air、沒有 kind === 'air' 的選項、或有效小時不足 2 個（seriesFromAir 回 null）→ 略過這一站，其他站不受影響。
 // 字幕的 lo / hi 是 PM2.5 的範圍（四捨五入到整數）；flat = 範圍收斂成同一個數字（模型幾乎沒變化）。
-function airStop(gov, options) {
+// 模型 vs 觀測：gov.air.obs（環境部測站觀測，見 scripts/gov/moenv.mjs）有值、且 airCompare 能對齊出足夠的小時 → 字幕多一句誠實的比較（p.cmp = { bias, mae, n, station }）；
+// 沒有觀測（airCompare 回 null）→ 完全不帶 cmp，字幕與以前逐字相同。compare 可由 opts.airCompare 注入（測試用）；任何丟出的例外都當作「沒有觀測可比」。
+function airStop(gov, options, compare) {
   const opt = options.find((o) => o.kind === 'air')
   const spec = opt && gov.air ? seriesFromAir(gov.air) : null
   if (!opt || !spec) return null
   const lo = Math.round(spec.stats.min), hi = Math.round(spec.stats.max)
-  return {
-    opt, kind: 'series', series: 'air', spec,
-    caption: { key: 'air', p: { name: opt.name, lo, hi, n: spec.points.length, flat: lo === hi } },
+  const p = { name: opt.name, lo, hi, n: spec.points.length, flat: lo === hi }
+  const c = safe(() => compare(gov.air))
+  if (c && isNum(c.bias) && isNum(c.mae) && isNum(c.n) && c.n > 0) {
+    p.cmp = { bias: round2(c.bias), mae: round2(c.mae), n: c.n, station: c.station && typeof c.station.name === 'string' ? c.station.name : '' }   // 兩位小數（與 airCompare 相同）；字幕顯示時才取一位小數
   }
+  return { opt, kind: 'series', series: 'air', spec, ownSpec: true, caption: { key: 'air', p } }   // ownSpec：字幕說的是「模型序列」，stop 帶著這份 spec 直接播放（見 PLAY.air）——不能交給 store 的 playAir（它跟著資料卡的「驅動海況的資料」切換，有環境部觀測時預設播觀測，會與字幕不一致）
 }
 
 // 鳥 / 魚調查年表：優先用 preferIds 裡有年表的海況（翡翠 → 淡水河的鳥；曾文 → 曾文溪的魚，中間有 2007–2013 的空窗），
@@ -154,11 +166,19 @@ function stationsStop(gov, baseOpt) {
   return { opt: baseOpt, kind: 'apply', caption: { key: 'stations', p: { total: isNum(s.total) ? s.total : list.length, active: isNum(s.active) ? s.active : list.filter((q) => q && q.s).length } } }
 }
 
-// opts：{ now: Date（測試用）, scale: 各站時間的倍率（預設 1）, skip: 要略過的站 id（例如 AR 實景時看不到背景的月亮與星座 → ['moon', 'stations']）}
+// opts：{ now: Date（測試用）, scale: 各站時間的倍率（預設 1）, skip: 要略過的站 id（例如 AR 實景時看不到背景的月亮與星座 → ['moon', 'stations']）,
+//         plan: 導覽腳本（lib/tourPlan.js：{ name?, stops:[{ id, note? }] }）, airCompare: 模型 vs 觀測的比較函式（預設 lib/airCompare.js）,
+//         seriesFromDust: 揚塵序列函式（預設 lib/series.js）——後兩者是測試注入用}
+// 有 plan：只導覽腳本列出的站、依腳本順序（缺資料的站、被 skip 的站直接略過，不報錯）；每站停留時間沿用該站預設（TOUR_MS）；
+//   導覽員的備註放進 stop.caption.p.note（原文、不翻譯；鏡像到觀眾視窗、旁白會念）。plan 不合法（清洗後沒有任何站）→ 當作沒有 plan。
+// 沒有 plan：行為與以前完全相同（八站依固定順序，字幕資料不帶 note）。
 export function buildTour(gov, opts = {}) {
   const now = opts.now instanceof Date ? opts.now : new Date()
   const scale = isNum(opts.scale) && opts.scale > 0 ? opts.scale : 1
   const skip = new Set(Array.isArray(opts.skip) ? opts.skip : [])
+  const compare = typeof opts.airCompare === 'function' ? opts.airCompare : sharedAirCompare
+  const dustSeries = typeof opts.seriesFromDust === 'function' ? opts.seriesFromDust : seriesFromDust   // 測試注入用（讓 wind-model 分支不必依賴 series.js 的實作進度）
+  const custom = normalizePlan(opts.plan)
   const options = gov && Array.isArray(gov.options) ? gov.options.filter((o) => o && typeof o === 'object' && o.id != null) : []
   if (!options.length) return []
   const res = safe(() => reservoirStop(gov, options))
@@ -167,14 +187,15 @@ export function buildTour(gov, opts = {}) {
     ['reservoir', res],
     ['tide', safe(() => tideStop(gov, options, now))],
     ['moon', safe(() => moonStop(gov, options, now))],
-    ['dust', safe(() => dustStop(gov, options))],
-    ['air', safe(() => airStop(gov, options))],
+    ['dust', safe(() => dustStop(gov, options, dustSeries))],
+    ['air', safe(() => airStop(gov, options, compare))],
     ['birds', safe(() => surveyStop('birds', options, ['feitsui']))],
     ['fish', safe(() => surveyStop('fish', options, ['zengwen']))],
     ['stations', safe(() => stationsStop(gov, base))],
   ]
+  const order = custom ? custom.stops.map((c) => { const e = plan.find((x) => x[0] === c.id); return [c.id, e ? e[1] : null, c.note] }) : plan.map(([id, x]) => [id, x, ''])
   const stops = []
-  for (const [id, x] of plan) {
+  for (const [id, x, note] of order) {
     if (!x || skip.has(id)) continue
     const durationMs = Math.round(TOUR_MS[id] * scale)
     const seqSec = x.spec ? x.spec.points.length * x.spec.step : 0
@@ -183,7 +204,8 @@ export function buildTour(gov, opts = {}) {
     stop.durationMs = durationMs
     stop.speed = x.kind === 'series' ? speedFor(seqSec, durationMs) : 1
     stop.seqSec = round2(seqSec)
-    stop.caption = x.caption
+    if (x.ownSpec) stop.spec = x.spec
+    stop.caption = note ? { key: x.caption.key, p: { ...x.caption.p, note } } : x.caption
     stops.push(stop)
   }
   return stops
@@ -195,6 +217,21 @@ export const tourTotalMs = (stops) => (stops || []).reduce((s, x) => s + (x.dura
 // 字幕文字（依「當下語系」；元件要自己 useLocale() 訂閱，語系切換才會重繪）
 // ---------------------------------------------------------------------------------------------
 const gapsText = (gaps) => (Array.isArray(gaps) ? gaps : []).map(([a, b]) => (a === b ? String(a) : `${a}–${b}`)).join(getLocale() === 'en' ? ', ' : '、')
+
+// 模型 vs 環境部測站觀測的一句話（只在有觀測可比時才出現，見 airStop）。bias = 模型 − 觀測 的平均（正 = 模型高估）。
+// 結論類別用 lib/airCompare.js 的 airCompareVerdict（資料卡 / 遙控頁同一份說法，不各說各話）：over 高估 · under 低估 · match 大致吻合（|平均差| < 1 且逐時誤差不大）·
+// mixed 平均差很小、但逐時落差明顯（高低相消，不能說「大致吻合」）。觀測值永遠標明是「環境部測站」的，模型永遠是「模型」——不把模型說成觀測。
+const f1 = (v) => (Math.round(Math.abs(v) * 10) / 10).toFixed(1)   // 一位小數（8.0 不寫成 8）
+function airCompareSentence(c) {
+  const name = typeof c.station === 'string' ? c.station.replace(/站$/, '') : ''
+  const who = name ? t('環境部{station}站', { station: nm(name) }) : t('環境部測站')
+  const P = { who, v: f1(c.bias), mae: f1(c.mae) }
+  const verdict = airCompareVerdict(c)
+  if (verdict === 'over') return t('與{who}觀測相比，模型平均高估 {v} μg/m³', P)
+  if (verdict === 'under') return t('與{who}觀測相比，模型平均低估 {v} μg/m³', P)
+  if (verdict === 'mixed') return t('與{who}觀測相比，模型平均差僅 {v} μg/m³，但逐時落差明顯（平均絕對誤差 {mae} μg/m³）', P)
+  return t('與{who}觀測相比，模型平均大致吻合（逐時平均誤差 {mae} μg/m³）', P)
+}
 
 const CAPTIONS = {
   reservoir: (p) => {
@@ -224,6 +261,11 @@ const CAPTIONS = {
     const title = nm(p.name)
     if (p.mode === 'play') {
       const P = { lo: dash(p.lo), hi: dash(p.hi), v: dash(p.hi) }
+      // 水利署 IoW 風速凍結、改用 Open-Meteo 的逐時模型風速（series.js extra.metric === 'wind-model'）：一定要講清楚這是模型資料
+      if (p.metric === 'wind-model') {
+        if (p.reason === 'invalid') return { title, body: p.frozen ? t('水利署感測器沒有有效的風速，改看 Open-Meteo 模型風速約 {v} m/s：這段時間變化很小（模型資料，非政府觀測）', P) : t('水利署感測器沒有有效的風速，改看 Open-Meteo 模型風速 {lo}–{hi} m/s：風越大，洋流越急（模型資料，非政府觀測）', P) }
+        return { title, body: p.frozen ? t('水利署感測器回報凍結，改看 Open-Meteo 模型風速約 {v} m/s：這段時間變化很小（模型資料，非政府觀測）', P) : t('水利署感測器回報凍結，改看 Open-Meteo 模型風速 {lo}–{hi} m/s：風越大，洋流越急（模型資料，非政府觀測）', P) }
+      }
       if (p.metric === 'pm10') return { title, body: p.frozen ? t('PM10 {v} μg/m³；來源疑似凍結，數值沒有變化', P) : t('PM10 {lo}–{hi} μg/m³：越高，海水越混濁、垃圾越多', P) }
       return { title, body: p.frozen ? t('PM10 感測器回報無效，改看風速 {v} m/s；來源疑似凍結，數值沒有變化', P) : t('PM10 感測器回報無效，改看風速 {lo}–{hi} m/s：風越大，洋流越急', P) }
     }
@@ -236,10 +278,8 @@ const CAPTIONS = {
   // 誠實原則：標題點出「模型資料」，說明明講「Open-Meteo / CAMS 模型，非政府觀測」。
   air: (p) => {
     const P = { lo: dash(p.lo), hi: dash(p.hi), v: dash(p.lo) }
-    return {
-      title: t('{name} · 模型資料', { name: nm(p.name) }),
-      body: p.flat ? t('PM2.5 約 {v} μg/m³（Open-Meteo / CAMS 模型，非政府觀測）：這段時間變化很小', P) : t('PM2.5 {lo}–{hi} μg/m³（Open-Meteo / CAMS 模型，非政府觀測）：越高，海水越混濁、垃圾越多', P),
-    }
+    const base = p.flat ? t('PM2.5 約 {v} μg/m³（Open-Meteo / CAMS 模型，非政府觀測）：這段時間變化很小', P) : t('PM2.5 {lo}–{hi} μg/m³（Open-Meteo / CAMS 模型，非政府觀測）：越高，海水越混濁、垃圾越多', P)
+    return { title: t('{name} · 模型資料', { name: nm(p.name) }), body: p.cmp && isNum(p.cmp.bias) && isNum(p.cmp.mae) ? base + (getLocale() === 'en' ? '. ' : '。') + airCompareSentence(p.cmp) : base }
   },
   birds: (p) => surveyCaption('birds', p),
   fish: (p) => surveyCaption('fish', p),
@@ -264,10 +304,32 @@ export function captionText(caption) {
   } catch (e) { return { title: '', body: '' } }
 }
 
+// 導覽員自訂備註（導覽腳本，caption.p.note）：導覽員輸入的「原文」，不翻譯、顯示時一律當純文字。字幕資料會經 mirror 送到觀眾視窗，
+// 所以這裡對收到的東西再清洗一次（控制字元 / 長度）：不是字串、空白 → ''。
+export function captionNote(caption) {
+  const p = caption && typeof caption === 'object' && caption.p && typeof caption.p === 'object' ? caption.p : null
+  return p && typeof p.note === 'string' ? cleanText(p.note, PLAN_LIMITS.note) : ''
+}
+
+// 朗讀用的字幕：備註是導覽員寫的、就是要講的，所以接在說明後面一起念（speechText 只吃 { title, body }）。沒有備註 → 與 captionText 完全相同。
+// 說明結尾沒有句末標點時補一個（zh「。」/ en「. 」），備註才不會黏在前一句上。
+const SENTENCE_END = /[。！？!?.…]$/
+export function captionSpeech(caption, locale = getLocale()) {
+  const c = captionText(caption)
+  const note = captionNote(caption)
+  if (!note) return c
+  const en = /^en(?:$|[-_])/i.test(String(locale))
+  const body = c.body.trim()
+  if (!body) return { title: c.title, body: note }
+  return { title: c.title, body: body + (SENTENCE_END.test(body) ? (en ? ' ' : '') : (en ? '. ' : '。')) + note }
+}
+
 // ---------------------------------------------------------------------------------------------
 // 偏好與環境判斷（純函式）
 // ---------------------------------------------------------------------------------------------
 // 「閒置自動導覽」是否開啟。優先序：網址 ?tour=0/1 > ?kiosk（展場預設開）> 使用者存的偏好 > AUTO_IDLE_DEFAULT
+// ★ ?tour= 也用來帶導覽腳本（?tour=air,fish，見 lib/tourPlan.js）：值是 0 / 1 / on / off 才是開關；值是站 id 清單時這裡視為「沒指定開關」（照 ?kiosk / 偏好 / 預設），
+//   兩種語意不會混淆（開關字沒有一個在站白名單內）。要同時指定開關與腳本：?tour=1&tourplan=air,fish。
 export function resolveAutoIdle({ saved = null, search = '' } = {}) {
   let q
   try { q = new URLSearchParams(search || '') } catch (e) { q = new URLSearchParams('') }
@@ -313,7 +375,18 @@ export function supportsNarration() {
 // ---------------------------------------------------------------------------------------------
 // 字幕狀態（zustand）：TourCaption / TourControls / TourNav 讀它；registerMirror 把它送到觀眾視窗
 // ---------------------------------------------------------------------------------------------
+// 導覽腳本（lib/tourPlan.js）的狀態：目前生效的腳本與已存腳本庫。不鏡像（觀眾視窗只看字幕，備註已在 caption.p.note 裡）。
+//   plan：生效中的腳本（已清洗；null = 預設完整導覽）
+//   planSrc：'url'（網址 ?tour=… 帶的，只在本次有效）| 'saved'（已存腳本，planId 是它的 id）| 'custom'（在編輯器「套用」、尚未儲存，只在本次有效）| null
+//   planLib：{ active, plans }（LS.tourplan 的內容）
+// 優先序：網址腳本 > 上次啟用的已存腳本 > 預設完整導覽。有網址腳本時，本次所有導覽（閒置自動 / 手動 / 導覽員）都用它。
+function initialPlanState() {
+  const lib = loadPlanStore()
+  return { ...resolveInitialPlan({ search: safeSearch(), lib }), planLib: lib }
+}
+
 export const useTourStore = create(() => ({
+  ...initialPlanState(),
   running: false,
   caption: null,           // { key, p }（不含任何語系文字）
   index: 0,                // 第幾站（0 起算）
@@ -336,6 +409,73 @@ export function setSpeak(on) {
   useTourStore.setState({ speak: !!on })
 }
 export function setTourRemote(on) { useTourStore.setState({ remote: !!on }) }   // 觀眾視窗實作者可主動標記
+
+// 「念出字幕」開關被打開時：在「同一個使用者手勢」內同步呼叫 narrator.unlock()（iOS Safari 只允許手勢內第一次 speak，之後才放行；見 narration.js 的契約），
+// 然後才更新偏好。unlock 必須在任何 await / Promise 之前呼叫——落在手勢之外就失去解鎖的意義。關閉不需要解鎖。解鎖失敗（不支援 / 丟例外）不影響開關本身。
+export function setSpeakFromGesture(on, n = sharedNarrator) {
+  if (on) {
+    try { const p = n.unlock(); if (p && typeof p.then === 'function') p.then(() => {}, () => {}) } catch (e) { /* 解鎖失敗：旁白偏好照樣打開，之後 speak 被瀏覽器擋下時導覽也照跑 */ }
+  }
+  setSpeak(on)
+}
+
+// ---- 導覽腳本的動作（編輯器用）。導覽進行中一律拒絕（{ ok:false, reason:'running' }）；儲存失敗（隱私模式）不丟例外，回 persisted:false（腳本仍在本次有效）----
+const setPlanState = (plan, src, id = null) => useTourStore.setState({ plan: plan || null, planSrc: plan ? src : null, planId: plan && src === 'saved' ? id : null })
+function commitLib(lib) { const persisted = savePlanStore(lib); useTourStore.setState({ planLib: lib }); return persisted }
+const planBusy = () => !!useTourStore.getState().running
+
+// 套用：目前用的是已存腳本 → 就地更新該腳本並保持啟用；否則 → 本次有效的「自訂」腳本（不寫入儲存；剛好是預設完整導覽就當作沒有腳本）。
+export function applyTourPlan(plan) {
+  if (planBusy()) return { ok: false, reason: 'running' }
+  const p = normalizePlan(plan)
+  if (!p) return { ok: false, reason: 'invalid' }
+  const s = useTourStore.getState()
+  if (s.planSrc === 'saved' && findPlan(s.planLib, s.planId)) {
+    const r = updatePlan(s.planLib, s.planId, p)
+    const persisted = commitLib(setActive(r.store, s.planId))
+    setPlanState(p, 'saved', s.planId)
+    return { ok: true, saved: true, id: s.planId, persisted }
+  }
+  setPlanState(isDefaultPlan(p) ? null : p, 'custom')
+  return { ok: true, saved: false }
+}
+// 另存新腳本（最多 5 份；滿了 → reason:'full'）：存成新的一份並啟用它。
+export function saveTourPlanAs(plan) {
+  if (planBusy()) return { ok: false, reason: 'running' }
+  const p = normalizePlan(plan)
+  if (!p) return { ok: false, reason: 'invalid' }
+  const r = savePlanAs(useTourStore.getState().planLib, p)
+  if (!r.ok) return { ok: false, reason: r.reason }
+  const persisted = commitLib(setActive(r.store, r.id))
+  setPlanState(p, 'saved', r.id)
+  return { ok: true, id: r.id, persisted }
+}
+// 切換啟用的已存腳本（id 找不到 → reason:'missing'，什麼都不動）
+export function activateTourPlan(id) {
+  if (planBusy()) return { ok: false, reason: 'running' }
+  const lib = useTourStore.getState().planLib
+  const saved = findPlan(lib, id)
+  const p = saved ? normalizePlan(saved) : null
+  if (!p) return { ok: false, reason: 'missing' }
+  const persisted = commitLib(setActive(lib, id))
+  setPlanState(p, 'saved', id)
+  return { ok: true, id, persisted }
+}
+// 還原預設：不用任何腳本（已存的腳本都還在，只是不啟用）
+export function clearTourPlan() {
+  if (planBusy()) return { ok: false, reason: 'running' }
+  const persisted = commitLib(setActive(useTourStore.getState().planLib, null))
+  setPlanState(null)
+  return { ok: true, persisted }
+}
+export function deleteTourPlan(id) {
+  if (planBusy()) return { ok: false, reason: 'running' }
+  const s = useTourStore.getState()
+  if (!findPlan(s.planLib, id)) return { ok: false, reason: 'missing' }
+  const persisted = commitLib(removePlan(s.planLib, id))
+  if (s.planSrc === 'saved' && s.planId === id) setPlanState(null)
+  return { ok: true, persisted }
+}
 
 // 鏡像切片（模組頂層註冊：兩個視窗載入時都會執行）。apply 只更新字幕 store，不觸發導覽邏輯。
 const MIRROR_FIELDS = ['running', 'caption', 'index', 'total', 'stopMs', 'seq', 'paused']
@@ -377,10 +517,20 @@ registerMirror('tour', {
 //   · 自動導覽循環回第 0 站時重建站表（用當下的 gov 與日期）：站表是 start() 那一刻算的，無人值守的展場導覽一輪約 100 秒、無限循環，
 //     期間 gov 可能已被資料更新換掉（只換 gov、不動導覽），沿用舊站表字幕的數字就與球實際套用的資料不一致。手動 / 導覽員導覽的站表維持不變（進度點與複製連結的站序不會中途位移）。
 // ---------------------------------------------------------------------------------------------
+// cur = 這一站。揚塵站若用了模型風速（extra.metric === 'wind-model'），stop 帶著 build 時算好的 spec（stop.spec，只有這種站才有），直接播放它——
+// 字幕說的（Open-Meteo 模型風速）與球實際播的一定是同一份，不依賴 store 的 playDust 有沒有傳入 gov.air。
 const PLAY = {
   tide: (s) => s.playGovSeries(),
-  dust: (s) => s.playDust(),
-  air: (s) => s.playAir(),
+  dust: (s, cur) => {
+    const sp = cur && cur.spec
+    if (sp && sp.extra && sp.extra.metric === 'wind-model' && typeof s.playSeries === 'function' && typeof s.govOption === 'function') return s.playSeries(sp, s.govOption())
+    return s.playDust()
+  },
+  air: (s, cur) => {   // 字幕描述的是模型序列（Open-Meteo / CAMS）；有環境部觀測時，playAir 預設播觀測 → 與字幕（與標題「模型資料」）不一致，所以直接播 build 時算好的模型 spec
+    const sp = cur && cur.spec
+    if (sp && sp.kind === 'air' && typeof s.playSeries === 'function' && typeof s.govOption === 'function') return s.playSeries(sp, s.govOption())
+    return s.playAir()
+  },
   moon: (s) => s.playMoon(),
   birds: (s) => s.playSurvey('birds'),
   fish: (s) => s.playSurvey('fish'),
@@ -426,7 +576,7 @@ export function createTourRunner(deps) {
     const r = run
     if (!r || r.paused || !speechOn()) return
     try {
-      const text = speechOf(captionText(r.stops[r.i].caption), localeNow())
+      const text = speechOf(captionSpeech(r.stops[r.i].caption, localeNow()), localeNow())   // 備註（導覽腳本）接在說明後面一起念
       if (!text) return
       if (r.spoke) { try { speaker.cancel() } catch (e) { /* ignore */ } }   // 前一句先取消（narrator.speak 本身也會取消前一句，這裡不去依賴它）
       r.spoke = true
@@ -460,7 +610,7 @@ export function createTourRunner(deps) {
     if (cur.kind === 'series' && PLAY[cur.series]) {
       st().setRecSpeed(run.paused ? PAUSE_SPEED : cur.speed)   // 暫停中換站：序列在該站起點凍結
       run.frozen = run.paused
-      PLAY[cur.series](st())
+      PLAY[cur.series](st(), cur)
       run.own = st().rec.mode === 'playing'                // 沒播起來（資料不足）→ 當作靜態站，字幕照顯示
       if (run.own) afterPlay()
     }

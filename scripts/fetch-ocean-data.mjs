@@ -7,6 +7,9 @@
 //   月亮：CWA A-B0063-001 月出月沒（CWA_KEY，沒有就用公開示範金鑰）→ moon（今日前 2 日起 180 天的滾動視窗）。
 //   空氣品質：Open-Meteo Air Quality API（CAMS 全球大氣模型，免金鑰；「模型資料」，不是政府觀測值）→ air（麥寮逐時 PM2.5 / PM10 / 沙塵 / US AQI，
 //     最近 120 小時）、air-yunlin 的 level / params。逐時資料，每次抓 past_days=5 覆蓋更新並與舊 history 合併去重。
+//     另外補上逐時風速 wind / 風向 windDir（Open-Meteo 預報 API，同樣是模型資料；請求失敗只是保留舊值 / null，不影響 PM 序列）。
+//   環境部測站觀測：有 MOENV_KEY（使用者自己申請的金鑰；repo secret）→ 目前值 + 歷史資料集 → air.obs（離模型格點最近、25 公里內的測站；政府資料開放授權條款－第1版），
+//     供前端做「模型 vs 觀測」並列。沒有金鑰 → 略過（印一行說明，不算失敗、不影響其他資料）；抓失敗 → 保留舊 obs（≤ 48 小時），更舊的移除。金鑰絕不進日誌 / ocean.json。
 //   （歷史靜態資料 stations / fish / birds.yearly 由 bake-static-data.mjs 一次性烘焙，CI 只原樣保留。）
 // 每個資料集各自 try/catch：失敗時 console.error 並保留舊資料，不會擋住其他資料集。
 import { readFile, writeFile } from 'node:fs/promises'
@@ -21,12 +24,13 @@ import { getJson, retry } from './gov/http.mjs'
 import { buildDust, dustLevel, dustParams, appendHistory, DUST_LATEST_URL, DUST_META_URL, DUST_NOTE, DUST_COUNTY } from './gov/dust.mjs'
 import { buildMoon, moonApiUrl, moonWindow, moonKeyCandidates, MOON_NOTE, MOON_COUNTY } from './gov/moon.mjs'
 import {
-  buildAirUrl, parseAir, mergeHistory, latestAirRow, airParams, airLevel,
+  buildAirUrl, parseAir, mergeHistory, latestAirRow, airParams, airLevel, buildWindUrl, parseWind, applyWind,
   AIR_COUNTY, AIR_PLACE, AIR_LAT, AIR_LON, AIR_SOURCE, AIR_SOURCE_URL, AIR_NOTE, AIR_INLINE_PATHS,
 } from './gov/air.mjs'
+import { fetchAirObs, retainObs, normalizeKey, maskKey } from './gov/moenv.mjs'
 import {
   ensureGovOptions, ensureAirOption, syncAirOption, orderOption, orderTop, appendParts, withBirdsNoteAppendix,
-  SOURCE_LABEL, BASE_MAPPING, MAPPING_ADDITIONS, AIR_MAPPING, AIR_SOURCE_DISCLOSURE, AIR_BASIN_OPTION_ID, BIRDS_NOTE_APPENDIX,
+  SOURCE_LABEL, BASE_MAPPING, MAPPING_ADDITIONS, AIR_MAPPING, AIR_SOURCE_DISCLOSURE, OBS_MAPPING, OBS_SOURCE_DISCLOSURE, AIR_BASIN_OPTION_ID, BIRDS_NOTE_APPENDIX,
 } from './gov/shape.mjs'
 import { stringifyOcean, INLINE_PATHS } from './gov/json.mjs'
 import { toTaipeiIso } from './gov/util.mjs'
@@ -185,6 +189,54 @@ export async function refreshAir(cur, nowMs, weather, deps = {}) {
   }, { attempts: 3, delayMs: 5000, label: 'air', ...(deps.retryOpts || {}) })
 }
 
+// 逐時風速 / 風向（Open-Meteo 預報 API，模型資料）→ 併進 air.history 對應的小時。與 PM 序列是不同的請求：這裡失敗只會讓風速 / 風向保持舊值（或 null），
+// 絕不影響 PM 序列（永遠回傳 history，不丟例外）。deps 供測試注入：{ getJson, retryOpts }。
+//   回傳 { history, fetched（回應裡的有效小時數）, matched（history 裡有風速的小時數）, error（失敗訊息或 null） }
+export async function refreshAirWind(history, deps = {}) {
+  const fetchJson = deps.getJson || getJson
+  const count = (h) => h.filter((r) => r && typeof r.wind === 'number').length
+  try {
+    const rows = await retry(async () => {
+      const { rows: r, stats } = parseWind(await fetchJson(buildWindUrl(), 60000))
+      if (!r.length) throw new Error(`no valid wind rows (points=${stats.points} skipped=${stats.skipped})`)
+      return r
+    }, { attempts: 2, delayMs: 5000, label: 'air-wind', ...(deps.retryOpts || {}) })
+    const out = applyWind(history, rows)
+    return { history: out, fetched: rows.length, matched: count(out), error: null }
+  } catch (e) {
+    const out = applyWind(history, [])
+    return { history: out, fetched: 0, matched: count(out), error: e && e.message ? e.message : String(e) }
+  }
+}
+
+// 環境部測站觀測 → air.obs（見 gov/moenv.mjs）。金鑰只讀環境變數 MOENV_KEY（deps.key 可注入測試）：
+//   · 沒有金鑰（未設 / 空字串 / 只有空白）→ 略過並印一行說明，不算失敗；仍套用「舊 obs 最多撐 48 小時」的規則（過期的觀測不能當現在的）
+//   · 有金鑰但請求失敗 / 逾時 / 回應格式不對 / 金鑰錯誤 → 保留舊 obs（fetchedAt 距今 ≤ 48 小時），更舊的移除；各請求依序、有重試，整段 try/catch，不影響其他資料集
+// 日誌與錯誤訊息一律不含金鑰（maskKey）。deps 供測試注入：{ key, fetch, retryOpts, log, error }。
+//   回傳 { obs（要寫進 air.obs 的物件，或 null）, status: 'skipped' | 'fresh' | 'kept' | 'dropped' | 'none', error?, stats? }
+export async function refreshAirObs(cur, nowMs, deps = {}) {
+  const log = typeof deps.log === 'function' ? deps.log : (m) => console.log(m)
+  const error = typeof deps.error === 'function' ? deps.error : (m) => console.error(m)
+  const key = normalizeKey(deps.key !== undefined ? deps.key : process.env.MOENV_KEY)
+  const old = cur && cur.air ? cur.air.obs : undefined
+  const kept = retainObs(old, nowMs)
+  if (!key) {
+    log('MOENV_KEY 未設定，略過環境部觀測')
+    return { obs: kept, status: 'skipped' }
+  }
+  try {
+    const r = await fetchAirObs({ key, lat: AIR_LAT, lon: AIR_LON, nowMs, old: kept, fetch: deps.fetch, retryOpts: deps.retryOpts, log: (m) => log(maskKey(m, key)) })
+    return { obs: r.obs, status: 'fresh', stats: r.stats }
+  } catch (e) {
+    const msg = maskKey(e && e.message ? e.message : String(e), key)
+    error(`moenv obs failed, ${kept ? 'keep old obs (≤ 48h)' : old ? 'old obs is older than 48h → removed' : 'no old obs'}: ${msg}`)
+    return { obs: kept, status: kept ? 'kept' : old ? 'dropped' : 'none', error: msg }
+  }
+}
+
+// 舊 mapping 若帶著「可改用環境部測站觀測驅動」那句、但這次沒有 obs（金鑰移除 / 觀測過期）→ 拿掉，免得說明與現況不符
+export const withoutObsMapping = (mapping, hasObs) => (typeof mapping === 'string' && !hasObs ? mapping.split(' · ').filter((p) => p !== OBS_MAPPING).join(' · ') : mapping)
+
 const FALLBACK = [
   { id: 'feitsui', name: '翡翠水庫', region: '北', level: 77.3 },
   { id: 'shimen', name: '石門水庫', region: '北', level: 100 },
@@ -273,6 +325,24 @@ async function main() {
     }
   }
 
+  // 逐時風速 / 風向（模型）併進 history；失敗只保留舊值，不影響 PM 序列
+  if (air) {
+    const wr = await refreshAirWind(air.history)
+    air = { ...air, history: wr.history }
+    if (wr.error) console.error('air wind refresh failed, keep old wind values:', wr.error)
+    else console.log(`air wind refreshed hours=${wr.fetched} matched=${wr.matched}/${air.history.length}`)
+  }
+  // 環境部測站觀測（需要 MOENV_KEY；沒有就略過）。obs 放在 air 的最後一個鍵
+  if (air) {
+    const { obs: _dropped, ...airRest } = air   // 舊 obs 的去留由 refreshAirObs 決定（從 cur.air.obs 讀）
+    const ro = await refreshAirObs(cur, Date.now())
+    air = ro.obs ? { ...airRest, obs: ro.obs } : airRest
+    if (ro.status === 'fresh') {
+      const s = ro.stats, l = s.last
+      console.log(`air obs refreshed ${s.station} ${s.km} km pages=${s.pages} history=${ro.obs.history.length}${s.usedFallback ? '（只有目前值）' : ''} last=${l.t} pm2.5=${l.pm25}`)
+    }
+  }
+
   const parts = [w.gov ? '中央氣象署 CWA 觀測站' : 'Open-Meteo 即時氣象', '水利署水庫水情']
   if (tideVia || tideOpt?.series) parts.push('CWA 潮汐預報')
   if (cur?.rivers) parts.push('水利署河川水位')
@@ -283,12 +353,12 @@ async function main() {
   if (moon) parts.push(SOURCE_LABEL.moon)
   const out = {
     // 空氣品質不是政府資料：揭露句放在「（政府資料 OGDL v1）」授權說明之後，不併進前面的政府資料來源清單
-    source: parts.join(' + ') + (w.gov ? '（政府開放資料 OGDL v1）' : '（政府資料 OGDL v1；氣象備援 Open-Meteo CC BY 4.0）') + (air ? AIR_SOURCE_DISCLOSURE : ''),
+    source: parts.join(' + ') + (w.gov ? '（政府開放資料 OGDL v1）' : '（政府資料 OGDL v1；氣象備援 Open-Meteo CC BY 4.0）') + (air ? AIR_SOURCE_DISCLOSURE : '') + (air && air.obs ? OBS_SOURCE_DISCLOSURE : ''),
     sourceShort: w.gov ? 'CWA · 水利署' : '水利署 · CWA潮汐 · Open-Meteo',
     fetchedAt: w.time, station: w.gov ? '花蓮' : '花蓮外海',
     weather: { airTemp: w.airTemp, humidity: w.humidity, windSpeed: w.windSpeed, windDir: w.windDir, precip: w.precip, weather: w.weather },
     defaultOption: cur?.defaultOption || options[0].id, options,
-    mapping: appendParts(cur?.mapping || appendParts(BASE_MAPPING, MAPPING_ADDITIONS), air ? [AIR_MAPPING] : []),
+    mapping: appendParts(withoutObsMapping(cur?.mapping, air && air.obs) || appendParts(BASE_MAPPING, MAPPING_ADDITIONS), air ? [AIR_MAPPING, ...(air.obs ? [OBS_MAPPING] : [])] : []),
   }
   if (cur?.rivers) { out.rivers = cur.rivers; out.riversNote = cur.riversNote }   // 河川水位（銀河濃度）
   if (cur?.birdsNote) out.birdsNote = air ? withBirdsNoteAppendix(cur.birdsNote, BIRDS_NOTE_APPENDIX) : cur.birdsNote   // 附錄的「對應」句補上空氣品質（冪等）

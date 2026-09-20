@@ -1,11 +1,12 @@
 // 資料 → 可播放的時間序列規格（純函式，無 I/O，可在 Node 測試）。
 // 規格 spec = { kind, name, label, unit, date, step, points[], target, extra, stats:{min,max,mean} }
 //   kind：'tide' 潮汐 · 'inflow' 進流量 · 'dust' 揚塵（CI 累積的歷史）· 'air' 空氣品質（Open-Meteo / CAMS 模型資料）· 'survey-birds' / 'survey-fish' 調查年表 · 'moon' 月出月沒
-//   points：tide/inflow → {h,v}；dust → {t,v,pm,w,tp,rh}（v＝主變數：PM10 或風速）；air → {t,v,pm10,dust,aqi}（v＝PM2.5）；survey → {t,v,n,gap}（逐年稠密：gap=true 是「無調查」年，v 為前後調查年的線性內插）；moon → {t,v,rise,riseAz,transit,alt,altDir,set,setAz}
+//   points：tide/inflow → {h,v}；dust → {t,v,pm,w,tp,rh}（v＝主變數：PM10、風速，或模型風速）；air → {t,v,pm10,dust,aqi}（v＝PM2.5；來源是環境部觀測時另有 wind）；survey → {t,v,n,gap}（逐年稠密：gap=true 是「無調查」年，v 為前後調查年的線性內插）；moon → {t,v,rise,riseAz,transit,alt,altDir,set,setAz}
 // 每一步由 automationFor() 轉成參數自動化事件，走既有的錄製/播放引擎（可倍速、循環、soft-takeover 接管）。
 import { flockCount } from './birds.js'
 import { t, T, getLocale } from '../i18n/index.js'
 import { nameText, lunarLabelText, tideRangeText } from '../i18n/data.js'
+import { hourMs, airObsUsable } from './airCompare.js'
 
 // 規格裡的 name / label / unit 一律存「中文原文」（用 T() 標記；資料本身的名稱也是中文），顯示時才翻：
 //   formatHud 內用 nameText()；UI 想顯示 spec.label / spec.name，請用 t(label) / nameText(name)。
@@ -142,21 +143,49 @@ export function timelineAlt(spec) {
 
 // 揚塵：CI 每 3 小時累積的最新值歷史（至少 2 筆有效才能播放；不足時回傳 null，UI 會顯示「累積中」）。
 // 主變數＝PM10；來源的 PM10 感測器常回傳哨兵值（4999.4，被腳本判為無效 → null），此時改用「風速」（風是揚塵的成因），仍可播放。
-export function seriesFromDust(dust, name = T('揚塵')) {
+// 第三個選用參數 air（= gov.air）：水利署 IoW 的風速也「無效或凍結」（有效筆數 < 2，或所有有效值完全相同）、而 air.history 有逐時「模型風速」（每筆 wind，m/s，
+// Open-Meteo 預報 API）時，改回傳 extra.metric === 'wind-model' 的序列（label「風速（模型）」、每步 1 小時）——資料是模型的，不是水利署的：extra.model = true，
+// extra.reason = 'frozen'（IoW 風速有值但不變）| 'invalid'（IoW 沒有可用的風速）；呼叫端（資料卡 / 導覽字幕）要誠實說明「風速為模型資料（Open-Meteo），水利署感測器凍結」。
+// PM10 有效時（metric 'pm10'）或 IoW 風速還在變時，行為與沒有 air 參數時完全相同。
+export function seriesFromDust(dust, name = T('揚塵'), air) {
   const hist = dust && Array.isArray(dust.history) ? dust.history : []
   const n = (x) => (typeof x === 'number' && Number.isFinite(x) ? x : null)
   const withPm = hist.filter((x) => n(x && x.pm10) != null)
   const withWind = hist.filter((x) => n(x && x.wind) != null)
+  const label = `${name}${dust && dust.county ? '（' + dust.county + '）' : ''}`
+  if (withPm.length < 2 && dust && typeof dust === 'object') {
+    const frozen = withWind.length >= 2 && withWind.every((x) => x.wind === withWind[0].wind)
+    if (withWind.length < 2 || frozen) {
+      const pts = modelWindPoints(air)
+      if (pts.length >= 2) {
+        return withStats({
+          kind: 'dust', name: label, label: T('風速（模型）'), unit: 'm/s', date: `${pts[0].t} → ${pts[pts.length - 1].t}`, step: AIR_STEP, points: pts, target: 'current',
+          extra: { metric: 'wind-model', model: true, reason: frozen ? 'frozen' : 'invalid' },
+        })
+      }
+    }
+  }
   const metric = withPm.length >= 2 ? 'pm10' : withWind.length >= 2 ? 'wind' : null
   if (!metric) return null
   const points = (metric === 'pm10' ? withPm : withWind).map((x) => ({
     t: fmtT(x.t), v: round1(metric === 'pm10' ? x.pm10 : x.wind), pm: n(x.pm10), w: n(x.wind), tp: n(x.temp), rh: n(x.rh),
   }))
   return withStats({
-    kind: 'dust', name: `${name}${dust.county ? '（' + dust.county + '）' : ''}`,
+    kind: 'dust', name: label,
     label: metric === 'pm10' ? 'PM10' : T('風速'), unit: metric === 'pm10' ? 'μg/m³' : 'm/s',
     date: `${points[0].t} → ${points[points.length - 1].t}`, step: 0.7, points, target: metric === 'pm10' ? 'clarity' : 'current', extra: { metric },
   })
+}
+
+// air.history 的逐時模型風速（每筆 wind，m/s）→ 揚塵序列的點（沒有 PM10 / 氣溫 / 濕度：那些是水利署感測器的值，模型沒有，不能拿別的東西充數）
+function modelWindPoints(air) {
+  const hist = air && Array.isArray(air.history) ? air.history : []
+  const pts = []
+  for (const x of hist) {
+    const w = x && typeof x.wind === 'number' && Number.isFinite(x.wind) && x.wind >= 0 ? x.wind : null
+    if (w != null) pts.push({ t: fmtT(x.t), v: round1(w), pm: null, w: round1(w), tp: null, rh: null })
+  }
+  return pts
 }
 
 // 空氣品質：Open-Meteo Air Quality（CAMS 全球大氣模型）的逐時 PM2.5 歷史——「模型資料」，不是政府觀測值（name 帶「模型資料」，extra.model = true）。
@@ -171,9 +200,39 @@ export function airMapping(pm25) {
   const n = clamp01(pm25 / AIR_PM_SCALE)
   return { clarity: clamp01(0.95 - n * 0.85), trashCount: clamp01(0.06 + n * 0.6), hue: clamp01(0.5 - n * 0.14), glow: clamp01(0.72 - n * 0.42) }
 }
-export function seriesFromAir(air, name = T('空氣品質')) {
-  const hist = air && Array.isArray(air.history) ? air.history : []
+// 空氣品質資料的來源：'model'（Open-Meteo / CAMS 模型；預設）| 'obs'（環境部測站觀測 air.obs）| 'auto'（有可用的觀測就用觀測，否則模型——播放 / 資料卡的預設）。
+// 要求 'obs' 或 'auto' 但沒有可用的觀測（air.obs 不到 2 個有效的 PM2.5 小時）→ 'model'。回傳實際使用的來源。
+export function resolveAirSource(air, source) {
+  return (source === 'obs' || source === 'auto') && airObsUsable(air) ? 'obs' : 'model'
+}
+// 序列規格用的是哪個來源（'obs' | 'model'）：extra.source === 'obs' 才是觀測；其他（含舊規格）一律視為模型
+export const airSourceOf = (spec) => (spec && spec.extra && spec.extra.source === 'obs' ? 'obs' : 'model')
+
+// 第三個選用參數 opts.source（見 resolveAirSource；預設 'model'——沒有傳就與過去完全相同）。
+//   'model'：模型資料。name 帶「模型資料」、extra = { model: true }——絕不出現「觀測」字樣。
+//   'obs'：環境部測站觀測（air.obs.history 的 PM2.5，逐時）。name 帶測站與「環境部觀測」、extra = { model: false, source: 'obs', station }——絕不出現「模型」字樣。
+//     點的欄位 { t, v（PM2.5）, pm10, dust: null, aqi（環境部 AQI，不是 US AQI）, wind }；映射（automationFor）與模型序列同一組係數。
+export function seriesFromAir(air, name = T('空氣品質'), opts) {
   const n = (x) => (typeof x === 'number' && Number.isFinite(x) ? x : null)
+  if (resolveAirSource(air, opts && opts.source) === 'obs') {
+    const obs = air.obs, st = obs.station && typeof obs.station === 'object' ? obs.station : {}
+    const byMs = new Map()                                             // 依小時排序去重（後者為準）；只收有 PM2.5 的小時
+    for (const x of Array.isArray(obs.history) ? obs.history : []) {
+      const ms = x && typeof x === 'object' ? hourMs(x.t) : null
+      const v = n(x && x.pm25)
+      if (ms !== null && v !== null && v >= 0 && v <= 1000) byMs.set(ms, { t: fmtT(x.t), v: round1(v), pm10: n(x.pm10), dust: null, aqi: n(x.aqi), wind: n(x.wind) })
+    }
+    const pts = [...byMs].sort((a, b) => a[0] - b[0]).map(([, p]) => p)
+    if (pts.length >= 2) {
+      const where = [air.county || st.county || '', typeof st.name === 'string' ? st.name : '', T('環境部觀測')].filter(Boolean).join(' · ')
+      return withStats({
+        kind: 'air', name: `${name}（${where}）`, label: 'PM2.5', unit: 'μg/m³',
+        date: `${pts[0].t} → ${pts[pts.length - 1].t}`, step: AIR_STEP, points: pts, target: 'clarity',
+        extra: { model: false, source: 'obs', station: { name: typeof st.name === 'string' ? st.name : '', county: typeof st.county === 'string' ? st.county : '' } },
+      })
+    }
+  }
+  const hist = air && Array.isArray(air.history) ? air.history : []
   const points = []
   for (const x of hist) {
     const v = n(x && x.pm25)
@@ -214,7 +273,7 @@ export function automationFor(spec, i) {
       return [['current', clamp01(0.15 + n * 0.8)], ['fishCount', clamp01(0.3 + n * 0.6)], ['swimSpeed', clamp01(0.35 + n * 0.5)]]
     }
     case 'dust': {
-      if (spec.extra && spec.extra.metric === 'wind') {   // PM10 無效 → 風速驅動：風越大 → 洋流越急、海水越混、懸浮物越多
+      if (spec.extra && (spec.extra.metric === 'wind' || spec.extra.metric === 'wind-model')) {   // PM10 無效 → 風速（水利署，或水利署凍結時的模型風速）驅動：風越大 → 洋流越急、海水越混、懸浮物越多
         const n = clamp01(p.v / 12)
         return [['current', clamp01(0.15 + n * 0.8)], ['clarity', clamp01(0.92 - n * 0.4)], ['trashCount', clamp01(0.06 + n * 0.3)], ['hue', clamp01(0.5 - n * 0.12)]]
       }
@@ -275,11 +334,13 @@ export function formatHud(meta, p, ctx = {}) {
       if (p.rh != null) txt += ' · ' + t('濕度 {v}%', { v: p.rh })
       return txt
     }
-    case 'air': {                                      // 模型資料：name 已帶「模型資料」；沙塵（模型的礦物沙塵濃度，台灣多半是 0）有值才顯示
+    case 'air': {                                      // 模型資料：name 已帶「模型資料」；沙塵（模型的礦物沙塵濃度，台灣多半是 0）有值才顯示。環境部觀測：name 帶「環境部觀測」，AQI 是環境部的（不是 US AQI）
+      const obs = ((meta.extra || meta) || {}).source === 'obs'
       let txt = t('{name} {time} · {label} {v}{unit}', { name, time: p.t, label, v: p.v, unit: nameText(meta.unit) })
       if (p.pm10 != null) txt += ` · PM10 ${p.pm10} μg/m³`
-      if (p.aqi != null) txt += ` · US AQI ${p.aqi}`
-      if (p.dust != null && p.dust > 0) txt += ' · ' + t('沙塵 {v} μg/m³', { v: p.dust })
+      if (p.aqi != null) txt += obs ? ` · AQI ${p.aqi}` : ` · US AQI ${p.aqi}`
+      if (obs) { if (p.wind != null) txt += ' · ' + t('風 {v} m/s', { v: p.wind }) }
+      else if (p.dust != null && p.dust > 0) txt += ' · ' + t('沙塵 {v} μg/m³', { v: p.dust })
       return txt
     }
     case 'survey-birds': case 'survey-fish': {

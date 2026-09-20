@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useTourStore, setSpeak, supportsNarration } from '../lib/tour.js'
+import { useTourStore, setSpeakFromGesture, supportsNarration } from '../lib/tour.js'
 import { tourRunner, copyTourLink } from '../services/tourCore.js'
 import { useT } from '../i18n/index.js'
 import '../styles/tour.css'
@@ -9,6 +9,7 @@ import '../styles/tourpresenter.css'
 // 兩處使用同一組：畫面下方的字幕卡（variant="caption"，只有圖示）與面板的導覽卡片（variant="card"，念出字幕多一行文字）。
 // 每個按鈕都帶 data-tour-ui（在 tourCore 的 KEEP_SELECTOR 內：按它們不算「操作海」，不會中止導覽）、aria-label、title（含快速鍵）；觸控目標 ≥ 40px（tourpresenter.css）。
 // 圖示用內嵌 SVG（不用 emoji）。觀眾視窗（remote）不渲染這個元件。
+// 「念出字幕」開關被打開時，setSpeakFromGesture 在「同一個點擊處理器內、任何 await 之前」同步呼叫 narrator.unlock()（iOS 只允許使用者手勢內的第一次 speak）。
 const FLASH_MS = 2000   // 「已複製」提示停留時間
 
 const PATHS = {
@@ -75,7 +76,7 @@ export default function TourNav({ variant = 'caption' }) {
       </button>
       {canSpeak && (
         <button type="button" className={'tour-nb tour-nb-speak' + (speak ? ' on' : '')} data-tour-ui aria-pressed={speak} aria-label={t('念出字幕')}
-                title={t('念出字幕：用語音朗讀每一站的說明')} onClick={() => setSpeak(!speak)}>
+                title={t('念出字幕：用語音朗讀每一站的說明')} onClick={() => setSpeakFromGesture(!speak)}>
           <Icon name={speak ? 'speakOn' : 'speakOff'} />
           {variant === 'card' && <span className="tour-nb-txt" aria-hidden="true">{t('念出字幕')}</span>}
         </button>

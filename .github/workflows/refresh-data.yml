@@ -21,6 +21,7 @@ jobs:
       - run: node scripts/fetch-ocean-data.mjs
         env:
           CWA_KEY: ${{ secrets.CWA_KEY }} # 中央氣象署開放資料金鑰（政府源）；未設定時自動退回 Open-Meteo
+          MOENV_KEY: ${{ secrets.MOENV_KEY }} # 環境部資料開放平台金鑰（自己申請）；沒設 secret 時是空字串，腳本略過環境部觀測
       - name: Commit if changed
         id: commit
         run: |

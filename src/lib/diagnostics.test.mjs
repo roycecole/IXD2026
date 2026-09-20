@@ -9,6 +9,7 @@ import { readFileSync } from 'node:fs'
 import { DIAG_LS_KEY, loadSummary, saveSummary, sanitizeSummary, formatWhen, formatSummaryLine, diagnosticsHref } from './diagnosticsSummary.js'
 import { registerEn, setLocale, t } from '../i18n/index.js'
 import en from '../i18n/en/diagnostics.js'
+import en2 from '../i18n/en/diagnostics2.js'
 
 // ───────────────────────────── 測試工具 ─────────────────────────────
 // 把物件裡的函式包成「this 必須是這個物件」；巢狀的一般物件遞迴處理。大寫開頭的屬性（PointerEvent、SpeechRecognition…）是建構子，不包。
@@ -179,7 +180,7 @@ const collect = () => {
 }
 const runId = (id, env, opts) => D.runCheck(D.getCheck(id), env, opts)
 const SPEC_AUTO = ['env-ua', 'env-screen', 'env-secure', 'env-locale', 'env-network', 'env-hardware', 'env-storage', 'gl', 'fps', 'ls', 'bc', 'sw', 'share', 'clipboard', 'fs-api', 'wakelock', 'recorder', 'midi-api', 'ble-api', 'xr-api', 'speech-api', 'gamepad-api', 'vibrate-api', 'pointer-api', 'screens-api']
-const SPEC_INTER = ['cam', 'mic', 'speech', 'midi', 'gamepad', 'rumble', 'pointer', 'vibrate', 'orient', 'screens', 'popup', 'fullscreen']
+const SPEC_INTER = ['cam', 'mic', 'speech', 'narration', 'watchdog', 'gesture', 'midi', 'gamepad', 'rumble', 'pointer', 'vibrate', 'orient', 'screens', 'popup', 'fullscreen']   // 前 12 項是原本的；narration / watchdog / gesture 是真機驗證日新增的三項
 
 // 「全功能」的假瀏覽器：每個 API 都存在且正常
 function fullEnv(over = {}) {
@@ -264,7 +265,7 @@ test('fmtMsg：字串 / 訊息 / 巢狀訊息 / 陣列（空值略過）；切�
   assert.equal(D.fmtMsg('plain'), 'plain'); assert.equal(D.fmtMsg(null), '')
   assert.equal(D.fmtMsg({ key: '{a}-{b}', params: { a: 1, b: { key: '螢幕 {n}', params: { n: 2 } } } }), '1-螢幕 2')
   assert.equal(D.fmtMsg(['x', null, { key: 'y' }, ['z']]), 'x · y · z')
-  registerEn(en); setLocale('en')
+  registerEn(en); registerEn(en2); setLocale('en')
   try {
     assert.equal(D.fmtMsg({ key: '螢幕 {n}', params: { n: 2 } }), 'Screen 2')
     assert.equal(D.statusKey('needs-action'), '待操作')
@@ -1030,16 +1031,16 @@ test('報告：Markdown 表格 + JSON；規格欄位齊全；沒跑的項目標�
   const results = Object.fromEntries(out.map((r) => [r.id, r]))
   results.ls = { ...results.ls, detail: 'a|b\nc', msg: undefined }
   const rep = D.buildReport({ results, meta: D.collectMeta(x.env, Date.UTC(2026, 8, 20)) })
-  assert.equal(rep.json.results.length, D.getChecks().length); assert.equal(rep.json.summary.total, 37)
-  assert.equal(rep.json.summary.pass + rep.json.summary.fail + rep.json.summary.unsupported + rep.json.summary.pending, 37)
-  assert.equal(rep.json.summary.pass, 25); assert.equal(rep.json.summary.pending, 12)
+  assert.equal(rep.json.results.length, D.getChecks().length); assert.equal(rep.json.summary.total, 40)
+  assert.equal(rep.json.summary.pass + rep.json.summary.fail + rep.json.summary.unsupported + rep.json.summary.pending, 40)
+  assert.equal(rep.json.summary.pass, 25); assert.equal(rep.json.summary.pending, 15)
   const row = rep.json.results.find((r) => r.id === 'gl'); assert.deepEqual(Object.keys(row).slice(0, 6), ['id', 'group', 'title', 'status', 'detail', 'ms']); assert.equal(row.status, 'pass'); assert.equal(row.title, 'WebGL 圖形')
   assert.equal(rep.json.results.find((r) => r.id === 'cam').status, 'not-run'); assert.equal(rep.json.results.find((r) => r.id === 'cam').ms, null)
   for (const k of ['app', 'version', 'generatedAt', 'url', 'userAgent', 'screen', 'summary', 'results', 'locale']) assert.ok(k in rep.json, k)
   const lines = rep.markdown.split('\n')
   assert.equal(lines[0], '# MidiSea 裝置診斷報告'); assert.ok(lines.some((l) => l === '| 群組 | 項目 | 狀態 | 詳情 | 耗時 (ms) |')); assert.ok(lines.some((l) => l === '| --- | --- | --- | --- | ---: |'))
-  assert.ok(lines.some((l) => /^- 產生時間：2026-09-20T00:00:00\.000Z$/.test(l))); assert.ok(lines.some((l) => /^- 摘要：通過 25、失敗 0、不支援 0、尚未測 12（共 37 項）$/.test(l)))
-  assert.equal(lines.filter((l) => l.startsWith('| ')).length, 37 + 2, '每項一列 + 表頭 + 分隔線')
+  assert.ok(lines.some((l) => /^- 產生時間：2026-09-20T00:00:00\.000Z$/.test(l))); assert.ok(lines.some((l) => /^- 摘要：通過 25、失敗 0、不支援 0、尚未測 15（共 40 項）$/.test(l)))
+  assert.equal(lines.filter((l) => l.startsWith('| ')).length, 40 + 2, '每項一列 + 表頭 + 分隔線')
   const lsRow = lines.find((l) => l.includes('localStorage 讀寫')); assert.match(lsRow, /a\\\|b c/); assert.match(lines.find((l) => l.includes('相機（視訊預覽）')), /尚未測/)
   const m = rep.text.match(/```json\n([\s\S]*)\n```\n$/); assert.ok(m, '文字尾端有 JSON 區塊'); assert.deepEqual(JSON.parse(m[1]), JSON.parse(JSON.stringify(rep.json)))
   assert.ok(rep.text.startsWith(rep.markdown))
@@ -1079,7 +1080,7 @@ test('報告的隱私範圍（README 與實作一致）：Web MIDI 埠名稱與�
 test('報告：切成英文後標題 / 狀態 / 詳情都是英文；中文模式輸出不變', () => {
   const results = { ls: D.makeResult(D.getCheck('ls'), { status: 'pass', msg: { key: '寫入、讀回、刪除都成功' } }, 4) }
   const zh = D.buildReport({ results, meta: {} }).markdown
-  registerEn(en); setLocale('en')
+  registerEn(en); registerEn(en2); setLocale('en')
   try {
     const rep = D.buildReport({ results, meta: {}, locale: 'en' })
     assert.match(rep.markdown, /^# MidiSea device diagnostics report/); assert.match(rep.markdown, /\| Group \| Check \| Status \| Details \| Time \(ms\) \|/)
@@ -1157,7 +1158,7 @@ test('「上次診斷」那一行（formatSummaryLine）：有總數 → 通過 
   const line = formatSummaryLine({ at, ...sum }, t, 'zh-TW')
   assert.match(line, new RegExp(`通過 ${sum.pass} / ${sum.total} 項，失敗 ${sum.fail}、不支援 ${sum.unsupported}、尚未測 ${sum.pending}$`))
   // 英文
-  registerEn(en); setLocale('en')
+  registerEn(en); registerEn(en2); setLocale('en')
   try {
     const l = formatSummaryLine(onlyAuto, t, 'en-US')
     assert.match(l, /^Last diagnosis: .+, 25 of 37 passed, 0 failed, 0 unsupported, 12 not tested yet$/); assert.ok(!/[㐀-鿿]/.test(l), l)
@@ -1231,4 +1232,609 @@ test('沒有殘留：所有測試用到的假環境最後都沒有排程中的�
     const x = fullEnv(); const p = D.runAutoChecks(x.env); await adv(x.clock, 8000, 100); await p
     assert.equal(x.clock.pending(), 0); assert.equal(x.raf.live.size, 0)
   }
+})
+
+// ═════════════════════════════ 真機驗證日：語音旁白 / 看門狗自我檢查 / 相機手勢 ═════════════════════════════
+// ───────────────────────────── 語音旁白 ─────────────────────────────
+function fakeNarrator(o = {}) {
+  const n = {
+    spoken: [], cancels: 0, disposed: 0, resolveSpeak: null,
+    supported() { return o.supported !== false },
+    speak(text, opts) {
+      n.spoken.push({ text, opts })
+      if (o.mode === 'hang') return new Promise(() => {})
+      if (o.mode === 'defer') return new Promise((r) => { n.resolveSpeak = r })
+      return Promise.resolve(o.result || 'done')
+    },
+    cancel() { n.cancels++ },
+    dispose() { n.disposed++ },
+    pickVoice() { return o.voice === undefined ? { name: 'Mei-Jia', lang: 'zh-TW', localService: true } : o.voice },
+  }
+  return strict(n, 'narrator')
+}
+function fakeSynth(voices, o = {}) {
+  const ls = new Set()
+  const s = {
+    voices, added: 0, removed: 0,
+    getVoices() { return s.voices },
+    addEventListener(t, f) { if (t === 'voiceschanged') { ls.add(f); s.added++ } },
+    removeEventListener(t, f) { if (t === 'voiceschanged') { ls.delete(f); s.removed++ } },
+    fire() { for (const f of [...ls]) f() },
+    listenerCount() { return ls.size },
+  }
+  if (o.noEvents) { delete s.addEventListener; delete s.removeEventListener }
+  return strict(s, 'speechSynthesis')
+}
+const VOICES = [
+  { name: 'Mei-Jia', lang: 'zh-TW', localService: true }, { name: 'Google 國語', lang: 'zh_TW', localService: false }, { name: 'HK', lang: 'zh-HK', localService: true },
+  { name: 'Samantha', lang: 'en-US', localService: false }, null,
+]
+function narrSetup(o = {}) {
+  const clock = makeClock()
+  const narrator = o.narrator || fakeNarrator(o.nar)
+  const synth = o.synth === null ? undefined : (o.synth || fakeSynth(o.voices ?? VOICES))
+  const { seen, hooks } = collect()
+  const { env } = makeEnv({ narrator, nav: strict({}), win: fakeWin({ speechSynthesis: synth }) }, clock)
+  return { clock, narrator, synth, seen, env, probe: D.createProbe('narration', env, { ...hooks, lang: o.lang || 'zh-TW' }) }
+}
+
+test('語音旁白：summarizeVoices 只計數（zh-TW / en-US 各幾個、幾個是離線）；容忍 zh_TW / zh-Hant-TW / 大小寫；空值與壞輸入不丟例外', () => {
+  assert.deepEqual(D.summarizeVoices(VOICES), { total: 4, zhTW: 2, enUS: 1, zhTWLocal: 1, enUSLocal: 0, local: 2 })
+  assert.deepEqual(D.summarizeVoices([{ lang: 'zh-Hant-TW', localService: true }, { lang: 'EN-us', localService: true }, { lang: 'ja-JP' }, {}, { lang: 5 }]), { total: 5, zhTW: 1, enUS: 1, zhTWLocal: 1, enUSLocal: 1, local: 2 })
+  assert.deepEqual(D.summarizeVoices(null), { total: 0, zhTW: 0, enUS: 0, zhTWLocal: 0, enUSLocal: 0, local: 0 }); assert.equal(D.summarizeVoices(undefined).total, 0)
+  assert.equal(D.summarizeVoices({ length: 1, 0: { lang: 'en-US' } }).enUS, 1, '類陣列（SpeechSynthesisVoiceList）也能計數')
+})
+
+test('語音旁白：按下按鈕的同一個手勢內就呼叫 narrator.speak（iOS）；念完 → 待操作 + 聲音清單；使用者回答「有」→ 通過、「沒有」→ 失敗', async () => {
+  const x = narrSetup()
+  const p = x.probe.start()
+  assert.equal(x.narrator.spoken.length, 1, '同步呼叫（在第一個 await 之前）：iOS 才允許出聲')
+  assert.deepEqual(x.narrator.spoken[0].opts, { lang: 'zh-TW' }); assert.match(x.narrator.spoken[0].text, /這是旁白測試/)
+  await settle()
+  const r = await p
+  assert.equal(r.status, 'needs-action', '念完還要人回答：有沒有聽到')
+  assert.deepEqual(r.data.voices, { total: 4, zhTW: 2, enUS: 1, zhTWLocal: 1, enUSLocal: 0, local: 2 }); assert.equal(r.data.lang, 'zh-TW'); assert.equal(r.data.outcome, 'done')
+  assert.deepEqual(r.data.voice, { name: 'Mei-Jia', lang: 'zh-TW', local: true })
+  assert.match(r.detail, /已念出測試句（zh-TW）/); assert.match(r.detail, /zh-TW 2 個（離線 1）、en-US 1 個（離線 0）/); assert.match(r.detail, /zh-TW 有離線聲音/)
+  assert.ok(x.seen.updates.some((u) => u.voices && u.voices.zhTW === 2), '畫面即時顯示聲音清單')
+  const spec = D.getCheck('narration')
+  assert.equal(spec.verdict.required, true); assert.equal(spec.verdict.ask, '有聽到嗎？'); assert.equal(spec.verdict.ok, '有'); assert.equal(spec.verdict.bad, '沒有')
+  assert.equal(D.applyVerdict(spec, r, undefined).status, 'needs-action', '沒回答前維持待操作')
+  const yes = D.applyVerdict(spec, r, 'ok'); assert.equal(yes.status, 'pass'); assert.equal(yes.verdict, 'ok'); assert.match(yes.detail, /使用者確認：有聽到旁白/)
+  const no = D.applyVerdict(spec, r, 'bad'); assert.equal(no.status, 'fail'); assert.match(no.detail, /使用者回報：沒有聽到旁白/)
+  assert.equal(x.narrator.cancels >= 1 && x.narrator.disposed >= 1, true, '結束一定 cancel + dispose（放掉 voiceschanged 監聽）'); assert.equal(x.clock.pending(), 0); assert.deepEqual(x.seen.running, [true, false])
+})
+
+test('語音旁白：測試句依語系（en-US → 英文，不受全域語系影響）；沒有 zh-TW 聲音 / 沒有離線聲音的提示；聲音清單一開始是空的 → 等 voiceschanged，等不到也繼續', async () => {
+  registerEn(en); registerEn(en2)
+  const e = narrSetup({ lang: 'en-US' }); const pe = e.probe.start(); await settle(); const re = await pe
+  assert.equal(e.narrator.spoken[0].text, 'This is a narration test. If you can hear this sentence, spoken narration works.'); assert.deepEqual(e.narrator.spoken[0].opts, { lang: 'en-US' })
+  assert.match(re.detail, /en-US 的聲音都不是離線聲音/, '只有線上的 en-US 聲音 → 提醒斷網可能念不出來')
+
+  const none = narrSetup({ voices: [{ name: 'Kyoko', lang: 'ja-JP', localService: true }] }); const pn = none.probe.start(); await settle(); const rn = await pn
+  assert.match(rn.detail, /沒有 zh-TW 的聲音/); assert.equal(rn.data.voices.zhTW, 0)
+
+  const late = narrSetup({ voices: [] }); const pl = late.probe.start(); await settle()
+  assert.equal(late.synth.listenerCount(), 1, '等 voiceschanged 期間有掛監聽')
+  late.synth.voices = [{ name: 'Mei-Jia', lang: 'zh-TW', localService: true }]; late.synth.fire(); await settle()
+  const rl = await pl; assert.equal(rl.data.voices.zhTW, 1); assert.equal(late.synth.listenerCount(), 0, '監聽拿掉了'); assert.equal(late.clock.pending(), 0)
+
+  const never = narrSetup({ voices: [] }); const pv = never.probe.start(); await adv(never.clock, 2000, 100); const rv = await pv
+  assert.equal(rv.data.voices.total, 0); assert.match(rv.detail, /聲音清單是空的/); assert.equal(rv.status, 'needs-action', '聲音清單是空的仍然念念看（由人判斷）'); assert.equal(never.synth.listenerCount(), 0); assert.equal(never.clock.pending(), 0)
+
+  const noEv = narrSetup({ voices: [], synth: fakeSynth([], { noEvents: true }) }); const pne = noEv.probe.start(); await settle(); assert.equal((await pne).data.voices.total, 0, '沒有 addEventListener 的舊瀏覽器也不會卡住')
+  const noSynthObj = narrSetup({ synth: null }); const pns = noSynthObj.probe.start(); await settle(); assert.equal((await pns).data.voices.total, 0, 'window 上沒有 speechSynthesis（旁白器另有來源）也只是沒有清單')
+})
+
+test('語音旁白：念不出聲 → 失敗並提示 iOS 要先點一下；被中斷 → 失敗；不支援 → unsupported；卡住 → 逾時 20 秒失敗並閉嘴', async () => {
+  const err = narrSetup({ nar: { result: 'error' } }); const pe = err.probe.start(); await settle(); const re = await pe
+  assert.equal(re.status, 'fail'); assert.match(re.detail, /念不出聲/); assert.match(re.detail, /iPhone \/ iPad 請直接點按鈕/); assert.equal(re.data.outcome, 'error')
+  const can = narrSetup({ nar: { result: 'cancelled' } }); const pc = can.probe.start(); await settle(); assert.match((await pc).detail, /被中斷/)
+  const uns = narrSetup({ nar: { result: 'unsupported' } }); const pu = uns.probe.start(); await settle(); assert.equal((await pu).status, 'unsupported')
+  const off = narrSetup({ nar: { supported: false } }); const ro = await off.probe.start(); assert.equal(ro.status, 'unsupported'); assert.match(ro.detail, /speechSynthesis/); assert.equal(off.narrator.spoken.length, 0, '不支援就不呼叫 speak')
+  const hang = narrSetup({ nar: { mode: 'hang' } }); const ph = hang.probe.start(); await adv(hang.clock, 21000, 500); const rh = await ph
+  assert.equal(rh.status, 'fail'); assert.match(rh.detail, /20 秒內沒有念完/); assert.ok(hang.narrator.cancels >= 1, '逾時後一定 cancel'); assert.equal(hang.clock.pending(), 0)
+  // 沒有注入旁白器、Node 沒有 speechSynthesis → 用共用的 narrator：不支援（不丟例外）
+  const real = D.createProbe('narration', makeEnv({ win: fakeWin(), nav: strict({}) }).env, {}); assert.equal((await real.start()).status, 'unsupported')
+})
+
+test('語音旁白：念到一半按停止 / 離開頁面 → 同步 cancel + dispose，結果是略過（不是失敗）；遲到的念完事件不會回頭改任何東西', async () => {
+  const x = narrSetup({ nar: { mode: 'defer' } })
+  const p = x.probe.start(); await settle()
+  assert.equal(x.narrator.cancels, 0); x.probe.stop()
+  assert.ok(x.narrator.cancels >= 1 && x.narrator.disposed >= 1, 'stop() 當下就閉嘴 + 放掉監聽（不等 async 收尾）')
+  assert.deepEqual(x.seen.running, [true, false], '畫面立刻回到未執行')
+  const r = await p; assert.equal(r.status, 'skipped'); x.narrator.resolveSpeak('done'); await settle()
+  assert.ok(!x.seen.results.some((v) => v.status === 'needs-action' || v.status === 'fail'), '遲到的結果沒有出現'); assert.equal(x.clock.pending(), 0); assert.equal(x.synth.listenerCount(), 0)
+  // 等聲音清單期間就 stop
+  const y = narrSetup({ voices: [], nar: { mode: 'defer' } }); const py = y.probe.start(); await settle(); assert.equal(y.synth.listenerCount(), 1)
+  y.probe.stop(); assert.equal(y.synth.listenerCount(), 0, 'stop 也拿掉 voiceschanged 監聽'); assert.equal((await py).status, 'skipped'); assert.equal(y.clock.pending(), 0)
+})
+
+test('語音旁白：報告只留計數與挑到的聲音（名稱 / 語言 / 是否離線），不含其他聲音的名稱', async () => {
+  const x = narrSetup(); const p = x.probe.start(); await settle(); const r = await p
+  const rep = D.buildReport({ results: { narration: D.applyVerdict(D.getCheck('narration'), r, 'ok') }, meta: {} })
+  assert.ok(rep.text.includes('"zhTW": 2')); assert.ok(!rep.text.includes('Samantha') && !rep.text.includes('Google 國語'), '沒挑到的聲音名稱不進報告')
+  assert.equal(rep.json.results.find((v) => v.id === 'narration').status, 'pass')
+})
+
+// ───────────────────────────── 看門狗自我檢查 ─────────────────────────────
+// 每一幀的延遲由劇本決定（Infinity = 之後 rAF 再也不來）
+function scriptedRaf(clock, delays) {
+  let seq = 0, i = 0
+  const live = new Map()
+  return {
+    live,
+    raf: (cb) => { const id = ++seq; const d = i < delays.length ? delays[i++] : delays[delays.length - 1]; if (!Number.isFinite(d)) return id; live.set(id, clock.setTimeout(() => { live.delete(id); cb(clock.now()) }, d)); return id },
+    cancelRaf: (id) => { const h = live.get(id); if (h != null) clock.clearTimeout(h); live.delete(id) },
+  }
+}
+function wdSetup(o = {}) {
+  const clock = makeClock()
+  const r = o.delays ? scriptedRaf(clock, o.delays) : fakeRaf(clock, o.rafMs ?? 16)
+  const { seen, hooks } = collect()
+  const doc = strict({ hidden: !!o.hidden, visibilityState: o.hidden ? 'hidden' : 'visible' })
+  const win = fakeWin({ location: { search: o.search ?? '?diagnostics=1&kiosk=1', href: 'https://midisea.shyetech.com/' } })
+  const over = { win, doc, ...(o.noRaf ? {} : { raf: r.raf, cancelRaf: r.cancelRaf }), ...(o.resilience ? { resilience: o.resilience } : {}) }
+  const { env } = makeEnv(over, clock)
+  return { clock, r, seen, env, probe: D.createProbe('watchdog', env, hooks) }
+}
+
+test('看門狗：驗證判定邏輯（真實的 watchdogVerdict）——正常 → ok、卡死 → stalled、分頁隱藏 → hidden；壞的判定函式 / 丟例外的判定函式都會被抓到', () => {
+  const real = D.checkWatchdogVerdicts()
+  assert.equal(real.ok, true); assert.deepEqual(real.cases.map((c) => [c.id, c.expect, c.got, c.ok]), [['normal', 'ok', 'ok', true], ['stalled', 'stalled', 'stalled', true], ['hidden', 'hidden', 'hidden', true]])
+  const always = D.checkWatchdogVerdicts(() => 'ok'); assert.equal(always.ok, false); assert.deepEqual(always.cases.map((c) => c.ok), [true, false, false])
+  const boom = D.checkWatchdogVerdicts(() => { throw new Error('boom') }); assert.equal(boom.ok, false); assert.deepEqual(boom.cases.map((c) => c.got), ['error', 'error', 'error'])
+  const seenInputs = []; D.checkWatchdogVerdicts((i) => { seenInputs.push(i); return 'ok' })
+  assert.deepEqual(seenInputs.map((i) => [i.enabled, i.visible]), [[true, true], [true, true], [true, false]]); assert.ok(seenInputs.every((i) => i.now > i.lastFrameAt || i.lastFrameAt === 0))
+})
+
+test('看門狗：這個網址的參數在主畫面會不會啟用（resolveConfig）——診斷頁自己的 diagnostics / guided 參數先去掉；?kiosk / ?watchdog=1 / ?audience=1 會啟用，?watchdog=0 明確關閉', () => {
+  const cfg = (search) => D.watchdogConfigInfo({ win: { location: { search } } })
+  assert.deepEqual([cfg('?diagnostics=1').on, cfg('?diagnostics=1').reason], [false, 'default'])
+  assert.deepEqual([cfg('?diagnostics=1&guided=1').on, cfg('?diagnostics=1&guided=1').reason], [false, 'default'])
+  assert.deepEqual([cfg('?diagnostics=1&kiosk=1').on, cfg('?diagnostics=1&kiosk=1').reason], [true, 'kiosk'])
+  assert.deepEqual([cfg('?diagnostics=1&guided=1&watchdog=1').on, cfg('?diagnostics=1&guided=1&watchdog=1').reason], [true, 'flag'])
+  assert.deepEqual([cfg('?diagnostics=1&watchdog=0&kiosk=1').on, cfg('?diagnostics=1&watchdog=0&kiosk=1').reason], [false, 'flag-off'])
+  assert.deepEqual([cfg('?diagnostics=1&audience=1').on, cfg('?diagnostics=1&audience=1').reason], [true, 'audience'])
+  assert.deepEqual(cfg('').examples, [{ search: '?kiosk=1', on: true }, { search: '?watchdog=1', on: true }], '展場用網址範例：都會啟用')
+  assert.equal(D.watchdogConfigInfo({}).on, false); assert.equal(D.watchdogConfigInfo(null).on, false, '沒有 window 也不丟例外')
+  assert.equal(D.watchdogConfigInfo({ win: {} }).reason, 'default')
+})
+
+test('看門狗自我檢查：3 秒取樣幀數 / 平均 FPS / 最大幀間隔 + 3 組判定 + 網址設定 → 通過；註明「不會模擬真的卡死」；放掉所有 rAF 與計時器', async () => {
+  const x = wdSetup()
+  const p = x.probe.start(); await adv(x.clock, 3200, 16)
+  const r = await p
+  assert.equal(r.status, 'pass', r.detail)
+  assert.ok(r.data.frames >= 180 && r.data.frames <= 195, 'frames ' + r.data.frames); assert.equal(r.data.maxGapMs, 16); assert.ok(Math.abs(r.data.avgFps - 62.5) < 1, 'fps ' + r.data.avgFps); assert.equal(r.data.sampleMs, 3000)
+  assert.deepEqual(r.data.verdicts, { normal: 'ok', stalled: 'stalled', hidden: 'hidden' }); assert.equal(r.data.verdictOk, true)
+  assert.deepEqual(r.data.config, { on: true, reason: 'kiosk', examples: [{ search: '?kiosk=1', on: true }, { search: '?watchdog=1', on: true }] }); assert.equal(r.data.stallMs, 10000)
+  assert.match(r.detail, /取樣 3 秒：\d+ 幀，平均 62\.\d FPS，最大幀間隔 16 ms/); assert.match(r.detail, /判定邏輯驗證：正常 → ok、卡死 → stalled、分頁隱藏 → hidden，3 組都符合預期/)
+  assert.match(r.detail, /主畫面用這個網址的參數會啟用看門狗（展場模式 \?kiosk）/); assert.match(r.detail, /展場請用 \?kiosk=1（或 \?watchdog=1）/); assert.match(r.detail, /連續 10 秒沒有畫面幀，連續 2 次檢查（每 2 秒一次）/)
+  assert.match(r.detail, /這不會模擬真的卡死；實機卡死復原要在主畫面加 \?watchdog=1 手動驗/)
+  assert.equal(x.r.live.size, 0, '沒有殘留 rAF'); assert.equal(x.clock.pending(), 0); assert.deepEqual(x.seen.running, [true, false])
+  assert.equal(x.seen.updates[0].phase, 'sampling'); assert.ok(x.seen.updates.some((u) => u.frames > 50 && u.maxGapMs === 16), '取樣中即時回報幀數'); assert.ok(x.seen.updates.length < 30, '即時回報有節流（每 250ms 一次），不是每幀一次')
+  assert.equal(D.getCheck('watchdog').detailList, true)
+  // 一般網址（沒有 ?kiosk）：仍通過（只是資訊），但說明「不會啟用」與原因
+  const plain = wdSetup({ search: '?diagnostics=1' }); const pp = plain.probe.start(); await adv(plain.clock, 3200, 16); const rp = await pp
+  assert.equal(rp.status, 'pass'); assert.equal(rp.data.config.on, false); assert.match(rp.detail, /不會啟用看門狗（一般使用的預設值：不啟用）/); assert.match(rp.detail, /診斷頁本身不會啟動看門狗/)
+})
+
+test('看門狗自我檢查：幀間隔太大 / 中途 rAF 停了 / 幾乎沒有幀 → 失敗並說明；稍慢但正常（1.5 秒一幀）仍通過', async () => {
+  const gap = wdSetup({ delays: [10, 10, 10, 5100, 10] }); const pg = gap.probe.start(); await adv(gap.clock, 6500, 100); const rg = await pg
+  assert.equal(rg.status, 'fail'); assert.equal(rg.data.maxGapMs, 5100); assert.equal(rg.data.frames, 4); assert.match(rg.detail, /最大幀間隔已超過看門狗門檻的一半（5000 ms）/); assert.equal(gap.r.live.size, 0); assert.equal(gap.clock.pending(), 0)
+
+  const stop = wdSetup({ delays: [10, 10, 10, Infinity] }); const ps = stop.probe.start(); await adv(stop.clock, 6000, 100); const rs = await ps
+  assert.equal(rs.status, 'fail'); assert.equal(rs.data.frames, 3); assert.ok(rs.data.maxGapMs >= 5000, '「最後一幀之後 rAF 就不來了」也算進最大幀間隔：' + rs.data.maxGapMs); assert.match(rs.detail, /最大幀間隔已超過/); assert.equal(stop.clock.pending(), 0)
+
+  const none = wdSetup({ delays: [Infinity] }); const pn = none.probe.start(); await adv(none.clock, 6000, 100); const rn = await pn
+  assert.equal(rn.status, 'fail'); assert.equal(rn.data.frames, 0); assert.match(rn.detail, /幾乎沒有畫面幀（0 幀）：分頁可能在背景、被節流，或畫面已經卡住/); assert.equal(rn.data.avgFps, 0)
+  const one = wdSetup({ delays: [10, Infinity] }); const p1 = one.probe.start(); await adv(one.clock, 6000, 100); assert.match((await p1).detail, /（1 幀）/)
+
+  const slow = wdSetup({ rafMs: 1500 }); const psl = slow.probe.start(); await adv(slow.clock, 5000, 100); const rsl = await psl
+  assert.equal(rsl.status, 'pass'); assert.equal(rsl.data.frames, 3); assert.equal(rsl.data.maxGapMs, 1500)
+})
+
+test('看門狗自我檢查：判定函式不符預期（永遠回 ok / 丟例外）→ 失敗並列出實際判定；設定函式可注入', async () => {
+  const bad = wdSetup({ resilience: { watchdogVerdict: () => 'ok' } }); const pb = bad.probe.start(); await adv(bad.clock, 3200, 16); const rb = await pb
+  assert.equal(rb.status, 'fail'); assert.equal(rb.data.verdictOk, false); assert.deepEqual(rb.data.verdicts, { normal: 'ok', stalled: 'ok', hidden: 'ok' })
+  assert.match(rb.detail, /判定邏輯不符預期：正常 → ok（應為 ok）、卡死 → ok（應為 stalled）、分頁隱藏 → ok（應為 hidden）/)
+  const boom = wdSetup({ resilience: { watchdogVerdict: () => { throw new Error('boom') } } }); const pt = boom.probe.start(); await adv(boom.clock, 3200, 16); const rt = await pt
+  assert.equal(rt.status, 'fail'); assert.deepEqual(Object.values(rt.data.verdicts), ['error', 'error', 'error'])
+  const cfgThrows = wdSetup({ resilience: { resolveConfig: () => { throw new Error('config boom') } } }); const rc = await cfgThrows.probe.start(); assert.equal(rc.status, 'fail'); assert.match(rc.detail, /config boom/)
+  const custom = wdSetup({ resilience: { WATCHDOG_STALL_MS: 20000, WATCHDOG_STRIKES: 3, WATCHDOG_CHECK_MS: 4000 } }); const pcu = custom.probe.start(); await adv(custom.clock, 3200, 16); assert.match((await pcu).detail, /連續 20 秒沒有畫面幀，連續 3 次檢查（每 4 秒一次）/)
+})
+
+test('看門狗自我檢查：分頁在背景 → 略過（不取樣）；沒有 rAF → unsupported（仍列出判定驗證與說明）；按停止 → 立刻放掉 rAF；環境全是壞的 → 失敗不丟例外', async () => {
+  const hid = wdSetup({ hidden: true }); const rh = await hid.probe.start(); assert.equal(rh.status, 'skipped'); assert.match(rh.detail, /分頁在背景/); assert.equal(hid.r.live.size, 0)
+  const noRaf = wdSetup({ noRaf: true }); const rn = await noRaf.probe.start()
+  assert.equal(rn.status, 'unsupported'); assert.match(rn.detail, /沒有 requestAnimationFrame/); assert.match(rn.detail, /判定邏輯驗證/); assert.match(rn.detail, /不會模擬真的卡死/); assert.equal(rn.data.sampled, false)
+  const st = wdSetup(); const ps = st.probe.start(); await adv(st.clock, 500, 16)
+  assert.ok(st.r.live.size > 0); st.probe.stop(); assert.equal(st.r.live.size, 0, 'stop() 同步取消 rAF'); assert.equal(st.clock.pending(), 0, '也清掉保險計時器'); assert.equal((await ps).status, 'skipped'); assert.deepEqual(st.seen.running, [true, false])
+  const boom = new Proxy({}, { get() { throw new Error('boom') } })
+  const r = await D.createProbe('watchdog', makeEnv({ nav: boom, win: boom, doc: boom }).env).start(); assert.equal(r.status, 'fail'); assert.match(r.detail, /boom/)
+})
+
+// ───────────────────────────── 相機手勢（MediaPipe）─────────────────────────────
+// 合成手部 landmark（掌尺單位、y 向下）：與 gestures.test.mjs 同一套產生器的精簡版，用真的 classifyHand 分類
+const HAND_DEF = [
+  { mcp: [-0.33, -0.97], len: [0.42, 0.24, 0.21], fan: -10 }, { mcp: [0.0, -1.0], len: [0.47, 0.30, 0.25], fan: 0 },
+  { mcp: [0.30, -0.95], len: [0.44, 0.28, 0.24], fan: 9 }, { mcp: [0.56, -0.82], len: [0.35, 0.19, 0.19], fan: 20 },
+]
+const radn = (dg) => (dg * Math.PI) / 180
+function handFinger(def, { spread = 1, curl = 0, mode = 'depth' } = {}) {
+  const base = radn(def.fan * spread), flex = [90 * curl, 100 * curl, 70 * curl].map(radn)
+  const pts = [[def.mcp[0], def.mcp[1]]]; let cum = 0
+  for (let i = 0; i < 3; i++) {
+    cum += flex[i]; const [px, py] = pts[i]
+    if (mode === 'depth') { const L = def.len[i] * Math.cos(cum); pts.push([px + Math.sin(base) * L, py - Math.cos(base) * L]) }
+    else { const a = base + cum; pts.push([px + Math.sin(a) * def.len[i], py - Math.cos(a) * def.len[i]]) }
+  }
+  return pts.slice(1)
+}
+function makeHandLm({ curls = [0, 0, 0, 0], spread = 1, mode = 'depth', pinch = null, thumb = [[-0.28, -0.18], [-0.55, -0.38], [-0.80, -0.52], [-1.00, -0.66]] } = {}) {
+  const pts = new Array(21); pts[0] = [0, 0]
+  HAND_DEF.forEach((d, i) => { const f = handFinger(d, { spread, curl: curls[i], mode }); pts[5 + i * 4] = d.mcp; pts[6 + i * 4] = f[0]; pts[7 + i * 4] = f[1]; pts[8 + i * 4] = f[2] })
+  const th = thumb.map((p) => [...p])
+  if (pinch != null) { const tip = pts[8]; th[3] = [tip[0] - pinch, tip[1]]; th[2] = [(th[1][0] + th[3][0]) * 0.5, (th[1][1] + th[3][1]) * 0.5]; th[1] = [-0.52, -0.42] }
+  for (let i = 0; i < 4; i++) pts[1 + i] = th[i]
+  const W = 640, H = 480, scale = 0.25, tx = 0.5, ty = 0.55
+  return pts.map(([x, y]) => ({ x: (x * scale * H + tx * W) / W, y: (y * scale * H + ty * H) / H, z: 0 }))
+}
+const OPEN_PALM = () => makeHandLm({})
+const PINCH = () => makeHandLm({ curls: [0.35, 0, 0, 0], spread: 0.6, mode: 'plane', pinch: 0.05 })
+const FIST = () => makeHandLm({ curls: [1, 1, 1, 1], spread: 0.3, thumb: [[-0.28, -0.18], [-0.40, -0.40], [-0.20, -0.55], [0.05, -0.55]] })
+
+// 假 MediaPipe 模組：createFromOptions 可以延遲 / 失敗 / 卡住；detectForVideo 依「第幾次呼叫」回傳劇本
+function fakeVision(clock, o = {}) {
+  const log = [], landmarkers = []
+  const mod = {
+    FilesetResolver: { forVisionTasks(url) { log.push('fileset:' + url); return o.filesetError ? Promise.reject(new Error('fileset failed')) : Promise.resolve({ url }) } },
+    HandLandmarker: {
+      createFromOptions(fileset, opts) {
+        log.push('create:' + opts.baseOptions.delegate + ':' + opts.numHands + ':' + opts.runningMode + ':' + opts.baseOptions.modelAssetPath)
+        if (o.gpuFail && opts.baseOptions.delegate === 'GPU') return Promise.reject(new Error('gpu unavailable'))
+        if (o.modelError) return Promise.reject(new Error('model download failed'))
+        const lm = strict({
+          closed: 0, calls: 0, stamps: [],
+          detectForVideo(video, ts) { lm.calls++; lm.stamps.push(ts); if (o.detectThrows) throw new Error('detect boom'); return { landmarks: o.script ? o.script(lm.calls) : [] } },
+          close() { lm.closed++ },
+        }, 'HandLandmarker')
+        landmarkers.push(lm)
+        if (o.modelHang) return new Promise(() => {})
+        if (o.lateModel) return new Promise((res) => { o.lateResolve = () => res(lm) })
+        if (o.modelMs) return new Promise((res) => { clock.setTimeout(() => res(lm), o.modelMs) })
+        return Promise.resolve(lm)
+      },
+    },
+  }
+  return { mod: strict(mod, 'vision'), log, landmarkers }
+}
+function fakeGestureVideo(clock, frameMs = 16) {
+  const v = { readyState: 4, videoWidth: 640, videoHeight: 480, srcObject: null, played: 0, paused: 0, play() { v.played++; return Promise.resolve() }, pause() { v.paused++ } }
+  Object.defineProperty(v, 'currentTime', { get() { return Math.floor(clock.now() / frameMs) / 30 } })   // 每 frameMs 毫秒才有新的一幀
+  return strict(v, 'video')
+}
+function gestureSetup(o = {}) {
+  const clock = makeClock()
+  const md = fakeMedia(o.md)
+  const vision = fakeVision(clock, o.vision)
+  const video = fakeGestureVideo(clock, o.frameMs)
+  const { seen, hooks } = collect()
+  seen.attached = 0; seen.detached = 0; seen.draws = []
+  const nav = o.noMedia ? strict({}) : strict({ mediaDevices: md, onLine: o.offline ? false : true })
+  const doc = strict({ hidden: false })
+  const win = fakeWin({ isSecureContext: o.secure !== false })
+  const importVision = o.importVision || (() => Promise.resolve(vision.mod))
+  const { env } = makeEnv({ nav, win, doc, WebAssembly: o.noWasm ? null : {}, importVision: o.noLoader ? undefined : importVision }, clock)
+  const probe = D.createProbe('gesture', env, { ...hooks, attach: o.attach || (async (s) => { seen.attached++; video.srcObject = s; return video }), detach: () => { seen.detached++ }, draw: (h) => { seen.draws.push(h) } })
+  return { clock, md, vision, video, seen, env, probe, doc }
+}
+
+test('相機手勢：合成的張手 / 捏合 / 握拳用真的 classifyHand 分類（產生器自我檢查）', async () => {
+  const { classifyHand } = await import('./gestures.js')
+  const asp = 640 / 480
+  assert.equal(classifyHand(OPEN_PALM(), { aspect: asp }).gesture, 'open_palm'); assert.equal(classifyHand(PINCH(), { aspect: asp }).gesture, 'pinch'); assert.equal(classifyHand(FIST(), { aspect: asp }).gesture, 'other')
+  assert.equal(OPEN_PALM().length, 21)
+})
+
+test('相機手勢：請求相機 → 動態載入 → 載入模型 → 偵測 8 秒 → 回報載入時間 / 實際 FPS / 最多同時幾隻手 / 看過哪些手勢；結束停 track、關辨識器、放掉預覽並清掉骨架', async () => {
+  const script = (n) => (n <= 30 ? [] : n <= 200 ? [OPEN_PALM()] : n <= 320 ? [OPEN_PALM(), PINCH()] : n <= 400 ? [FIST()] : [PINCH()])
+  const x = gestureSetup({ vision: { script, modelMs: 1200 } })
+  const p = x.probe.start()
+  assert.deepEqual(x.md.calls, [{ video: { facingMode: 'user', width: 640, height: 480 }, audio: false }], '按下才請求相機（640×480 前鏡頭、不要音訊）')
+  await settle(); assert.deepEqual(x.vision.log, ['fileset:' + WASM_BASE_EXPECT, 'create:GPU:2:VIDEO:' + MODEL_URL_EXPECT], 'GPU 優先、最多 2 隻手、VIDEO 模式、資源網址與主畫面手勢一致')
+  assert.equal(x.seen.attached, 1); assert.ok(x.seen.updates.some((u) => u.phase === 'camera')); assert.ok(x.seen.updates.some((u) => u.phase === 'loading'))
+  await adv(x.clock, 9500, 16)
+  const r = await p
+  assert.equal(r.status, 'pass', r.detail)
+  assert.equal(r.data.modelMs, 1200); assert.equal(r.data.delegate, 'GPU'); assert.equal(r.data.frames, r.data.frames | 0); assert.ok(r.data.frames >= 490 && r.data.frames <= 500, 'frames ' + r.data.frames)
+  assert.ok(Math.abs(r.data.fps - 62.5) < 2, 'fps ' + r.data.fps); assert.equal(r.data.seconds, 8); assert.equal(r.data.handsMax, 2); assert.deepEqual(r.data.gestures, ['open_palm', 'pinch']); assert.equal(r.data.width, 640); assert.equal(r.data.height, 480)
+  assert.ok(r.data.framesWithHand > 250 && r.data.framesWithHand < r.data.frames)
+  assert.match(r.detail, /手勢模型載入 1\.2 秒（GPU）/); assert.match(r.detail, /辨識幀率 6\d\.\d FPS/); assert.match(r.detail, /最多同時偵測 2 隻手/); assert.match(r.detail, /看到的手勢：張手 · 捏合/)
+  const lm = x.vision.landmarkers[0]
+  assert.ok(lm.stamps.every((t, i) => i === 0 || t > lm.stamps[i - 1]), '時間戳嚴格遞增（MediaPipe VIDEO 模式的要求）')
+  assert.ok(x.md.streams[0].tracks.every((t) => t.stopped === 1), '結束一定停掉相機 track'); assert.equal(lm.closed, 1, '辨識器 close 了'); assert.equal(x.seen.detached, 1); assert.deepEqual(x.seen.draws.at(-1), [], '骨架清掉了')
+  assert.ok(x.seen.draws.some((h) => h.length === 2 && h[0].length === 21), '每個偵測幀都把 landmark 交給畫面畫骨架'); assert.equal(x.clock.pending(), 0); assert.deepEqual(x.seen.running, [true, false])
+  assert.ok(x.seen.updates.some((u) => u.gestures && u.gestures.includes('pinch') && u.handsMax === 2), '畫面即時顯示手勢'); assert.ok(x.seen.updates.some((u) => u.aspect === 1.333), '預覽比例跟著影片')
+  assert.ok(x.seen.updates.length < 100, '即時回報有節流')
+  const json = JSON.stringify(r); assert.ok(!json.includes('landmarks') && !/0\.\d{6}/.test(json), '結果沒有影像或 landmark 座標')
+})
+
+const WASM_BASE_EXPECT = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm'
+const MODEL_URL_EXPECT = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task'
+
+test('相機手勢：沒有手 → 待操作（要你把手放進去再測）；只看到「其他」姿勢 → 通過但註明沒看到張手 / 捏合；GPU 不行退 CPU', async () => {
+  const empty = gestureSetup(); const pe = empty.probe.start(); await adv(empty.clock, 9500, 16); const re = await pe
+  assert.equal(re.status, 'needs-action'); assert.equal(re.data.handsMax, 0); assert.deepEqual(re.data.gestures, []); assert.match(re.detail, /沒有偵測到手：請把手放在鏡頭前/)
+  const other = gestureSetup({ vision: { script: () => [FIST()], gpuFail: true } }); const po = other.probe.start(); await adv(other.clock, 9500, 16); const ro = await po
+  assert.equal(ro.status, 'pass'); assert.equal(ro.data.handsMax, 1); assert.deepEqual(ro.data.gestures, []); assert.match(ro.detail, /偵測到手，但沒有看到「張手」或「捏合」/)
+  assert.equal(ro.data.delegate, 'CPU'); assert.deepEqual(other.vision.log.filter((l) => l.startsWith('create')).map((l) => l.split(':')[1]), ['GPU', 'CPU']); assert.match(ro.detail, /（CPU）/)
+  assert.equal(other.vision.landmarkers.length, 1, 'GPU 失敗沒有留下辨識器'); assert.equal(other.vision.landmarkers[0].closed, 1)
+})
+
+test('相機手勢：幀率太低（新畫面每 250ms 才一幀）→ 失敗並說明；幾乎沒有幀 → 失敗；連續偵測失敗 5 次 → 失敗（含錯誤碼）；分頁被藏起來 → 略過', async () => {
+  const slow = gestureSetup({ frameMs: 250, vision: { script: () => [OPEN_PALM()] } }); const ps = slow.probe.start(); await adv(slow.clock, 9500, 16); const rs = await ps
+  assert.equal(rs.status, 'fail'); assert.ok(rs.data.fps < 8, 'fps ' + rs.data.fps); assert.match(rs.detail, /低於 8 FPS：手勢會不順/); assert.equal(rs.data.handsMax, 1)
+  assert.equal(slow.vision.landmarkers[0].closed, 1)
+
+  const dead = gestureSetup(); dead.video.readyState = 0   // 影片一直沒有資料
+  const pd = dead.probe.start(); await adv(dead.clock, 9500, 16); const rd = await pd
+  assert.equal(rd.status, 'fail'); assert.match(rd.detail, /幾乎沒有辨識到畫面（0 幀）/); assert.ok(dead.md.streams[0].tracks.every((t) => t.stopped === 1))
+
+  const boom = gestureSetup({ vision: { detectThrows: true } }); const pb = boom.probe.start(); await adv(boom.clock, 9500, 16); const rb = await pb
+  assert.equal(rb.status, 'fail'); assert.match(rb.detail, /手勢辨識執行失敗/); assert.match(rb.detail, /detect boom/); assert.equal(boom.vision.landmarkers[0].calls, 5, '連續失敗 5 次就放棄（不會一直丟例外）'); assert.equal(boom.clock.pending(), 0)
+
+  const hid = gestureSetup({ vision: { script: () => [OPEN_PALM()] } }); const ph = hid.probe.start(); await adv(hid.clock, 1000, 16); hid.doc.hidden = true; await adv(hid.clock, 200, 16); const rh = await ph
+  assert.equal(rh.status, 'skipped'); assert.match(rh.detail, /分頁在背景：瀏覽器暫停了相機與畫面，結果不準/); assert.ok(hid.md.streams[0].tracks.every((t) => t.stopped === 1)); assert.equal(hid.vision.landmarkers[0].closed, 1, '中止也放掉相機與辨識器')
+})
+
+test('相機手勢：相機被拒絕 / 找不到 / 被占用 / 逾時 → 失敗，且「不會下載模型」也不留 track；不支援（沒有相機 API / WebAssembly / 載入器）→ unsupported', async () => {
+  for (const [name, re] of [['NotAllowedError', /權限被拒絕/], ['NotFoundError', /找不到可用的相機裝置/], ['NotReadableError', /占用/], ['SecurityError', /https/], ['TypeError', /https/]]) {
+    const x = gestureSetup({ md: { mode: name } }); const r = await x.probe.start()
+    assert.equal(r.status, 'fail', name); assert.match(r.detail, re, name); assert.equal(r.data.error, name); assert.equal(x.md.streams.length, 0); assert.equal(x.seen.attached, 0)
+    assert.deepEqual(x.vision.log, [], name + '：相機被拒 → 沒有下載 WASM 與模型'); assert.equal(x.vision.landmarkers.length, 0); assert.equal(x.clock.pending(), 0)
+  }
+  const late = gestureSetup({ md: { mode: 'late' } }); const pl = late.probe.start(); await adv(late.clock, 31000, 1000); const rl = await pl
+  assert.equal(rl.status, 'fail'); assert.match(rl.detail, /30 秒/); late.md.resolveLate(); await settle(); assert.ok(late.md.streams[0].tracks.every((t) => t.stopped === 1), '逾時後才到的串流也停掉'); assert.equal(late.seen.attached, 0)
+  const over = gestureSetup({ md: { mode: 'ok' } }); let n = 0; const origGum = over.md.getUserMedia
+  over.env.nav.mediaDevices.getUserMedia = function (c) { n++; if (n === 1) { const e = new Error('x'); e.name = 'OverconstrainedError'; return Promise.reject(e) } return origGum.call(this, c) }
+  const po = over.probe.start(); await adv(over.clock, 9500, 16); const ro = await po
+  assert.equal(n, 2, '規格不符 → 放寬成 video: true 再試一次（與主畫面手勢一致）'); assert.deepEqual(over.md.calls.at(-1), { video: true, audio: false }); assert.ok(ro.status === 'needs-action' || ro.status === 'pass')
+
+  const noCam = await gestureSetup({ noMedia: true }).probe.start(); assert.equal(noCam.status, 'unsupported'); assert.match(noCam.detail, /getUserMedia/)
+  const insecure = await gestureSetup({ noMedia: true, secure: false }).probe.start(); assert.equal(insecure.status, 'unsupported'); assert.match(insecure.detail, /https/)
+  const noWasm = gestureSetup({ noWasm: true }); const rw = await noWasm.probe.start(); assert.equal(rw.status, 'unsupported'); assert.match(rw.detail, /WebAssembly/); assert.equal(noWasm.md.calls.length, 0, '不支援就不請求相機')
+  const noLoader = gestureSetup({ noLoader: true }); assert.equal((await noLoader.probe.start()).status, 'unsupported'); assert.equal(noLoader.md.calls.length, 0)
+})
+
+test('相機手勢：載入失敗（離線 / 網路錯誤 / 模型下載失敗 / 逾時 60 秒 / 缺 API）→ 給清楚說明並記為失敗；相機與辨識器都放掉；逾時後才建好的辨識器立刻 close', async () => {
+  const off = gestureSetup({ offline: true, vision: { modelError: true } }); const ro = await off.probe.start()
+  assert.equal(ro.status, 'fail'); assert.match(ro.detail, /目前離線：第一次啟用需要下載手勢模型（約 8 MB）/); assert.equal(ro.data.offline, true); assert.equal(ro.data.phase, 'model'); assert.ok(off.md.streams[0].tracks.every((t) => t.stopped === 1)); assert.equal(off.seen.detached, 1)
+  const net = gestureSetup({ vision: { modelError: true } }); const rn = await net.probe.start()
+  assert.equal(rn.status, 'fail'); assert.match(rn.detail, /手勢模型載入失敗（無法連到 jsDelivr 或 Google 儲存空間）/); assert.match(rn.detail, /model download failed/); assert.equal(rn.data.offline, false)
+  const fs = gestureSetup({ vision: { filesetError: true } }); assert.match((await fs.probe.start()).detail, /fileset failed/)
+  const imp = gestureSetup({ importVision: () => Promise.reject(new Error('chunk load failed')) }); const ri = await imp.probe.start(); assert.equal(ri.status, 'fail'); assert.match(ri.detail, /chunk load failed/); assert.ok(imp.md.streams[0].tracks.every((t) => t.stopped === 1))
+  const impThrow = gestureSetup({ importVision: () => { throw new Error('sync import boom') } }); const rit = await impThrow.probe.start(); assert.equal(rit.status, 'fail'); assert.match(rit.detail, /sync import boom/)
+  const noApi = gestureSetup({ importVision: () => Promise.resolve({}) }); const rna = await noApi.probe.start(); assert.equal(rna.status, 'fail'); assert.match(rna.detail, /MediaPipe API missing/)
+  const viaDefault = gestureSetup({ importVision: () => Promise.resolve({ default: { FilesetResolver: { forVisionTasks() { return Promise.resolve({}) } }, HandLandmarker: { createFromOptions() { return Promise.resolve({ detectForVideo() { return { landmarks: [] } }, close() {} }) } } } }) })
+  const pdf = viaDefault.probe.start(); await adv(viaDefault.clock, 9500, 16); assert.equal((await pdf).status, 'needs-action', '模組以 default 匯出也認得（與主畫面一致）')
+
+  const hang = gestureSetup({ vision: { modelHang: true } }); const ph = hang.probe.start(); await adv(hang.clock, 61000, 1000); const rh = await ph
+  assert.equal(rh.status, 'fail'); assert.equal(rh.data.error, 'TimeoutError'); assert.ok(hang.md.streams[0].tracks.every((t) => t.stopped === 1)); assert.equal(hang.clock.pending(), 0)
+
+  const vo = { lateModel: true }
+  const late = gestureSetup({ vision: vo }); const pl = late.probe.start(); await settle(); late.probe.stop(); assert.equal((await pl).status, 'skipped')
+  assert.ok(late.md.streams[0].tracks.every((t) => t.stopped === 1), '模型還在載入時按停止 → 相機立刻停'); assert.equal(late.vision.landmarkers[0].closed, 0, '還沒建好，沒東西可關')
+  vo.lateResolve(); await settle()
+  assert.equal(late.vision.landmarkers[0].closed, 1, '按停止之後才建好的辨識器立刻 close（不留在記憶體裡）'); assert.equal(late.seen.updates.filter((u) => u.phase === 'running').length, 0, '停止後不會進入偵測'); assert.equal(late.clock.pending(), 0)
+})
+
+test('相機手勢：任何階段按停止 / 離開頁面（stop）→ 同步停 track、關辨識器、放掉預覽；遲到的辨識器 / 串流立刻釋放；結果是略過', async () => {
+  // 1) 等相機授權時就停（getUserMedia 還沒回來）
+  const a = gestureSetup({ md: { mode: 'late' } }); const pa = a.probe.start(); await settle(); a.probe.stop()
+  assert.deepEqual(a.seen.running, [true, false]); assert.equal(a.clock.pending(), 0); assert.equal((await pa).status, 'skipped'); a.md.resolveLate(); await settle()
+  assert.ok(a.md.streams[0].tracks.every((t) => t.stopped === 1), '之後才到的串流立刻停掉'); assert.equal(a.seen.attached, 0); assert.deepEqual(a.vision.log, [])
+  // 2) 載入模型時停：模型建好之後（遲到）立刻 close
+  const bo = { lateModel: true }
+  const b = gestureSetup({ vision: bo }); const pb = b.probe.start(); await settle(); assert.equal(b.vision.landmarkers.length, 1)
+  b.probe.stop(); assert.ok(b.md.streams[0].tracks.every((t) => t.stopped === 1)); assert.equal(b.seen.detached, 1)
+  assert.equal((await pb).status, 'skipped'); assert.equal(b.clock.pending(), 0); bo.lateResolve(); await settle(); assert.equal(b.vision.landmarkers[0].closed, 1, '遲到的辨識器立刻 close')
+  // 3) 偵測中停：同步關閉
+  const c = gestureSetup({ vision: { script: () => [OPEN_PALM()] } }); const pc = c.probe.start(); await adv(c.clock, 2000, 16)
+  const lm = c.vision.landmarkers[0]; const callsBefore = lm.calls; assert.ok(callsBefore > 50)
+  c.probe.stop(); assert.equal(lm.closed, 1, 'stop() 同步 close 辨識器'); assert.ok(c.md.streams[0].tracks.every((t) => t.stopped === 1), '同步停 track'); assert.equal(c.seen.detached, 1); assert.deepEqual(c.seen.draws.at(-1), [])
+  assert.equal(c.clock.pending(), 0, '沒有殘留計時器'); assert.equal((await pc).status, 'skipped'); await adv(c.clock, 500, 16); assert.equal(lm.calls, callsBefore, '停止後不再推論'); assert.equal(lm.closed, 1)
+  // 4) 預覽卡住 / 沒有預覽元素
+  const d2 = gestureSetup({ attach: () => Promise.resolve(null) }); const rd = await d2.probe.start(); assert.equal(rd.status, 'fail'); assert.match(rd.detail, /沒有可用的預覽畫面/); assert.ok(d2.md.streams[0].tracks.every((t) => t.stopped === 1))
+  const hang = gestureSetup({ attach: () => new Promise(() => {}) }); const ph = hang.probe.start(); await adv(hang.clock, 5500, 250); assert.equal((await ph).status, 'fail'); assert.ok(hang.md.streams[0].tracks.every((t) => t.stopped === 1))
+  // 5) 沒有視訊軌 / 中途被拔除
+  const none = gestureSetup({ md: { kinds: [] } }); const rn = await none.probe.start(); assert.equal(rn.status, 'fail'); assert.match(rn.detail, /視訊軌/)
+  const e2 = gestureSetup({ vision: { script: () => [] } }); const pe = e2.probe.start(); await adv(e2.clock, 500, 16); e2.md.streams[0].tracks[0].onended(); assert.ok(e2.seen.updates.some((u) => u.ended === true)); e2.probe.stop(); assert.equal(e2.md.streams[0].tracks[0].onended, null); await pe
+})
+
+test('相機手勢：環境全是壞的（任何屬性存取都丟例外）→ 失敗不丟例外；browserEnv 提供 importVision / WebAssembly，且 import 時完全沒有呼叫（不會提前下載 MediaPipe）', async () => {
+  const boom = new Proxy({}, { get() { throw new Error('boom') } })
+  const r = await D.createProbe('gesture', makeEnv({ nav: boom, win: boom, doc: boom, WebAssembly: {}, importVision: () => Promise.resolve({}) }).env).start(); assert.equal(r.status, 'fail'); assert.match(r.detail, /boom/)
+  const be = D.browserEnv({}); assert.equal(be.WebAssembly, null); assert.equal(typeof be.importVision, 'function')
+  const { g } = strictGlobal(); g.WebAssembly = {}; assert.deepEqual(D.browserEnv(g).WebAssembly, {})
+})
+
+// ───────────────────────────── 導引：依裝置能力略過 ─────────────────────────────
+function fullGuideEnv() {
+  const x = fullEnv({
+    nav: { mediaDevices: fakeMedia() }, win: { open() {}, DeviceOrientationEvent: function DeviceOrientationEvent() {}, WebAssembly: {} },
+    env: { narrator: fakeNarrator(), WebAssembly: {}, importVision: () => Promise.resolve({}) },
+  })
+  return x
+}
+
+test('導引：能力齊全的裝置 → 15 項互動檢查一項都不略過；每項的「能力檢查」與檢查本體遇到缺 API 時的結果一致（不支援 → 同一份原因）', async () => {
+  const { planGuide } = await import('./diagnosticsGuide.js')
+  const x = fullGuideEnv()
+  const plan = planGuide(D.getInteractiveChecks(), (id) => D.guideSupport(id, x.env))
+  assert.deepEqual(plan.skipped, []); assert.equal(plan.steps.length, 15); assert.deepEqual(plan.steps.slice(0, 3), ['narration', 'watchdog', 'gesture'])
+
+  // 全空的環境：每一項都不支援；原因與「真的按下去」得到的 unsupported 結果同一句
+  const bare = () => makeEnv({ nav: strict({}), win: fakeWin(), doc: strict({ documentElement: {} }) }).env
+  for (const c of D.getInteractiveChecks()) {
+    const sup = D.guideSupport(c.id, bare())
+    if (c.id === 'pointer') { assert.equal(sup, null, '觸控畫板一定可以做（沒有觸控筆由使用者略過）'); continue }
+    assert.ok(sup && sup.status === 'unsupported', c.id + ' 應該不支援'); assert.ok(sup.msg, c.id + ' 有原因')
+    const ran = await D.createProbe(c.id, bare(), {}).start()
+    assert.equal(ran.status, 'unsupported', c.id + '：檢查本體也回 unsupported')
+    if (c.id === 'watchdog') assert.ok(ran.detail.startsWith(D.renderDetail(sup)), '看門狗：原因在最前面，後面還附判定驗證與說明'); else assert.equal(ran.detail, D.renderDetail(sup), c.id + '：原因文字一致')
+  }
+  assert.equal(D.guideSupport('nope', {}), null); assert.equal(D.guideSupport('cam', null).status, 'unsupported', 'env 是 null 也不丟例外')
+})
+
+test('導引：iPhone Safari 這類裝置（沒有震動 / MIDI / 全螢幕 / 螢幕管理 / 手把…）→ 這些項目自動略過並註明原因；有的照常做', async () => {
+  const { planGuide } = await import('./diagnosticsGuide.js')
+  const x = fullGuideEnv()
+  const iphone = { ...x.env, nav: strict({ mediaDevices: fakeMedia(), userAgent: 'iPhone', maxTouchPoints: 5 }), win: fakeWin({ SpeechRecognition: undefined, webkitSpeechRecognition: function () {}, open() {}, DeviceOrientationEvent: function () {} }), doc: strict({ documentElement: {} }) }
+  const plan = planGuide(D.getInteractiveChecks(), (id) => D.guideSupport(id, iphone))
+  assert.deepEqual(plan.skipped.map((s) => s.id).sort(), ['fullscreen', 'gamepad', 'midi', 'rumble', 'screens', 'vibrate'].sort())
+  assert.deepEqual(plan.steps, ['narration', 'watchdog', 'gesture', 'cam', 'mic', 'speech', 'popup', 'pointer', 'orient'])
+  const reasons = Object.fromEntries(plan.skipped.map((s) => [s.id, D.renderDetail(s.outcome)]))
+  assert.match(reasons.vibrate, /iPhone Safari/); assert.match(reasons.midi, /Web MIDI/); assert.match(reasons.fullscreen, /iPhone Safari 不支援網頁全螢幕/); assert.match(reasons.screens, /getScreenDetails/); assert.match(reasons.gamepad, /Gamepad/)
+  // 英文原因（切換語系後重新翻譯）
+  registerEn(en); registerEn(en2); setLocale('en')
+  try { assert.match(D.renderDetail(plan.skipped.find((s) => s.id === 'vibrate').outcome), /No vibration API/) } finally { setLocale('zh') }
+  // 沒有麥克風 / 相機 API 的裝置：相機、麥克風、相機手勢一起略過
+  const noMedia = { ...x.env, nav: strict({}) }
+  assert.deepEqual(planGuide(D.getInteractiveChecks(), (id) => D.guideSupport(id, noMedia)).skipped.map((s) => s.id).filter((id) => ['cam', 'mic', 'gesture'].includes(id)).sort(), ['cam', 'gesture', 'mic'])
+})
+
+// ───────────────────────────── 報告：裝置備註 ─────────────────────────────
+test('報告的裝置備註：沒填（或全是空白）→ 輸出與以前完全一樣（沒有段落、JSON 沒有 deviceNote、隱私聲明不變）', () => {
+  const results = { ls: D.makeResult(D.getCheck('ls'), { status: 'pass', msg: { key: '寫入、讀回、刪除都成功' } }, 4) }
+  const base = D.buildReport({ results, meta: {} })
+  for (const note of [undefined, null, {}, { model: '', os: '', browser: '', tester: '', memo: '' }, { model: '  ', memo: '\n \n' }, 'x', 5, []]) {
+    const r = D.buildReport({ results, meta: {}, note })
+    assert.equal(r.markdown, base.markdown, JSON.stringify(note)); assert.equal(r.text, base.text); assert.deepEqual(r.json, base.json); assert.ok(!('deviceNote' in r.json))
+  }
+  assert.ok(!base.text.includes('裝置備註')); assert.match(base.markdown, /^- 本報告不含個人資料、IP、影像或音訊。$/m); assert.ok(!base.markdown.includes('除外'))
+})
+
+test('報告的裝置備註：只有填了的欄位出現（Markdown 段落 + JSON deviceNote）；多行備註的續行縮排；段落在摘要與表格之間；表格列數不變', () => {
+  const x = { ls: D.makeResult(D.getCheck('ls'), { status: 'pass', msg: { key: '寫入、讀回、刪除都成功' } }, 4) }
+  const rep = D.buildReport({ results: x, meta: {}, note: { model: ' iPhone 15 ', os: '', browser: 'Safari 18', tester: '', memo: '第一行\n\n第二行\n' } })
+  assert.deepEqual(rep.json.deviceNote, { model: 'iPhone 15', browser: 'Safari 18', memo: '第一行\n\n第二行' }, 'JSON：只有填的欄位，值已 trim')
+  assert.deepEqual(Object.keys(rep.json.deviceNote), ['model', 'browser', 'memo']); assert.ok(!('os' in rep.json.deviceNote) && !('tester' in rep.json.deviceNote), '沒填的欄位連鍵都沒有')
+  const lines = rep.markdown.split('\n')
+  const h = lines.indexOf('## 裝置備註'); assert.ok(h > 0, 'Markdown 有「裝置備註」段落')
+  assert.deepEqual(lines.slice(h, h + 5), ['## 裝置備註', '- 裝置型號：iPhone 15', '- 瀏覽器與版本：Safari 18', '- 備註：第一行', '  第二行'], '續行縮排 2 格，空行略過')
+  assert.ok(!rep.markdown.includes('作業系統與版本：') && !rep.markdown.includes('測試人：'), '沒填的欄位不出現')
+  assert.ok(lines.findIndex((l) => l.startsWith('- 摘要：')) < h && h < lines.findIndex((l) => l.startsWith('| 群組')), '在摘要之後、表格之前')
+  assert.equal(lines.filter((l) => l.startsWith('| ')).length, 40 + 2, '表格不受影響')
+  assert.match(rep.markdown, /^- 本報告不含個人資料、IP、影像或音訊（你自己填寫的裝置備註除外）。$/m, '有備註時隱私聲明如實改成「除了你自己填寫的裝置備註」')
+  const m = rep.text.match(/```json\n([\s\S]*)\n```\n$/); assert.deepEqual(JSON.parse(m[1]).deviceNote, rep.json.deviceNote, '複製的文字尾端 JSON 也有 deviceNote')
+  const all = D.buildReport({ results: x, meta: {}, note: { model: 'A', os: 'B', browser: 'C', tester: 'D', memo: 'E' } })
+  const al = all.markdown.split('\n'); const ai = al.indexOf('## 裝置備註')
+  assert.deepEqual(al.slice(ai, ai + 6), ['## 裝置備註', '- 裝置型號：A', '- 作業系統與版本：B', '- 瀏覽器與版本：C', '- 測試人：D', '- 備註：E'])
+})
+
+test('報告的裝置備註：長度上限（備註 ≤ 500 字）；危險字元清理（三個反引號不會破壞程式碼區塊、控制字元 / 雙向控制字元去掉）；Markdown 與 JSON 一致', () => {
+  const dirty = 'X' + String.fromCharCode(0x202e) + 'Y' + String.fromCharCode(0) + 'Z'
+  const rep = D.buildReport({ results: {}, meta: {}, note: { memo: '字'.repeat(700), tester: '人'.repeat(90), model: dirty } })
+  assert.equal(Array.from(rep.json.deviceNote.memo).length, 500); assert.equal(Array.from(rep.json.deviceNote.tester).length, 40); assert.equal(rep.json.deviceNote.model, 'XYZ')
+  assert.ok(rep.markdown.includes('- 備註：' + '字'.repeat(500)) && !rep.markdown.includes('字'.repeat(501)))
+  const fence = D.buildReport({ results: {}, meta: {}, note: { memo: '前\n```\n# 標題\n```json\n{"x":1}\n```\n後' } })
+  assert.equal((fence.text.match(/```/g) || []).length, 2, '整份文字只有 JSON 區塊自己的一對圍欄'); assert.ok(fence.json.deviceNote.memo.includes("'''")); assert.ok(fence.text.trimEnd().endsWith('```'))
+  assert.doesNotThrow(() => JSON.parse(fence.text.match(/```json\n([\s\S]*)\n```\n$/)[1]))
+})
+
+test('報告的裝置備註：切成英文後段落標題 / 欄位標籤 / 隱私聲明都是英文（備註內容原樣，不翻譯）；中文模式輸出不變', () => {
+  const note = { model: 'iPhone 15', tester: '小明', memo: '第 2 台' }
+  const zh = D.buildReport({ results: {}, meta: {}, note }).markdown
+  registerEn(en); registerEn(en2); setLocale('en')
+  try {
+    const rep = D.buildReport({ results: {}, meta: {}, note, locale: 'en' })
+    for (const line of ['## Device notes', '- Device model: iPhone 15', '- Tester: 小明', '- Notes: 第 2 台', '- This report contains no personal data, IP address, images or audio (except the device notes you filled in yourself).']) assert.ok(rep.markdown.split('\n').includes(line), line)
+    assert.ok(!/OS and version|Browser and version/.test(rep.markdown), '沒填的欄位不出現')
+    const noChinese = rep.markdown.split('\n').filter((l) => !/小明|第 2 台/.test(l)).join('\n'); assert.ok(!/[㐀-鿿]/.test(noChinese), '除了使用者自己填的內容，沒有中文殘留：' + (noChinese.match(/.*[㐀-鿿].*/) || [''])[0])
+  } finally { setLocale('zh') }
+  assert.equal(D.buildReport({ results: {}, meta: {}, note }).markdown, zh)
+})
+
+test('隱私：草稿在儲存裡、或有別人的名字，只要畫面沒明確傳入 note 就不會進報告；備註以外的內容與沒有備註時完全相同；仍然沒有 IP / 連線碼', async () => {
+  const { saveNote, loadNote } = await import('./diagnosticsNote.js')
+  const mem = new Map(); const storage = { get: (k) => (mem.has(k) ? mem.get(k) : null), set: (k, v) => { mem.set(k, v) }, remove: (k) => { mem.delete(k) } }
+  saveNote({ tester: 'Alice Chen', memo: '客戶的 iPhone，電話 0912345678' }, storage)
+  assert.equal(loadNote(storage).tester, 'Alice Chen', '草稿確實存在這台裝置')
+  const x = fullEnv(); const meta = D.collectMeta(x.env, 0)
+  const without = D.buildReport({ results: {}, meta })
+  assert.ok(!without.text.includes('Alice') && !without.text.includes('0912345678'), '草稿不會自動進報告：只有按複製 / 下載時、由畫面明確傳入 note 才會')
+  const withNote = D.buildReport({ results: {}, meta, note: loadNote(storage) })
+  assert.ok(withNote.text.includes('Alice Chen') && withNote.text.includes('0912345678'), '使用者自己填的備註原樣進報告（畫面上已說明會原樣寫進報告）')
+  const strip = (t) => t.split('\n').filter((l) => !l.includes('Alice') && !l.includes('0912345678') && !l.startsWith('## ') && !l.startsWith('  ') && !l.includes('除外') && !l.includes('不含個人資料')).join('\n').replace(/\n{3,}/g, '\n\n')
+  assert.equal(strip(withNote.markdown), strip(without.markdown), '備註以外的內容一字不差')
+  for (const secret of ['192.168', 'remote=', 'abc123']) assert.ok(!withNote.text.includes(secret), '仍然沒有 IP / 連線碼：' + secret)
+})
+
+test('診斷入口連結：一般 / 導引模式（&guided=1）、語系參數位置不變；面板那一節有「開啟導引模式」連結並仍走 formatSummaryLine', () => {
+  assert.equal(diagnosticsHref('en', { guided: true }), '?diagnostics=1&guided=1&lang=en'); assert.equal(diagnosticsHref('zh', { guided: true }), '?diagnostics=1&guided=1&lang=zh')
+  assert.equal(diagnosticsHref(undefined, { guided: true }), '?diagnostics=1&guided=1'); assert.equal(diagnosticsHref('fr', { guided: true }), '?diagnostics=1&guided=1')
+  assert.equal(diagnosticsHref('en', { guided: false }), '?diagnostics=1&lang=en'); assert.equal(diagnosticsHref('en', {}), '?diagnostics=1&lang=en'); assert.equal(diagnosticsHref('en', null), '?diagnostics=1&lang=en')
+  const src = readFileSync(new URL('../ui/devices/DiagnosticsSection.jsx', import.meta.url), 'utf8')
+  assert.match(src, /diagnosticsHref\(locale, \{ guided: true \}\)/); assert.match(src, /t\('開啟導引模式'\)/); assert.match(src, /formatSummaryLine\(sum, t, localeTag\(locale\)\)/, '「上次診斷」摘要維持')
+  assert.match(src, /target="_blank" rel="noopener noreferrer"/)
+})
+
+// ───────────────────────────── 診斷頁保持輕量（不可靜態 import three / store / MediaPipe）─────────────────────────────
+import { statSync, existsSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+function staticImportGraph(entry) {
+  const seen = new Map()   // 絕對路徑 → { locals, bare }
+  const rx = /^\s*(?:import|export)\s+(?:[^'";]*?\s+from\s+)?['"]([^'"]+)['"]/gm
+  const visit = (file) => {
+    if (seen.has(file)) return
+    const src = readFileSync(file, 'utf8')
+    const rec = { locals: [], bare: [] }
+    seen.set(file, rec)
+    for (const m of src.matchAll(rx)) {
+      const spec = m[1]
+      if (/\.css$/.test(spec)) continue
+      if (spec.startsWith('.')) {
+        const base = resolve(dirname(file), spec)
+        const hit = [base, base + '.js', base + '.jsx', base + '.mjs'].find((p) => existsSync(p) && statSync(p).isFile())
+        if (hit) { rec.locals.push(hit); visit(hit) }
+      } else rec.bare.push(spec)
+    }
+  }
+  visit(entry)
+  return seen
+}
+const SRC = fileURLToPath(new URL('..', import.meta.url))
+
+test('診斷頁輕量：靜態 import 的傳遞閉包裡沒有 three / r3f / MediaPipe / store / 場景 / 服務 / 導覽 / 遙控頁；只有 react 與 zustand；MediaPipe 只有 browserEnv 裡的動態 import', () => {
+  const g = staticImportGraph(join(SRC, 'DiagnosticsApp.jsx'))
+  const files = [...g.keys()].map((f) => f.slice(SRC.length))
+  const bare = new Set([...g.values()].flatMap((r) => r.bare))
+  assert.deepEqual([...bare].sort(), ['react', 'zustand'], '外部套件只有 react 與 zustand：' + [...bare])
+  for (const f of files) {
+    assert.ok(!/^(store|scene|services|remote|ui)\//.test(f), '不該被拉進診斷頁：' + f)
+    assert.ok(!/(^|\/)(tour[A-Za-z]*|useStore|Scene3D|App|AudienceApp|RemoteApp)\.jsx?$/.test(f) || f === 'DiagnosticsApp.jsx', '不該被拉進診斷頁：' + f)
+  }
+  for (const need of ['lib/diagnostics.js', 'lib/diagnosticsGuide.js', 'lib/diagnosticsNote.js', 'lib/gestures.js', 'lib/narration.js', 'lib/resilience.js', 'lib/hands.js', 'DiagnosticsGuide.jsx', 'DiagnosticsNote.jsx']) assert.ok(files.includes(need), need + ' 在閉包裡')
+  const diag = readFileSync(join(SRC, 'lib/diagnostics.js'), 'utf8')
+  assert.ok(!/^\s*import\s[^\n]*@mediapipe/m.test(diag), 'diagnostics.js 沒有靜態 import MediaPipe')
+  assert.equal((diag.match(/import\('@mediapipe\/tasks-vision'\)/g) || []).length, 1); assert.match(diag, /importVision: \(\) => import\('@mediapipe\/tasks-vision'\)/)
+  for (const f of ['DiagnosticsApp.jsx', 'DiagnosticsGuide.jsx', 'DiagnosticsNote.jsx', 'lib/diagnosticsNote.js', 'lib/diagnosticsGuide.js']) assert.ok(!/mediapipe|from 'three'|useStore/i.test(readFileSync(join(SRC, f), 'utf8').replace(/\/\/.*$/gm, '')), f)
+  // 主畫面「裝置」面板那一節只 import 摘要小檔案：不會把整個診斷邏輯拉進主 bundle
+  const sec = [...staticImportGraph(join(SRC, 'ui/devices/DiagnosticsSection.jsx')).keys()].map((f) => f.slice(SRC.length))
+  for (const f of sec) assert.ok(!/lib\/(diagnostics|diagnosticsNote|diagnosticsGuide|hands|gestures|narration|resilience)\.js$/.test(f), '面板那一節不該 import：' + f)
+  assert.ok(sec.includes('lib/diagnosticsSummary.js'))
+})
+
+test('沒有 Illegal invocation 的寫法：新檢查不把原生方法存成變數再呼叫（speak / getVoices / addEventListener / getUserMedia / createFromOptions / getHighEntropyValues 都以方法呼叫）', () => {
+  const src = readFileSync(join(SRC, 'lib/diagnostics.js'), 'utf8').replace(/\/\/.*$/gm, '')
+  const seg = src.slice(src.indexOf('export const NARRATION_LINE'), src.indexOf('export function getGroups'))
+  assert.ok(seg.length > 5000, '取到新檢查那一段')
+  for (const bad of [/=\s*synth\.(getVoices|addEventListener|removeEventListener)\s*[;\n]/, /=\s*nar\.(speak|cancel|dispose)\s*[;\n]/, /=\s*md\.getUserMedia\s*[;\n]/, /=\s*HL\.createFromOptions\s*[;\n]/, /=\s*FR\.forVisionTasks\s*[;\n]/, /=\s*lm\.(detectForVideo|close)\s*[;\n]/, /=\s*env\.(raf|cancelRaf)\s*[;\n]/]) assert.ok(!bad.test(seg), '不該把原生方法存成變數：' + bad)
+  const note = readFileSync(join(SRC, 'lib/diagnosticsNote.js'), 'utf8').replace(/\/\/.*$/gm, '')
+  assert.ok(!/=\s*uad\.getHighEntropyValues\s*[;\n]/.test(note)); assert.match(note, /uad\.getHighEntropyValues\(\[/)
 })

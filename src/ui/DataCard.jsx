@@ -3,8 +3,11 @@ import { useStore } from '../store/useStore.js'
 import SurveyTimeline from './SurveyTimeline.jsx'
 import { birdSeasonal } from '../lib/birds.js'
 import { ageFromLunar, moonAge, moonPhaseName } from '../lib/moon.js'
-import { seriesFromOption, seriesFromSurvey, seriesFromDust, seriesFromMoon, seriesFromAir } from '../lib/series.js'
-import { dustSummary, airSummary, airWhereText, airPmText } from '../lib/describe.js'
+import { seriesFromOption, seriesFromSurvey, seriesFromDust, seriesFromMoon, seriesFromAir, resolveAirSource, airMapping } from '../lib/series.js'
+import { dustSummary, airSummary, airWhereText, airPmText, airObsSummary } from '../lib/describe.js'
+import { airObsUsable } from '../lib/airCompare.js'
+import { AirCompareCard, AirModelSpark, AirObsLine, AirDriveToggle } from './AirCompareCard.jsx'
+import AirSparkLive from './AirSparkLive.jsx'
 import { useT, useLocale, T } from '../i18n/index.js'
 import { nameText, weatherText, lunarLabelText, tideRangeText } from '../i18n/data.js'
 import '../styles/air.css'
@@ -34,7 +37,12 @@ function optionLabel(o, t, gov) {
   if (o.kind === 'tide') return t('{name}（潮汐）', { name })
   if (o.kind === 'dust') return o.level > 0 ? t('{name}（PM10 {level}）', { name, level: o.level }) : t('{name}（PM10 無效 · 看風速）', { name })   // level=0：來源 PM10 感測器回報無效值
   if (o.kind === 'moon') return t('{name}（月出月沒）', { name })
-  if (o.kind === 'air') return airSummary(gov && gov.air) ? t('{name}（PM2.5 {level}，模型）', { name, level: o.level }) : t('{name}（模型資料 · 尚無數值）', { name })   // Open-Meteo / CAMS 模型資料，不是政府觀測：選項標籤也標「模型」
+  if (o.kind === 'air') {
+    // 驅動海況的是環境部觀測 → 標「環境部觀測」與觀測的最新 PM2.5；否則（模型）仍標「模型」（Open-Meteo / CAMS 模型資料，不是政府觀測）——兩種標籤不能混
+    const a = gov && gov.air
+    if (a && resolveAirSource(a, gov.airDrive || 'auto') === 'obs') { const ob = airObsSummary(a); if (ob) return t('{name}（PM2.5 {level}，環境部觀測）', { name, level: Math.round(ob.pm25) }) }
+    return airSummary(a) ? t('{name}（PM2.5 {level}，模型）', { name, level: o.level }) : t('{name}（模型資料 · 尚無數值）', { name })
+  }
   return t('{name}（水位 {level}%）', { name, level: o.level })
 }
 
@@ -117,6 +125,15 @@ function SurveyCard({ kind, opt }) {
   )
 }
 
+// 驅動海況的是環境部觀測時，「靜態」的海況（套用此海況 / 換選項）也用觀測的最新 PM2.5：選項本身的 params 是模型的最新值（資料端算的）
+function applyAirStatic() {
+  const st = useStore.getState(), g = st.gov
+  if (!g || !g.air || resolveAirSource(g.air, g.airDrive || 'auto') !== 'obs') return
+  const spec = seriesFromAir(g.air, undefined, { source: 'obs' })
+  const last = spec && spec.points[spec.points.length - 1]
+  if (last) st.applyParams(airMapping(last.v))
+}
+
 export default function DataCard() {
   const t = useT()   // 訂閱語系：describe.js / moon.js 等純函式讀「當下語系」，切換時本元件要重繪
   const gov = useStore((s) => s.gov)
@@ -138,11 +155,14 @@ export default function DataCard() {
   if (!gov || !gov.options) return null
   const opt = gov.options.find((o) => o.id === govOptionId) || gov.options[0]
   const seriesSpec = seriesFromOption(opt)
-  const dustSpec = opt.kind === 'dust' ? seriesFromDust(gov.dust) : null
+  const dustSpec = opt.kind === 'dust' ? seriesFromDust(gov.dust, undefined, gov.air) : null   // 水利署風速凍結時，第三個參數讓它用 air.history 的逐時模型風速補洞
+  const dustModelWind = !!(dustSpec && dustSpec.extra && dustSpec.extra.metric === 'wind-model')
   const moonSpec = opt.kind === 'moon' ? seriesFromMoon(gov.moon) : null
   const dust = opt.kind === 'dust' ? dustSummary(gov.dust) : null
   const dustHistN = opt.kind === 'dust' && gov.dust && Array.isArray(gov.dust.history) ? gov.dust.history.filter((x) => typeof x.pm10 === 'number' || typeof x.wind === 'number').length : 0
-  const airSpec = opt.kind === 'air' ? seriesFromAir(gov.air) : null
+  const airDrive = opt.kind === 'air' ? resolveAirSource(gov.air, gov.airDrive || 'auto') : 'model'   // 播放（playAir）實際使用的資料：環境部觀測 | 模型
+  const airHasObs = opt.kind === 'air' && airObsUsable(gov.air)
+  const airSpec = opt.kind === 'air' ? seriesFromAir(gov.air, undefined, { source: airDrive }) : null
   const air = opt.kind === 'air' ? airSummary(gov.air) : null
   const airOpt = opt.kind === 'dust' ? gov.options.find((o) => o.kind === 'air') : null   // 揚塵選項的導引：有「空氣品質」選項才提示
   const anyPlay = !!(seriesSpec || dustSpec || moonSpec || airSpec || opt.birds || opt.fish)
@@ -159,7 +179,7 @@ export default function DataCard() {
     moonLine = t('{phase} · 月齡 {age} 天', { phase: moonPhaseName(moonAge(new Date())), age: moonAge(new Date()).toFixed(1) })
   }
   // 揚塵播放的資料欄位名（'PM10' 或 '風速'）
-  const dustLabel = dustSpec ? (dustSpec.label === T('風速') ? t('風速') : dustSpec.label) : ''
+  const dustLabel = dustSpec ? (dustSpec.label === T('風速') || dustModelWind ? t(dustSpec.label) : dustSpec.label) : ''
   // 揚塵感測站摘要（各段用「 · 」串接：站名 / 風速 / 濕度）
   const dustLine = dust
     ? [
@@ -172,20 +192,36 @@ export default function DataCard() {
     : ''
   // 空氣品質一行：「空氣品質 · 雲林縣麥寮 · PM2.5 21 · PM10 25 μg/m³ · US AQI 71」
   const airLine = air ? t('空氣品質 · {where}', { where: airWhereText(air) }) + ' · ' + airPmText(air) : ''
+  // 切換「驅動海況的資料」：寫進 gov.airDrive（playAir 讀它）；沒在播放時順便把靜態海況換成該來源的最新 PM2.5，並在 OUT 日誌留一行
+  const setAirDrive = (v) => {
+    useStore.setState((s) => (s.gov ? { gov: { ...s.gov, airDrive: v } } : {}))
+    const st = useStore.getState()
+    if (st.rec.mode === 'idle') {
+      const spec = seriesFromAir(st.gov && st.gov.air, undefined, { source: v })
+      const last = spec && spec.points[spec.points.length - 1]
+      if (last) st.applyParams(airMapping(last.v))
+    }
+    st.pushLog('out', t('空氣品質：改用「{src}」驅動海況', { src: v === 'obs' ? t('環境部觀測') : t('模型資料，非政府觀測') }))
+  }
   const airLink = gov.air && typeof gov.air.sourceUrl === 'string' && /^https:\/\//.test(gov.air.sourceUrl) ? gov.air.sourceUrl : ''
 
   return (
     <div className="gov-card">
       <div className="gov-title">{t('今日海況')} <span className="dim">· {nameText(gov.sourceShort)}</span></div>
       {gov.weather && <div className="gov-metrics">{weatherText(gov.weather.weather)} · {gov.weather.airTemp}°C · {t('風 {n} m/s', { n: gov.weather.windSpeed })}</div>}
-      <select className="gov-select" value={govOptionId || ''} onChange={(e) => setGovOption(e.target.value)} aria-label={t('選擇海況資料')}>
+      <select className="gov-select" value={govOptionId || ''} onChange={(e) => { const id = e.target.value; setGovOption(id); const o2 = gov.options.find((x) => x.id === id); if (o2 && o2.kind === 'air') applyAirStatic() }} aria-label={t('選擇海況資料')}>
         {gov.options.map((o) => <option key={o.id} value={o.id}>{optionLabel(o, t, gov)}</option>)}
       </select>
-      <button className="gov-apply" onClick={applyGov}>{t('套用此海況')}</button>
+      <button className="gov-apply" onClick={() => { applyGov(); if (opt.kind === 'air') applyAirStatic() }}>{t('套用此海況')}</button>
       {dust && (
         <div className="gov-metrics gov-dust" title={t('水資源物聯網（IoW）揚塵感測站最新值：PM10 高 → 海水混濁、垃圾多、色相偏黃綠；風速 → 洋流。PM10 感測器常回傳無效的哨兵值，此時海況以預設 40 μg/m³ 示意、歷史播放改用風速')}>
           {dustLine}
         </div>
+      )}
+      {dustModelWind && (
+        <p className="hint gov-wait gov-dust-model" role="note">
+          {t(dustSpec.extra.reason === 'frozen' ? T('風速為模型資料（Open-Meteo），水利署感測器凍結：歷史播放改用逐時模型風速。') : T('風速為模型資料（Open-Meteo），水利署感測器沒有可用的風速：歷史播放改用逐時模型風速。'))}
+        </p>
       )}
       {airOpt && (
         <p className="hint gov-wait gov-air-hint">{t('若要看有變化的空品資料，請選「{name}」。', { name: nameText(airOpt.name) })}</p>
@@ -205,6 +241,11 @@ export default function DataCard() {
                 : 'Weather data by Open-Meteo.com'} · CC BY 4.0
             </span>
           </div>
+          {/* 環境部觀測（只在有金鑰、資料端抓到 air.obs 時才出現；沒有 obs 時只有下面模型的單條折線） */}
+          <AirObsLine air={gov.air} />
+          <AirCompareCard air={gov.air} spark={<AirSparkLive air={gov.air} height={44} />} />
+          <AirModelSpark air={gov.air} spark={<AirSparkLive air={gov.air} height={36} />} />
+          <AirDriveToggle air={gov.air} drive={airDrive} onChange={setAirDrive} />
         </div>
       )}
       {moonLine && <div className="gov-metrics gov-moon" title={t('潮汐是月亮的引力：背景月亮的盈虧與位置對應當日月齡與時刻')}>{t('月亮 · {v}', { v: moonLine })}</div>}
@@ -221,11 +262,13 @@ export default function DataCard() {
             </button>
           )}
           {opt.kind === 'dust' && (dustSpec
-            ? <button className="gov-apply gov-series" onClick={playDust} disabled={recMode !== 'idle'} title={dustSpec.label === T('風速')
-                ? t('播放 CI 累積的揚塵歷史（{label}）：每一步＝一次 3 小時取樣；PM10 感測器目前無效，改以風速驅動洋流與海水混濁', { label: dustLabel })
-                : t('播放 CI 累積的揚塵歷史（{label}）：每一步＝一次 3 小時取樣', { label: dustLabel })}>▶ {t('播放揚塵歷史（{label}）{n} 筆', { label: dustLabel, n: dustSpec.points.length })}</button>
+            ? <button className="gov-apply gov-series" onClick={playDust} disabled={recMode !== 'idle'} title={dustModelWind
+                ? t('播放最近的逐時模型風速（Open-Meteo，模型資料）：每一步＝一小時；水利署風速感測器凍結，改以模型風速驅動洋流與海水混濁')
+                : dustSpec.label === T('風速')
+                  ? t('播放 CI 累積的揚塵歷史（{label}）：每一步＝一次 3 小時取樣；PM10 感測器目前無效，改以風速驅動洋流與海水混濁', { label: dustLabel })
+                  : t('播放 CI 累積的揚塵歷史（{label}）：每一步＝一次 3 小時取樣', { label: dustLabel })}>▶ {t('播放揚塵歷史（{label}）{n} 筆', { label: dustLabel, n: dustSpec.points.length })}</button>
             : <p className="hint gov-wait">{t('揚塵歷史累積中（{n} 筆有效）：資料來源只提供「最新值」，排程每 3 小時累積一筆，累積 2 筆有效資料後即可播放（PM10 無效時改用風速）。', { n: dustHistN })}</p>)}
-          {opt.kind === 'dust' && dustSpec && dustSpec.stats.max === dustSpec.stats.min && (
+          {opt.kind === 'dust' && dustSpec && !dustModelWind && dustSpec.stats.max === dustSpec.stats.min && (
             <p className="hint gov-wait">{t('目前累積的 {n} 筆{label}數值完全相同（來源疑似凍結：時戳前進、數值不變），播放看不到變化，等來源更新後才會動。', { n: dustSpec.points.length, label: dustLabel })}</p>
           )}
           {opt.kind === 'moon' && moonSpec && (
@@ -236,8 +279,12 @@ export default function DataCard() {
           )}
           {opt.kind === 'air' && (airSpec
             ? <button className="gov-apply gov-series" onClick={playAir} disabled={recMode !== 'idle'}
-                      title={t('播放最近的逐時 PM2.5（Open-Meteo / CAMS 模型資料，非政府觀測）：每一步＝一小時；PM2.5 越高，海水越混濁、垃圾越多、色相偏黃綠、輝光收斂')}>
-                ▶ {t('播放空氣品質 {n} 小時', { n: airSpec.points.length })}
+                      title={airDrive === 'obs'
+                        ? t('播放最近的逐時 PM2.5（環境部測站觀測，政府資料開放授權條款－第1版）：每一步＝一小時；PM2.5 越高，海水越混濁、垃圾越多、色相偏黃綠、輝光收斂')
+                        : t('播放最近的逐時 PM2.5（Open-Meteo / CAMS 模型資料，非政府觀測）：每一步＝一小時；PM2.5 越高，海水越混濁、垃圾越多、色相偏黃綠、輝光收斂')}>
+                ▶ {airDrive === 'obs' ? t('播放空氣品質 {n} 小時（環境部觀測）', { n: airSpec.points.length })
+                  : airHasObs ? t('播放空氣品質 {n} 小時（模型）', { n: airSpec.points.length })
+                  : t('播放空氣品質 {n} 小時', { n: airSpec.points.length })}
               </button>
             : <p className="hint gov-wait">{t('空氣品質資料還不足（需要至少 2 個有效小時的 PM2.5）：排程每 3 小時向 Open-Meteo 抓取，取得後即可播放。')}</p>)}
         </div>

@@ -1,5 +1,5 @@
-/* 展場防呆：錯誤復原畫面 + 提示（src/ErrorBoundary.jsx）與「裝置」面板的維運一節（src/ui/devices/OpsSection.jsx）。
-   復原畫面用 fallback 色值：即使 styles.css 的變數沒載入也看得見。 */
+/* 展場防呆：錯誤復原畫面 + 提示（src/ErrorBoundary.jsx）、「裝置」面板的維運一節（src/ui/devices/OpsSection.jsx）與
+   展場角落的極小維運指示燈（src/ui/OpsLight.jsx）。復原畫面用 fallback 色值：即使 styles.css 的變數沒載入也看得見。 */
 
 /* ---- 錯誤復原畫面（整頁）---- */
 .res-crash {
@@ -10,6 +10,7 @@
 .res-crash-title { margin: 0 0 8px; font-size: 20px; font-weight: 600; line-height: 1.4; }
 .res-crash-count { margin: 6px 0 14px; font-size: 56px; line-height: 1; font-weight: 300; color: var(--accent, #5dcaa5); font-variant-numeric: tabular-nums; }
 .res-crash-msg { margin: 6px 0 14px; font-size: 14px; line-height: 1.7; color: #c8cbd8; }
+.res-crash-cool { margin: 6px 0 14px; font-size: 16px; line-height: 1.6; color: var(--accent, #5dcaa5); }
 .res-crash-actions { display: flex; justify-content: center; margin: 4px 0 16px; }
 .res-crash-details { text-align: left; font-size: 12px; color: var(--muted, #8a8ea3); }
 .res-crash-details summary { cursor: pointer; text-align: center; padding: 4px; }
@@ -55,6 +56,44 @@
 .ops-sec .ops-crash-kind { color: #e6c07a; }
 .ops-sec .ops-crash-msg { margin-top: 2px; font: 11px/1.5 var(--mono, ui-monospace, Menlo, monospace); color: #c8cbd8; overflow-wrap: anywhere; }
 .ops-sec .ops-crash-meta { margin-top: 2px; font: 10.5px/1.4 var(--mono, ui-monospace, Menlo, monospace); color: var(--dim, #5f6377); overflow-wrap: anywhere; }
+
+/* 維運指示燈的開關（在「裝置」面板 → 維運）：獨占一行 */
+.ops-sec .ops-toggle { flex: 1 0 100%; }
+.ops-sec .ops-light-hint { margin-top: -2px; }
+
+/* ---- 展場角落維運指示燈：右下角約 8px 的小點；不擋操作（外框不收指標，只有圓點與展開的文字收）；z-index 低於彈窗（.modal-backdrop = 40）---- */
+.res-light {
+  position: fixed; right: env(safe-area-inset-right, 0px); bottom: calc(7px + env(safe-area-inset-bottom, 0px)); z-index: 35;
+  width: 12px; height: 12px; pointer-events: none;
+}
+.res-light .res-light-dot {
+  position: absolute; inset: 0; width: 12px; height: 12px; padding: 0; margin: 0; border: 0; border-radius: 3px; background: transparent;
+  display: flex; align-items: center; justify-content: center; cursor: pointer; pointer-events: auto;
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, .8));   /* 亮背景（實景 AR）上也看得見；drop-shadow 會跟著三角形的輪廓 */
+}
+.res-light .res-light-dot:hover { background: transparent; border: 0; }
+.res-light .res-light-dot:focus-visible { outline: 2px solid var(--text, #e8e9f2); outline-offset: 1px; }
+.res-light-dot i { display: block; width: 8px; height: 8px; }
+.res-light-dot[data-level='ok'] i { border-radius: 50%; background: var(--accent, #5dcaa5); }                         /* 綠：實心圓 */
+.res-light-dot[data-level='warn'] i {                                                                                  /* 琥珀：空心圓帶點 */
+  border-radius: 50%; border: 2px solid var(--amber, #ff9d2b); background: radial-gradient(circle, var(--amber, #ff9d2b) 0 1.1px, transparent 1.5px);
+}
+.res-light-dot[data-level='bad'] i { width: 9px; background: #ff5a5a; clip-path: polygon(50% 0, 100% 100%, 0 100%); }  /* 紅：實心三角 */
+.res-light-dot[data-level='off'] i { border-radius: 50%; border: 1px dashed var(--dim, #5f6377); }                     /* 灰：虛線圓（防呆未啟用） */
+.res-light-pop {
+  position: absolute; right: 4px; bottom: calc(100% + 6px); width: max-content; max-width: min(320px, calc(100vw - 16px));
+  display: flex; flex-direction: column; align-items: flex-start; gap: 3px; padding: 6px 10px; border-radius: 8px;
+  background: rgba(5, 16, 28, .92); border: 1px solid var(--line2, #343a4e); color: var(--text, #e8e9f2);
+  font-size: 12px; line-height: 1.5; pointer-events: auto; backdrop-filter: blur(4px); box-shadow: 0 4px 16px rgba(0, 0, 0, .45);
+}
+.res-light-pop[data-level='warn'] { border-color: #e6c07a; }
+.res-light-pop[data-level='bad'] { border-color: #ff6a6a; }
+.res-light-pop .res-light-link {
+  font: inherit; font-size: 11.5px; padding: 0; border: 0; border-radius: 0; background: none; cursor: pointer;
+  color: var(--accent2, #4aa3ff); text-decoration: underline;
+}
+.res-light-pop .res-light-link:hover { background: none; border: 0; filter: brightness(1.15); }
+@media print { .res-light { display: none; } }
 
 @media (max-width: 480px) {
   .ops-sec .ops-list { grid-template-columns: 1fr; gap: 0; }

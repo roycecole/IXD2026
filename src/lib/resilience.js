@@ -5,8 +5,10 @@
 //   · 環境全部可注入（計時器 / rAF / fetch / document / reload / 時鐘 / 儲存），Node 用假物件測（見 resilience.test.mjs）。
 //   · 預設環境（defaultEnv）在「呼叫當下」才從 globalThis 取值，而且一律包一層箭頭函式：瀏覽器的原生函式（setTimeout / fetch / rAF /
 //     location.reload …）不能存成物件屬性再脫離原物件呼叫，否則 TypeError: Illegal invocation（Node 不檢查 this，所以測試要用「會檢查 this 的假環境」）。
-//   · 所有自動重載（畫面錯誤 / WebGL 失效 / 看門狗）都寫進崩潰紀錄並走同一套退避與熔斷：10 分鐘內累積 5 次就停止自動重載，改請人工處理，避免無限重載風暴。
-//   · 這個檔案不含任何使用者看得到的文字（畫面文字在 ErrorBoundary.jsx / OpsSection.jsx，全走 t()）。
+//   · 所有自動重載（畫面錯誤 / WebGL 失效 / 看門狗）都寫進崩潰紀錄並走同一套退避與熔斷：10 分鐘內累積 5 次就停止「快速」重載，避免無限重載風暴。
+//   · 熔斷是「半開」的：停止快速重載後排一次冷卻重試（最後一次致命事件起算 BREAKER_WINDOW_MS + 30 秒，讓舊紀錄滑出 10 分鐘視窗、重載後退避鏈重新從 5 秒開始），
+//     到點自動重載一次，配合日後修好的部署把展場救回來；再崩潰就再走一輪。每個熔斷週期最多 5 次快速重試 + 1 次冷卻重試（約每 13 分鐘 ≤ 5 次重載），不會形成重載風暴。
+//   · 這個檔案不含任何使用者看得到的文字（畫面文字在 ErrorBoundary.jsx / OpsSection.jsx / OpsLight.jsx，全走 t()）。
 //   · 不 import store / three：ErrorBoundary 在入口 chunk 裡，手機遙控頁也要載它，必須保持輕量。
 import { flagOn } from './urlFlags.js'
 import { LS, loadLS, saveLS, removeLS } from './persist.js'
@@ -29,7 +31,11 @@ export const VERSION_MS = 10 * 60 * 1000
 export const VERSION_MS_KIOSK = 5 * 60 * 1000
 export const DATA_MS = 3 * 60 * 60 * 1000
 export const DATA_MS_KIOSK = 30 * 60 * 1000
+export const HALF_OPEN_GRACE_MS = 30 * 1000      // 熔斷冷卻：比 BREAKER_WINDOW_MS 多等的緩衝（讓最後一筆致命紀錄確實滑出視窗）
+export const HALF_OPEN_MS = BREAKER_WINDOW_MS + HALF_OPEN_GRACE_MS   // 熔斷後多久自動重試一次（10 分 30 秒）
 export const IDLE_MIN_MS = 60 * 1000             // 「閒置」= 沒有人為輸入至少這麼久
+export const REMOTE_PRESENCE_MS = 3 * 60 * 1000  // 手機遙控器（導覽員 / 玩家）最近一次「有效操作訊息」在這麼久之內 → 算有人在（不看連線數）
+export const OPLIGHT_EVENT_MS = BREAKER_WINDOW_MS // 角落指示燈：崩潰紀錄近這麼久有事件 → 琥珀
 export const PENDING_RETRY_MS = 15 * 1000        // 有新版 / 新資料在等閒置時，多久再看一次
 export const DAILY_CHECK_MS = 30 * 1000          // ?reload=HH：多久檢查一次是否到點（用輪詢而非一個長計時器：休眠喚醒後也準）
 
@@ -204,7 +210,7 @@ export function summarizeCrashes(entries, now = Date.now()) {
 
 // ───────────────────────────── 自動重載：退避 + 熔斷 ─────────────────────────────
 // entries：崩潰紀錄（含剛記下的這一筆）；只算 fatal 的（畫面錯誤 / WebGL 失效 / 看門狗）。
-//   10 分鐘內累積 5 次 → 停止自動重載（stop:true）；
+//   10 分鐘內累積 5 次 → 停止快速重載（stop:true），並附上 cooldownMs：熔斷是「半開」的，冷卻到點（最後一次致命事件起算 10 分 30 秒）自動再重載一次；
 //   否則依「1 分鐘內」的次數決定等待：1 次 5 秒、2 次 15 秒、3 次以上 60 秒；10 分鐘內第 4 次也一律 60 秒（最後一次機會，別再快速重試）。
 // 把 INCIDENT_MS 內連續記下的致命事件併成一筆：一次崩潰不能被算成兩次（否則退避直接跳 15 秒、熔斷提早在第 3 次真的崩潰就停手）
 function collapseIncidents(list) {
@@ -213,12 +219,23 @@ function collapseIncidents(list) {
   for (const e of sorted) if (!out.length || e.t - out[out.length - 1].t > INCIDENT_MS) out.push(e)
   return out
 }
+// 熔斷後多久重試：最後一次致命事件起算 HALF_OPEN_MS（= 視窗 + 30 秒，那時視窗內已沒有任何舊的致命紀錄，重載後的退避鏈重新從 5 秒開始）。
+// 不會比 HALF_OPEN_MS 長（時鐘被往回調時不無限等）；正常情況剛崩潰的那一刻就是 HALF_OPEN_MS。
+function cooldownFor(fatal, now) {
+  let last = -Infinity
+  for (const e of fatal) if (e.t > last) last = e.t
+  if (!Number.isFinite(last)) return HALF_OPEN_MS
+  return Math.min(HALF_OPEN_MS, Math.max(0, last + HALF_OPEN_MS - now))
+}
+// 冷卻倒數的分鐘數（顯示用，至少 1；分鐘級、進位）
+export const minutesLeft = (ms) => Math.max(1, Math.ceil((Number(ms) || 0) / 60000))
+export const cooldownMinutes = (retryAt, now = Date.now()) => (isNum(retryAt) ? minutesLeft(retryAt - now) : 1)
 export function planAutoReload(entries, now = Date.now()) {
   const fatal = collapseIncidents((Array.isArray(entries) ? entries : []).filter((e) => e && e.fatal && isNum(e.t)))
   const in10 = fatal.filter((e) => now - e.t <= BREAKER_WINDOW_MS)
   const in1 = in10.filter((e) => now - e.t <= CHAIN_WINDOW_MS)
   const count10 = in10.length, count1 = in1.length
-  if (count10 >= BREAKER_MAX) return { stop: true, delayMs: null, count1, count10 }
+  if (count10 >= BREAKER_MAX) return { stop: true, delayMs: null, cooldownMs: cooldownFor(fatal, now), count1, count10 }
   let delayMs = BACKOFF_MS[Math.min(Math.max(count1, 1), BACKOFF_MS.length) - 1]
   if (count10 >= BREAKER_MAX - 1) delayMs = Math.max(delayMs, BACKOFF_MS[BACKOFF_MS.length - 1])
   return { stop: false, delayMs, count1, count10 }
@@ -274,24 +291,40 @@ export function pickOptionId(gov, wantedId) {
 }
 
 // ───────────────────────────── 閒置判斷 ─────────────────────────────
-// state：{ idleMs（距離最後一次人為輸入 / 導覽員操作）, recMode, tourRunning, tourAuto, modalOpen, xrActive?, fullscreen? }。
-// busy 的原因依序：彈窗 > XR 工作階段 > 全螢幕（觀眾視窗）> 有人操作 > 錄製 > 導覽 > 播放。
+// state：{ idleMs（距離最後一次人為輸入 / 導覽員操作）, remoteIdleMs?（距離手機遙控器最後一次有效操作訊息）, recMode, tourRunning, tourAuto, modalOpen, xrActive?, fullscreen? }。
+// busy 的原因依序：彈窗 > XR 工作階段 > 全螢幕（觀眾視窗）> 有人操作 > 遙控器使用中 > 錄製 > 導覽 > 播放。
+//   · remote：手機遙控器（導覽員在講解、玩家在玩）REMOTE_PRESENCE_MS（3 分鐘）內有「有效的操作訊息」（參數 / 動作 / 打擊墊 / 導覽員指令；連線、心跳、狀態同步不算，
+//     見 lib/remoteDispatch.js 的 remoteActivity）。判斷的是「最近有訊息」而不是連線數——桌上一支沒關頁面的手機會讓連線數永遠大於 0，展場就永遠等不到閒置。
+//     排在 active 之後：本機 60 秒內有輸入時，原因回報較直接的「有人操作中」；本機已閒置但遙控器還在動，才回報 remote。排在錄製 / 導覽 / 播放之前，
+//     而且展場（kiosk）也適用——那是真人在操作，不是展場常態的自動導覽 / 播放。沒帶 remoteIdleMs 的環境（觀眾視窗等）不受影響。
 //   · xrActive：手機正在 immersive-ar 看桌上的海，可能整段沒有任何輸入；重載會直接結束 XR 工作階段。展場（kiosk）也不放行——XR 一定是使用者主動開的。
 //   · fullscreen：只有觀眾視窗會帶（投影機的 requestFullscreen 全螢幕）。重載會退出全螢幕，而回去要有人走到投影機前點一下（瀏覽器不准腳本自己進全螢幕）→ 全螢幕中延後「重載」。
 //     資料更新是就地換資料（不重載），不受它影響（見 startGuards 的 getDataIdle）。
 // 展場（kiosk）或「閒置自動啟動的導覽」本來就是沒人時的常態（自動導覽會無限循環、播放序列）：不算忙，否則展場永遠等不到閒置。
-export const DEFAULT_IDLE_STATE = { idleMs: Infinity, recMode: 'idle', tourRunning: false, tourAuto: false, modalOpen: false, xrActive: false, fullscreen: false }
-export function evaluateIdle(state, { kiosk = false, minIdleMs = IDLE_MIN_MS } = {}) {
+export const DEFAULT_IDLE_STATE = { idleMs: Infinity, remoteIdleMs: Infinity, recMode: 'idle', tourRunning: false, tourAuto: false, modalOpen: false, xrActive: false, fullscreen: false }
+export function evaluateIdle(state, { kiosk = false, minIdleMs = IDLE_MIN_MS, remotePresenceMs = REMOTE_PRESENCE_MS } = {}) {
   const s = state || {}
   if (s.modalOpen) return { idle: false, reason: 'modal' }
   if (s.xrActive) return { idle: false, reason: 'xr' }
   if (s.fullscreen) return { idle: false, reason: 'fullscreen' }
   if (!(Number(s.idleMs) >= minIdleMs)) return { idle: false, reason: 'active' }
+  if (s.remoteIdleMs != null && Number(s.remoteIdleMs) < remotePresenceMs) return { idle: false, reason: 'remote' }   // NaN < x 為 false：壞資料不會讓展場永遠忙
   if (s.recMode === 'recording') return { idle: false, reason: 'recording' }
   const autoTour = !!s.tourRunning && (!!kiosk || !!s.tourAuto)
   if (s.tourRunning && !autoTour) return { idle: false, reason: 'tour' }
   if (s.recMode === 'playing' && !autoTour) return { idle: false, reason: 'playing' }
   return { idle: true, reason: '' }
+}
+
+// 把各處讀到的「原始訊號」組成 evaluateIdle 要的狀態（純函式，Node 可測；services/ResilienceService.jsx 的 readIdleState 負責讀真實來源，每個來源各自 try/catch）。
+// 三個時間戳同一個時鐘（performance.now）：lastInputAt = activity.last（人為輸入）、guideAt = activity.guideAt（導覽員在本機的操作）、remoteAt = remoteActivity.at（手機遙控器的有效操作訊息）。
+//   · idleMs = now - max(lastInputAt, guideAt)；讀不到本機輸入時間 → 0（保守：當作有人在）。
+//   · remoteIdleMs：沒有遙控器訊息 / 讀不到 → Infinity（沒有這個訊號；不是保守的「忙」——否則介面一改壞、展場就永遠不重載）。
+export function composeIdleState({ now, lastInputAt, guideAt, remoteAt, recMode = 'idle', tourRunning = false, tourAuto = false, modalOpen = false, xrActive = false } = {}) {
+  const guide = isNum(guideAt) ? guideAt : -Infinity
+  const idleMs = isNum(now) && isNum(lastInputAt) ? now - Math.max(lastInputAt, guide) : 0
+  const remoteIdleMs = isNum(now) && isNum(remoteAt) ? Math.max(0, now - remoteAt) : Infinity
+  return { idleMs, remoteIdleMs, recMode, tourRunning: !!tourRunning, tourAuto: !!tourAuto, modalOpen: !!modalOpen, xrActive: !!xrActive }
 }
 
 // ?reload=HH：下一次「本地時間 hour:00」（嚴格晚於 now）
@@ -327,13 +360,74 @@ export function initialStatus(now = Date.now()) {
     gl: { state: 'idle', at: 0 },                                           // state：idle | lost | restored | reloading
     watchdog: { on: false, supported: true, reason: '', stalled: false },
     daily: { hour: null, at: 0 },
-    halted: false,                                                          // 熔斷：短時間內反覆異常，已停止自動重載
-    reloading: null,                                                        // { reason, at }：已排定的（異常）重載
+    halted: false,                                                          // 熔斷：短時間內反覆異常，已停止「快速」自動重載（半開：haltRetryAt 到點還會自動重載一次）
+    haltRetryAt: 0,                                                         // 熔斷後排定的冷卻重試時間（env.now() 時鐘的毫秒；0 = 沒有排定）
+    reloading: null,                                                        // { reason, at }：已排定的重載（reason：webgl / watchdog / version / daily / cooldown）
     crashRev: 0,                                                            // 崩潰紀錄有新增時遞增
+    oplightRev: 0,                                                          // 角落指示燈偏好（LS.oplight）有變動時遞增（讓訂閱者重讀偏好）
   }
 }
 export const opsStatus = createStatusStore(initialStatus())
 export const guardControls = { current: null }   // 目前執行中的 startGuards 控制把手（面板的「立即檢查更新」用）
+
+// ───────────────────────────── 展場角落指示燈（ui/OpsLight.jsx）─────────────────────────────
+// 純判斷：把維運狀態（opsStatus）+ 崩潰紀錄 → { level, items }，畫面文字由 OpsLight.jsx 依 items 的 code 用 t() 組出來（這個檔案不放使用者看得到的文字）。
+//   level：'bad'（紅）看門狗判定卡死 / WebGL 遺失中 / 熔斷停止快速重載（halted）/ 即將重載
+//          'warn'（琥珀）新版在等閒置 / 新資料排隊中 / 崩潰紀錄近 10 分鐘有事件（遙控器使用中延後重載 = 等閒置的原因之一，帶在 why 裡）
+//          'off'（灰）防呆未啟用（尚未啟動 / 開發版；沒有更糟的事情時才顯示灰）
+//          'ok'（綠）一切正常。
+//   items 依嚴重程度排序（第一項就是最該看的那一行）；code：halted{m} halted-manual reloading{reason} stalled gl-lost version-wait{id,why} version-soon{id} version-manual{id} data-wait{why} events{n} ok off off-dev
+// 崩潰紀錄的「事件」：不含資訊性的 reload（新版 / 每日 / 冷卻重載）；以 last（最後一次發生）或 t 較晚者為準。
+export function recentEventCount(entries, now = Date.now(), windowMs = OPLIGHT_EVENT_MS) {
+  let n = 0
+  for (const e of Array.isArray(entries) ? entries : []) {
+    if (!e || e.kind === 'reload') continue
+    const at = Math.max(isNum(e.t) ? e.t : 0, isNum(e.last) ? e.last : 0)
+    if (at > 0 && now - at <= windowMs) n++   // 時鐘被往回調（時間戳在未來）也算「剛剛」
+  }
+  return n
+}
+export function deriveOpsLight({ status, entries = [], now = Date.now() } = {}) {
+  const st = status || {}
+  const cfg = st.config || null
+  const bad = [], warn = []
+  if (st.halted) bad.push(isNum(st.haltRetryAt) && st.haltRetryAt > 0 ? { code: 'halted', m: cooldownMinutes(st.haltRetryAt, now) } : { code: 'halted-manual' })
+  if (st.reloading) bad.push({ code: 'reloading', reason: String(st.reloading.reason || '') })
+  if (st.watchdog && st.watchdog.stalled) bad.push({ code: 'stalled' })
+  if (st.gl && (st.gl.state === 'lost' || st.gl.state === 'reloading')) bad.push({ code: 'gl-lost' })
+  const v = st.version || {}
+  if (v.state === 'new') {
+    const id = String(v.remoteId || '')
+    if (cfg && cfg.version && cfg.version.auto === false) warn.push({ code: 'version-manual', id })
+    else if (v.deferred) warn.push({ code: 'version-wait', id, why: String(v.deferred) })
+    else warn.push({ code: 'version-soon', id })
+  }
+  const d = st.data || {}
+  if (d.state === 'pending') warn.push({ code: 'data-wait', why: String(d.deferred || '') })
+  const n = recentEventCount(entries, now)
+  if (n > 0) warn.push({ code: 'events', n })
+  if (bad.length) return { level: 'bad', items: [...bad, ...warn] }
+  if (warn.length) return { level: 'warn', items: warn }
+  if (!st.started || !cfg) return { level: 'off', items: [{ code: 'off' }] }
+  if (cfg.version && cfg.version.reason === 'dev') return { level: 'off', items: [{ code: 'off-dev' }] }
+  return { level: 'ok', items: [{ code: 'ok' }] }
+}
+
+// 顯示偏好：?oplight=1 / 0 只覆寫這一次（不寫偏好）> LS.oplight（'on' | 'off'，「裝置」面板的開關寫的）> 預設（展場 ?kiosk 顯示、一般不顯示）。
+// 回傳 { show, source: 'flag' | 'pref' | 'default' }。?oplight（沒有值）視為開，與 urlFlags 的其他旗標一致。
+export function resolveOpLightPref({ search = '', saved = null, kiosk = false } = {}) {
+  const raw = rawFlag(search, 'oplight')
+  if (raw !== null) return { show: !OFF_RE.test(raw), source: 'flag' }
+  if (saved === 'on' || saved === 'off') return { show: saved === 'on', source: 'pref' }
+  return { show: !!kiosk, source: 'default' }
+}
+export function readOpLightSaved() { const v = loadLS(LS.oplight, null); return v === 'on' || v === 'off' ? v : null }
+export function setOpLightPref(value, status = opsStatus) {
+  if (value !== 'on' && value !== 'off') return false
+  saveLS(LS.oplight, value)
+  status.set({ oplightRev: (status.get().oplightRev || 0) + 1 })
+  return true
+}
 
 // ───────────────────────────── 環境（可注入）─────────────────────────────
 // 呼叫當下才取 globalThis；原生函式一律包一層（脫離原物件呼叫會 Illegal invocation）；缺的功能給 null（功能偵測在使用之前）。
@@ -385,33 +479,56 @@ export function audienceEnv({ doc } = {}) {
 const isVisible = (doc) => !doc || doc.visibilityState === undefined || doc.visibilityState === 'visible'
 
 // ───────────────────────────── 重載器：記錄 + 退避 / 熔斷 + 單次飛行 ─────────────────────────────
+//   熔斷（10 分鐘內累積 5 次致命事件）是「半開」的：停止快速重載後，排一次冷卻重試（plan.cooldownMs = 最後一次致命事件起算 10 分 30 秒），到點自動重載一次（寫一筆資訊性的 'cooldown' 紀錄）。
+//   · 冷卻計時器與「已排定的異常重載」（timer）分開：halted 期間 ResilienceService 仍掛載，版本檢查繼續跑——偵測到新版且閒置就直接 soft('version') 重載，不必等冷卻。
+//   · 熔斷期間又有新的致命事件 → 冷卻重新從那一筆起算（10 分鐘內都沒有新事件才試一次，退避鏈才會真的重新從頭）。
+//   · 冷卻到點時若 halted 已被人工解除（維運面板「清除崩潰紀錄」）→ 不重載。
+//   · cancel() 一併取消冷卻（停止防呆 / 卸載時）；重載後新頁面的崩潰紀錄視窗重新計算：最後一筆致命事件已超過 10 分鐘，退避鏈從 5 秒開始。
 export function createReloader({ env, status, crashLog, cfg }) {
-  let timer = null, fired = false
+  let timer = null, coolTimer = null, fired = false
   const fire = () => { timer = null; fired = true; try { env.reload() } catch (e) { fired = false } }
+  const clearCool = () => { if (coolTimer !== null) { env.clearTimeout(coolTimer); coolTimer = null } }
+  function soft(reason) {
+    if (timer !== null || fired) return false
+    try { crashLog.add({ kind: 'reload', message: reason, build: cfg.buildId, flags: cfg.flags }); crashLog.flush() } catch (e) { /* ignore */ }
+    status.set({ crashRev: status.get().crashRev + 1, reloading: { reason, at: env.now() } })
+    fire()
+    return true
+  }
+  const onCooldown = () => {
+    coolTimer = null
+    if (fired || timer !== null || !status.get().halted) return
+    soft('cooldown')
+  }
+  function armCooldown(ms) {
+    clearCool()
+    const wait = isNum(ms) && ms >= 0 ? ms : HALF_OPEN_MS
+    coolTimer = env.setTimeout(onCooldown, wait)
+    status.set({ halted: true, haltRetryAt: env.now() + wait })
+    return wait
+  }
   return {
-    // 異常重載（kind：'webgl' | 'watchdog'）。回傳 { ok, halted?, delayMs?, already? }
+    // 異常重載（kind：'webgl' | 'watchdog'）。回傳 { ok, halted?, delayMs?, cooldownMs?, already? }
     crash(kind, error) {
       if (timer !== null || fired) return { ok: true, already: true }
       try { crashLog.add({ kind, error, build: cfg.buildId, flags: cfg.flags }) } catch (e) { /* ignore */ }
       status.set({ crashRev: status.get().crashRev + 1 })
       const plan = planAutoReload(safe(() => crashLog.list(), []), env.now())
-      if (plan.stop) { status.set({ halted: true }); return { ok: false, halted: true, plan } }
+      if (plan.stop) { const cooldownMs = armCooldown(plan.cooldownMs); return { ok: false, halted: true, cooldownMs, plan } }
       const delayMs = reloadDelayFor(kind, plan)
       status.set({ reloading: { reason: kind, at: env.now() + delayMs } })
       if (delayMs <= 0) fire()
       else timer = env.setTimeout(fire, delayMs)
       return { ok: true, delayMs, plan }
     },
-    // 一般重載（新版 / 每日）：資訊性紀錄，立刻重載，不受熔斷影響（這些不是崩潰，且一天只會有零星幾次）
-    soft(reason) {
-      if (timer !== null || fired) return false
-      try { crashLog.add({ kind: 'reload', message: reason, build: cfg.buildId, flags: cfg.flags }); crashLog.flush() } catch (e) { /* ignore */ }
-      status.set({ crashRev: status.get().crashRev + 1, reloading: { reason, at: env.now() } })
-      fire()
-      return true
+    // 一般重載（新版 / 每日 / 熔斷冷卻）：資訊性紀錄，立刻重載，不受熔斷影響（這些不是崩潰，且一天只會有零星幾次；冷卻重試每個熔斷週期最多一次）
+    soft,
+    cancel() {
+      if (timer !== null) { env.clearTimeout(timer); timer = null; status.set({ reloading: null }) }
+      if (coolTimer !== null) { clearCool(); status.set({ haltRetryAt: 0 }) }
     },
-    cancel() { if (timer !== null) { env.clearTimeout(timer); timer = null; status.set({ reloading: null }) } },
     pending: () => timer !== null,
+    cooling: () => coolTimer !== null,
   }
 }
 

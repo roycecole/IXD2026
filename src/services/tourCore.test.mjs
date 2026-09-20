@@ -1,6 +1,7 @@
 // 資料導覽 × 真實輸入路徑的整合測試。執行：node --test src/services/tourCore.test.mjs
 // 後半段是「導覽員控制」：快速鍵 ← → P 的守衛（含忽略輸入元件 / 彈窗 / 修飾鍵）、暫停與跳站對真的 store / 活動掛鉤的影響、
 // 每站連結的啟動器（只啟動一次、StrictMode、觀眾視窗、失敗不重試）、複製此站連結（Clipboard → execCommand 退路）、接線與樣式的原始碼檢查。
+// 最後一節：導覽腳本的接線（tourRunner 的 build 讀 store 的腳本、?tour=… 網址與 ?tourstop= 並存、複製此站連結帶著腳本）與旁白的 iOS 解鎖（armNarrationUnlock、開關的手勢內同步 unlock）。
 // 計時器 / 剪貼簿 / document 都用「會檢查 this 的假環境」（../lib/tourTestEnv.mjs）：脫離原物件呼叫會丟 Illegal invocation，跟瀏覽器一樣。
 // 以前的導覽測試（src/lib/tour.test.mjs）全用假 store，只把 activity 時間戳往前撥；這裡用「真的」useStore / activity / createTourRunner，
 // 驗證各種輸入來源（MIDI / 語音 / 手機遙控 / 手把式 input / 滾輪）在導覽進行中：
@@ -14,12 +15,15 @@ import { createTourRunner, buildTour, useTourStore, TOUR_MS, PAUSE_SPEED } from 
 import { registerEn, setLocale } from '../i18n/index.js'
 import { loadEnDict } from '../../scripts/i18n-check.mjs'
 import { MODAL_SELECTOR } from '../lib/modalFocus.js'
-import { makeTimers, installTimers, makeCopyEnv, illegal } from '../lib/tourTestEnv.mjs'
+import { makeTimers, installTimers, makeCopyEnv, makeUnlockNarrator, illegal } from '../lib/tourTestEnv.mjs'
+import { arState } from '../lib/ar.js'
+import { parsePlanFromSearch, buildPlanLink } from '../lib/tourPlan.js'
+import { parseTourLink } from '../lib/tourLink.js'
 import { runCommand, CALM_TARGETS, CALM_STEP } from '../lib/voiceCommands.js'
 import { dispatch } from '../lib/remoteDispatch.js'
 import { attachHapticsSource } from '../lib/haptics.js'
 import { inspectStore } from '../lib/inspect.js'
-import { attachTourGuards, attachRunningGuards, tourIdleTick, tourRunner, KEEP_SELECTOR, KEEP_KEYS, navKeyAction, isTypingTarget, createLinkStarter, copyTourLink, LINK_START_DELAY_MS } from './tourCore.js'
+import { attachTourGuards, attachRunningGuards, tourIdleTick, tourRunner, KEEP_SELECTOR, KEEP_KEYS, navKeyAction, isTypingTarget, createLinkStarter, copyTourLink, armNarrationUnlock, LINK_START_DELAY_MS } from './tourCore.js'
 
 const { dict: EN_DICT } = await loadEnDict()
 registerEn(EN_DICT)
@@ -747,9 +751,9 @@ test('連結啟動器：StrictMode（attach / detach / attach）在背景分頁�
 // 複製此站連結
 // =============================================================================================
 const IDS_ALL = ['reservoir', 'tide', 'moon', 'dust', 'air', 'birds', 'fish', 'stations']
-function copyKit({ running = true, index = 4, paused = false, stopList = IDS_ALL.map((id) => ({ id, caption: { key: id, p: {} } })), pushLog = true } = {}) {
+function copyKit({ running = true, index = 4, paused = false, stopList = IDS_ALL.map((id) => ({ id, caption: { key: id, p: {} } })), pushLog = true, plan = null } = {}) {
   const lines = []
-  const tourStore = { getState: () => ({ running, index, paused, stopList }) }
+  const tourStore = { getState: () => ({ running, index, paused, stopList, plan }) }
   const store = { getState: () => (pushLog ? { pushLog: (dir, text) => lines.push([dir, text]) } : {}) }
   return { lines, tourStore, store }
 }
@@ -876,4 +880,209 @@ test('CSS 載入順序：每個 import tourpresenter.css 的元件都先 import 
     const a = code.indexOf("import '../styles/tour.css'"), b = code.indexOf("import '../styles/tourpresenter.css'")
     assert.ok(a >= 0 && b > a, f)
   }
+})
+
+// =============================================================================================
+// 導覽腳本 × 導覽接線（真的 store / tourRunner）
+// =============================================================================================
+const PLAN2 = { name: '測站與水庫', stops: [{ id: 'stations', note: '這是備註' }, { id: 'reservoir' }] }   // 用兩站都一定有資料的（不依賴 CI 每天更新的鳥 / 魚 / 空氣）
+function withPlan(plan, fn) {
+  S().stopPlayback(); S().clearRec(); S().setGov(gov)
+  useTourStore.setState({ remote: false, autoIdle: true, running: false, caption: null, plan: plan ? { ...plan } : null, planSrc: plan ? 'custom' : null, planId: null })
+  try { return fn() } finally { tourRunner.stop('user'); arState.on = false; useTourStore.setState({ plan: null, planSrc: null, planId: null, running: false, caption: null }) }
+}
+
+test('腳本（真的 tourRunner）：build 讀 store 的腳本——手動開始只導覽腳本的站、依腳本順序、備註在字幕資料裡；沒有腳本 = 全部站；start 的 opts.plan 明確給（含 null）以呼叫端為準', () => withPlan(PLAN2, () => {
+  assert.equal(tourRunner.start({ auto: false }), true)
+  const cur = tourRunner.current()
+  assert.equal(cur.total, 2); assert.equal(cur.stop.id, 'stations'); assert.equal(cur.stop.caption.p.note, '這是備註')
+  assert.deepEqual(useTourStore.getState().stopList.map((x) => x.id), ['stations', 'reservoir'])
+  assert.equal(useTourStore.getState().total, 2)
+  tourRunner.stop('user')
+  assert.equal(tourRunner.start({ auto: false, opts: { plan: null } }), true, 'opts.plan: null → 呼叫端要預設完整導覽')
+  assert.equal(tourRunner.current().total, buildTour(gov).length)
+  tourRunner.stop('user')
+  assert.equal(tourRunner.start({ auto: false, opts: { plan: { stops: ['reservoir'] } } }), true); assert.equal(tourRunner.current().total, 1)
+  tourRunner.stop('user')
+  useTourStore.setState({ plan: null })
+  assert.equal(tourRunner.start({ auto: false }), true); assert.equal(tourRunner.current().total, buildTour(gov).length, '沒有腳本 → 與以前相同')
+}))
+
+test('腳本（真的 tourRunner）：閒置自動導覽（tourIdleTick）與導覽員模式（start at）都用同一份腳本；?tourstop= 以腳本內的站為準（不在腳本裡 → 第 0 站）；AR 實景略過的站即使腳本列了也略過', () => withPlan(PLAN2, () => {
+  assert.equal(tourIdleTick(1e9), 'started')
+  assert.equal(tourRunner.current().total, 2); assert.equal(tourRunner.current().auto, true)
+  tourRunner.stop('user')
+  assert.equal(tourRunner.start({ auto: false, at: 'reservoir', hold: true }), true)
+  assert.equal(tourRunner.current().stop.id, 'reservoir'); assert.equal(tourRunner.current().index, 1); assert.equal(tourRunner.isPaused(), true)
+  tourRunner.stop('user')
+  assert.equal(tourRunner.start({ auto: false, at: 'fish' }), true); assert.equal(tourRunner.current().stop.id, 'stations', '不在腳本裡 → 第 0 站')
+  tourRunner.stop('user')
+  arState.on = true
+  assert.equal(tourRunner.start({ auto: false }), true); assert.equal(tourRunner.current().total, 1, 'AR 實景：星座不畫 → 腳本裡的 stations 也略過'); assert.equal(tourRunner.current().stop.id, 'reservoir')
+}))
+
+test('腳本（真的 tourRunner）：腳本的站全都缺資料（AR 實景略過的站）→ start 失敗（empty）、idle tick 回 nodata（App 退回輪播吸引模式），不丟例外', () => withPlan({ stops: ['stations', 'moon'] }, () => {
+  S().setGov(JSON.parse(JSON.stringify(gov)))                       // tourIdleTick 會記住「建不出站的那份資料」：用複本，別讓後面的測試踩到
+  arState.on = true
+  assert.equal(tourRunner.start({ auto: false }), false); assert.equal(tourRunner.lastFail, 'empty'); assert.equal(tourRunner.isRunning(), false)
+  assert.equal(tourIdleTick(2e9), 'nodata')
+  assert.equal(tourIdleTick(2.1e9), 'nodata', '同一組條件（資料 / 腳本 / AR）不重試')
+  useTourStore.setState({ plan: { stops: ['reservoir'] } })                                         // 編輯器改了腳本 → 條件變了，要重新嘗試（不能一直 nodata 到資料重載）
+  assert.equal(tourIdleTick(2.2e9), 'started'); assert.equal(tourRunner.current().total, 1)
+  tourRunner.stop('user')
+  useTourStore.setState({ plan: { stops: ['stations', 'moon'] } }); arState.on = false
+  assert.equal(tourIdleTick(2.3e9), 'started', 'AR 關掉 → 星座又能導覽了'); tourRunner.stop('user')
+  arState.on = true; useTourStore.setState({ plan: { stops: ['stations'] } })
+  assert.equal(tourIdleTick(2.4e9), 'nodata'); arState.on = false
+  assert.equal(tourIdleTick(2.5e9), 'started', 'AR 狀態變了 → 重新嘗試')
+}))
+
+test('連結啟動器 × 腳本網址：只有 ?tour=air,fish（沒有 ?tourstop=）→ 不自動開始導覽；?tour=…&tourstop=fish → 啟動一次、at = 站 id；?tour=0（開關）不是腳本也不是連結', () => {
+  const none = linkKit({ search: '?tour=air,fish', gov: GOV })
+  const off = none.starter.attach()
+  assert.equal(none.timers.pending(), 0); assert.equal(none.store.count(), 0, '沒有 tourstop → 不訂閱、不排程'); assert.equal(none.starter.isDone(), true); off()
+  const withNotes = new URL(buildPlanLink({ href: 'https://a.test/', plan: { stops: [{ id: 'air', note: 'x' }, 'fish'] } }).url).search
+  assert.ok(withNotes.includes('tournotes='), '（前提）腳本網址帶備註')
+  const k = linkKit({ search: withNotes + '&tourstop=fish&tourhold=1', gov: GOV })
+  k.starter.attach(); k.timers.advance(LINK_START_DELAY_MS)
+  assert.deepEqual(k.runner.starts, [{ auto: false, at: 'fish', hold: true }])
+  const flag = linkKit({ search: '?tour=0', gov: GOV }); flag.starter.attach(); assert.equal(flag.timers.pending(), 0)
+})
+
+test('複製此站連結 × 腳本：有腳本 → 連結帶著腳本（站序 + 備註 + 名稱）與這一站；連結開啟後讀回同一份腳本與同一站；暫停帶 tourhold；英文帶 lang=en 與英文日誌', async () => {
+  const plan = { name: '空氣與魚', stops: [{ id: 'air', note: '看這裡' }, { id: 'fish' }] }
+  const env = makeCopyEnv(), k = copyKit({ plan, index: 1, stopList: [{ id: 'air' }, { id: 'fish' }] })
+  assert.equal(await copyTourLink({ tourStore: k.tourStore, store: k.store, getHref: () => 'https://midisea.shyetech.com/?kiosk=1&tour=0#remote=peer', env }), 'ok')
+  const url = env.state.copied
+  assert.ok(url.startsWith('https://midisea.shyetech.com/?tour=air,fish&tournotes=')); assert.ok(url.endsWith('&tourstop=fish'), url)
+  assert.deepEqual(parsePlanFromSearch(new URL(url).search), plan); assert.deepEqual(parseTourLink(new URL(url).search), { stop: { id: 'fish' }, hold: false })
+  assert.ok(!url.includes('kiosk') && !url.includes('remote') && !url.includes('peer')); assert.deepEqual(k.lines, [['out', '已複製第 2 站連結']])
+  const env2 = makeCopyEnv(), k2 = copyKit({ plan, index: 0, paused: true, stopList: [{ id: 'air' }, { id: 'fish' }] })
+  await copyTourLink({ tourStore: k2.tourStore, store: k2.store, getHref: () => 'https://a.test/', env: env2 })
+  assert.ok(env2.state.copied.endsWith('&tourstop=air&tourhold=1'))
+  setLocale('en')
+  try {
+    const env3 = makeCopyEnv(), k3 = copyKit({ plan, index: 1, stopList: [{ id: 'air' }, { id: 'fish' }] })
+    await copyTourLink({ tourStore: k3.tourStore, store: k3.store, getHref: () => 'https://a.test/', env: env3 })
+    assert.ok(env3.state.copied.endsWith('&tourstop=fish&lang=en')); assert.deepEqual(k3.lines, [['out', 'Copied the link to stop 2']])
+  } finally { setLocale('zh') }
+})
+
+test('複製此站連結 × 腳本：備註太長放不進網址 → 連結只帶站序 + 名稱（仍是 ok），日誌明說「備註太長，連結沒有帶備註」；沒有腳本時連結與以前相同（只帶 tourstop）', async () => {
+  const long = { name: '長備註', stops: ['reservoir', 'tide', 'moon', 'dust', 'air', 'birds', 'fish', 'stations'].map((id) => ({ id, note: '字'.repeat(120) })) }
+  const env = makeCopyEnv(), k = copyKit({ plan: long, index: 4 })
+  assert.equal(await copyTourLink({ tourStore: k.tourStore, store: k.store, getHref: () => 'https://a.test/', env }), 'ok')
+  assert.ok(!env.state.copied.includes('tournotes=')); assert.ok(env.state.copied.length <= 1800); assert.ok(env.state.copied.endsWith('&tourstop=air'))
+  assert.deepEqual(k.lines, [['out', '已複製第 5 站連結（備註太長，連結沒有帶備註）']])
+  setLocale('en')
+  try { const k2 = copyKit({ plan: long, index: 4 }); await copyTourLink({ tourStore: k2.tourStore, store: k2.store, getHref: () => 'https://a.test/', env: makeCopyEnv() }); assert.match(k2.lines[0][1], /^Copied the link to stop 5 \(the notes were too long, so the link has none\)$/) } finally { setLocale('zh') }
+  const env3 = makeCopyEnv(), k3 = copyKit({ plan: null, index: 4 })
+  await copyTourLink({ tourStore: k3.tourStore, store: k3.store, getHref: () => 'https://a.test/', env: env3 })
+  assert.equal(env3.state.copied, 'https://a.test/?tourstop=air', '沒有腳本：與以前完全相同')
+})
+
+// =============================================================================================
+// 旁白的 iOS 解鎖（契約 C6）：TourService 掛載時註冊一次性的「第一次手勢」解鎖；開關在手勢內同步 unlock
+// =============================================================================================
+const speakStore = (over = {}) => ({ getState: () => ({ speak: true, remote: false, ...over }) })
+
+test('armNarrationUnlock：旁白偏好已開且尚未解鎖 → 以 window 呼叫 narrator.unlockOnFirstGesture(win) 一次；回傳的取消函式呼叫 off()（只一次）', () => {
+  const nar = makeUnlockNarrator({ unlocked: false }), win = { fake: 'window' }
+  const off = armNarrationUnlock({ narrator: nar, tourStore: speakStore(), win })
+  assert.deepEqual(nar.events, [['unlockOnFirstGesture', win]]); assert.equal(nar.offs, 0)
+  off(); assert.equal(nar.offs, 1); off(); off(); assert.equal(nar.offs, 1, '重複呼叫只取消一次')
+})
+
+test('armNarrationUnlock：偏好關閉 / 已解鎖 / 觀眾視窗（remote）→ 不註冊；回傳的取消函式安全（什麼都不做）', () => {
+  for (const [name, nar, st] of [['偏好關閉', makeUnlockNarrator(), { speak: false }], ['已解鎖', makeUnlockNarrator({ unlocked: true }), {}], ['觀眾視窗', makeUnlockNarrator(), { remote: true }]]) {
+    const off = armNarrationUnlock({ narrator: nar, tourStore: speakStore(st), win: {} })
+    assert.equal(nar.events.filter((e) => e[0] === 'unlockOnFirstGesture').length, 0, name); assert.doesNotThrow(() => off(), name); assert.equal(nar.offs, 0, name)
+  }
+})
+
+test('armNarrationUnlock：StrictMode 雙掛載（arm → cleanup → arm）→ 註冊兩次、取消一次、最後一個還在；cleanup 完整（每個註冊都被取消）', () => {
+  const nar = makeUnlockNarrator()
+  const off1 = armNarrationUnlock({ narrator: nar, tourStore: speakStore(), win: {} })
+  off1()
+  const off2 = armNarrationUnlock({ narrator: nar, tourStore: speakStore(), win: {} })
+  assert.equal(nar.events.filter((e) => e[0] === 'unlockOnFirstGesture').length, 2); assert.equal(nar.offs, 1)
+  off2(); assert.equal(nar.offs, 2)
+})
+
+test('armNarrationUnlock：narrator 任何方法丟例外 / unlockOnFirstGesture 沒回傳函式 / 沒有 narrator 方法 → 靜默略過，不丟例外（旁白壞了不能影響導覽）', () => {
+  const boom = { isUnlocked() { throw new Error('x') }, unlockOnFirstGesture() { throw new Error('y') } }
+  assert.doesNotThrow(() => armNarrationUnlock({ narrator: boom, tourStore: speakStore(), win: {} })())
+  const boom2 = { isUnlocked: () => false, unlockOnFirstGesture() { throw new Error('y') } }
+  assert.doesNotThrow(() => armNarrationUnlock({ narrator: boom2, tourStore: speakStore(), win: {} })())
+  for (const ret of [undefined, null, 5, 'x', {}]) assert.doesNotThrow(() => armNarrationUnlock({ narrator: { isUnlocked: () => false, unlockOnFirstGesture: () => ret }, tourStore: speakStore(), win: {} })(), String(ret))
+  assert.doesNotThrow(() => armNarrationUnlock({ narrator: {}, tourStore: speakStore(), win: {} })())
+  assert.doesNotThrow(() => armNarrationUnlock({ narrator: makeUnlockNarrator(), tourStore: { getState() { throw new Error('z') } }, win: {} })())
+})
+
+test('接線：TourService 掛載時 armNarrationUnlock({ win: window })，回傳值直接當 useEffect 的 cleanup（[] 依賴：只掛一次）；TourNav / TourControls 的「念出字幕」在同一個點擊處理器內呼叫 setSpeakFromGesture（沒有 await / then、沒有直接 setSpeak）', () => {
+  assert.match(src('./TourService.jsx'), /useEffect\(\(\) => armNarrationUnlock\(\{ win: window \}\), \[\]\)/)
+  const nav = src('../ui/TourNav.jsx'), ctl = src('../ui/TourControls.jsx')
+  assert.match(nav, /onClick=\{\(\) => setSpeakFromGesture\(!speak\)\}/); assert.match(ctl, /onChange=\{\(e\) => setSpeakFromGesture\(e\.target\.checked\)\}/)
+  for (const [name, code] of [['TourNav', nav], ['TourControls', ctl]]) {
+    assert.doesNotMatch(code, /\bsetSpeak\(/, name + ' 不直接 setSpeak（會略過解鎖）'); assert.doesNotMatch(code, /import[^\n]*\bnarrator\b|from '[^']*narration\.js'/, name + ' 不自己 import narrator：解鎖集中在 lib/tour.js 的 setSpeakFromGesture')
+    for (const line of code.split('\n').filter((l) => l.includes('setSpeakFromGesture('))) assert.doesNotMatch(line, /await|\.then\(|setTimeout/, name + ' 解鎖必須在手勢內同步進行')
+  }
+  const tour = src('../lib/tour.js')
+  const fn = tour.slice(tour.indexOf('export function setSpeakFromGesture'), tour.indexOf('// ---- 導覽腳本的動作'))
+  assert.ok(fn.indexOf('n.unlock()') > 0 && fn.indexOf('n.unlock()') < fn.indexOf('setSpeak(on)'), 'unlock 在 setSpeak 之前'); assert.doesNotMatch(fn, /await|async/)
+})
+
+// =============================================================================================
+// 字幕備註 / 樣式（原始碼層級）
+// =============================================================================================
+test('TourCaption：備註顯示在說明下方（captionNote → .tour-cap-note，在朗讀區內、純文字節點）；說明比平常長時 data-long；主視窗與觀眾視窗（remote）共用同一段渲染；CSS：備註較小字、不同顏色、最多兩行省略', () => {
+  const cap = src('../ui/TourCaption.jsx')
+  assert.match(cap, /captionNote\(view\.caption\)/); assert.match(cap, /\{note && <div className="tour-cap-note">\{note\}<\/div>\}/)
+  const iRole = cap.indexOf('role="status"'), iBody = cap.indexOf('className="tour-cap-body"'), iNote = cap.indexOf('className="tour-cap-note"'), iSr = cap.indexOf('<span className="tour-sr">')
+  assert.ok(iRole > 0 && iRole < iBody && iBody < iNote && iNote < iSr, '備註在說明之後、與標題 / 說明同一個朗讀區（role="status"）裡')
+  assert.match(cap, /data-long=/); assert.doesNotMatch(cap, /dangerouslySetInnerHTML/)
+  const css = src('../styles/tourplan.css'), tour = src('../styles/tour.css')
+  const note = css.match(/\.tour-cap-note \{[^}]*\}/)[0]
+  assert.match(note, /-webkit-line-clamp: 2; line-clamp: 2; overflow: hidden/); assert.match(note, /font-size: 13\.5px/); assert.match(note, /color: #f2d9a6/)
+  assert.match(tour, /\.tour-cap-body \{[^}]*font-size: 15\.5px/, '（對照）說明是 15.5px、白字——備註比它小、顏色不同')
+  assert.match(css, /\.tour-cap-body\[data-long='true'\] \{ -webkit-line-clamp: 3; line-clamp: 3; \}/)
+  assert.match(mediaBlock(css, '@media (max-width: 820px)'), /\.tour-cap-note \{ font-size: 11\.5px/, '第一個 ≤820px 區塊：備註縮小')
+  assert.match(mediaBlock(css, '@media (orientation: landscape) and (max-height: 460px)'), /\.app \.canvas-wrap \.tour-cap-note \{ font-size: 10\.5px/)
+  assert.doesNotMatch(css, /pointer-events: auto[^}]*tour-cap-note|tour-cap-note[^}]*pointer-events: auto/, '備註不收事件（字幕容器仍 pointer-events: none）')
+})
+
+test('CSS 載入順序與檔案規則：TourCaption / TourControls / TourPlanEditor 都是 tour.css → tourpresenter.css → tourplan.css；新 CSS 只在 tourplan.css；不放 emoji；編輯器每個按鈕 type="button" 且帶 data-tour-ui / aria-label 或可見文字 / title', () => {
+  for (const f of ['../ui/TourCaption.jsx', '../ui/TourControls.jsx', '../ui/TourPlanEditor.jsx']) {
+    const code = src(f)
+    const a = code.indexOf("import '../styles/tour.css'"), b = code.indexOf("import '../styles/tourpresenter.css'"), c = code.indexOf("import '../styles/tourplan.css'")
+    assert.ok(a >= 0 && b > a && c > b, f)
+  }
+  for (const f of ['../ui/TourPlanEditor.jsx', '../styles/tourplan.css', '../i18n/en/tourplan.js']) assert.doesNotMatch(src(f), EMOJI, `${f} 不放 emoji`)
+  const ed = src('../ui/TourPlanEditor.jsx')
+  const buttons = ed.match(/<button\b[\s\S]*?>/g) || []
+  assert.ok(buttons.length >= 8, '標題 + 上移 + 下移 + 5 個動作')
+  for (const b of buttons) { assert.match(b, /type="button"/); assert.match(b, /data-tour-ui/); assert.match(b, /aria-label=|title=/) }
+  assert.match(ed, /aria-expanded=\{open\}/); assert.match(ed, /aria-controls=\{bodyId\}/); assert.match(ed, /<fieldset className="tour-plan-fs" disabled=\{running\}>/)
+  assert.match(ed, /clearTimeout\(delTimer\.current\)/, '刪除確認的計時器可取消'); assert.match(ed, /alive\.current = false/, '卸載後不再更新狀態')
+  assert.match(src('../ui/TourControls.jsx'), /<TourPlanEditor \/>/, 'TourControls 只掛載編輯器')
+  for (const f of ['../styles/tour.css', '../styles/tourpresenter.css']) assert.doesNotMatch(src(f), /tour-plan|tour-cap-note/, f + ' 沒被動到（腳本的樣式全在 tourplan.css）')
+  const planCss = src('../styles/tourplan.css')
+  assert.match(mediaBlock(planCss.slice(planCss.lastIndexOf('@media (max-width: 820px)')), '@media (max-width: 820px)'), /\.tour-plan-text, \.tour-plan-select\.gov-select \{ font-size: 16px; min-height: 44px; \}/, '手機輸入框 16px（iOS 不自動放大）')
+})
+
+test('TourCaption：空氣品質站字幕帶了「模型 vs 環境部測站觀測」（caption.p.cmp）→ 字幕下方附一行出處與授權（政府資料開放授權條款－第1版）；沒有 cmp 不附；樣式是小字暗色、不收事件', () => {
+  const cap = src('../ui/TourCaption.jsx'), css = src('../styles/tourplan.css')
+  assert.match(cap, /view\.caption\.key === 'air' && view\.caption\.p && view\.caption\.p\.cmp/)
+  assert.match(cap, /\{cmpSrc && <div className="tour-cap-src">\{t\('資料來源：環境部測站觀測（政府資料開放授權條款－第1版）'\)\}<\/div>\}/)
+  const iBody = cap.indexOf('className="tour-cap-body"'), iSrc = cap.indexOf('className="tour-cap-src"'), iNote = cap.indexOf('className="tour-cap-note"')
+  assert.ok(iBody < iSrc && iSrc < iNote, '順序：說明 → 出處與授權 → 導覽員備註')
+  assert.match(css, /\.tour-cap-src \{[^}]*font-size: 11\.5px[^}]*color: var\(--muted\)/)
+  assert.equal(EN_DICT['資料來源：環境部測站觀測（政府資料開放授權條款－第1版）'], 'Observations: MOENV stations (Taiwan Open Government Data License v1)')
+})
+
+// 導覽員 QR（KioskQR 按 G）：導覽進行中按 G 只是讓講解者把手機連上來，不算「操作海」，不可中止導覽
+test('KEEP_KEYS：G（導覽員 QR）與 L / H / I / T 一樣不算操作海', async () => {
+  const { KEEP_KEYS } = await import('./tourCore.js')
+  for (const k of ['g', 'G', 'l', 'L', 'h', 'H', 'i', 'I', 't', 'T']) assert.ok(KEEP_KEYS.has(k), k)
+  for (const k of ['a', ' ', 'r', '1']) assert.ok(!KEEP_KEYS.has(k), '操作類按鍵不在保留清單：' + JSON.stringify(k))
 })

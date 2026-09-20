@@ -20,11 +20,13 @@ const flowOwner = { src: null, t: 0 }
 const FLOW_HOLD_MS = 1500
 
 // 匯出供測試 / 未來其他傳輸層（WebSocket 等）重用。src = 來源連線識別（無則不做擁有權判斷）
+// 導覽員遙控的訊息（{ t:'hello' } / { t:'g' }）由 lib/multiplayer.js 先交給 guideHost（lib/tourRemote.js）處理，不會走到這裡；
+// 即使走到，也不是 p / a / n，會被靜默忽略（且不更新 remoteActivity）。導覽員指令的「有人在」由 guideHost 自己呼叫 noteRemoteActivity()。
 export function dispatch(m, src) {
   try {
     if (!m || typeof m !== 'object') return
     const st = useStore.getState()
-    if (m.t === 'p' && ALLOWED_P.has(m.pid) && typeof m.v === 'number') {
+    if (m.t === 'p' && ALLOWED_P.has(m.pid) && typeof m.v === 'number' && Number.isFinite(m.v)) {   // NaN / Infinity 不放行（PeerJS 的二進位序列化可以帶 NaN；夾範圍擋不住 NaN，會把參數寫成 NaN）
       if (src != null && (m.pid === 'flowX' || m.pid === 'flowY')) {
         const now = Date.now()
         if (flowOwner.src != null && flowOwner.src !== src && now - flowOwner.t < FLOW_HOLD_MS) return

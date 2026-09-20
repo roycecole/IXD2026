@@ -15,8 +15,23 @@ if (import.meta.env.PROD && 'serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {})
 }
 
-// #remote=<hostId> → 手機遙控頁（輕量，不載 three / 主畫面）；否則載入完整導演台
-const remoteMatch = (location.hash || '').match(/^#remote=(.+)$/)
+// #remote=<hostId>[&guide=<token>] → 手機遙控頁（輕量，不載 three / 主畫面）；否則載入完整導演台。
+// hostId 只取第一個 & 之前；guide 是導覽員 token（導覽員 QR 帶來的；不合法就當作沒有）；其他參數忽略；壞編碼不丟例外。
+// 解析規則與 lib/tourRemote.js 的 parseRemoteHash 完全相同（tourRemote.test.mjs 會擷取這個函式逐案核對）——這裡內聯而不 import，
+// 免得把導覽員的 host 邏輯（createGuideHost 等）拉進入口 chunk：手機遙控頁、展場與診斷頁都要先下載入口。
+const parseRemote = (hash) => {
+  const parts = typeof hash === 'string' && hash.startsWith('#remote=') ? hash.slice(8).split('&') : null
+  const dec = (v) => { try { return decodeURIComponent(v) } catch (e) { return v } }
+  const hostId = parts && dec(parts[0])
+  if (!hostId) return null
+  let guide = null
+  for (const p of parts.slice(1)) {
+    const k = p.indexOf('=')
+    if (k > 0 && p.slice(0, k) === 'guide' && guide === null) { const v = dec(p.slice(k + 1)); if (/^[0-9a-z]{6,32}$/.test(v)) guide = v }
+  }
+  return { hostId, guide }
+}
+const remoteMatch = parseRemote(location.hash)
 // 已開的分頁換 hash（切遙控模式、或掃到「新的 host id」）→ 一律重載重建連線
 const initialHash = location.hash || ''
 window.addEventListener('hashchange', () => {
@@ -39,7 +54,7 @@ createRoot(document.getElementById('root')).render(
     {/* 最外層錯誤邊界（展場防呆）：render 出錯 → 復原畫面 + 倒數自動重新載入；觀眾視窗的防呆也由它啟動（見 ErrorBoundary.jsx） */}
     <ErrorBoundary>
       <Suspense fallback={<div className="canvas-loading">{t('載入中…')}</div>}>
-        {remoteMatch ? <RemoteApp hostId={decodeURIComponent(remoteMatch[1])} /> : diagnosticsMode ? <DiagnosticsApp /> : audienceMode ? <AudienceApp /> : <App />}
+        {remoteMatch ? <RemoteApp hostId={remoteMatch.hostId} guide={remoteMatch.guide} /> : diagnosticsMode ? <DiagnosticsApp /> : audienceMode ? <AudienceApp /> : <App />}
       </Suspense>
     </ErrorBoundary>
   </React.StrictMode>,

@@ -247,7 +247,7 @@ test('playAir：走 playSeries——寫入 seriesMeta（kind air、120 步 × 0.
     assert.equal(seriesMeta.step, 0.2); assert.equal(seriesMeta.extra.model, true)
     assert.ok(Math.abs(S().rec.duration - 24) < 1e-9)                                                        // 120 步 × 0.2 秒
     assert.equal(S().rec.mode, 'playing')
-    const line = S().log.map((l) => l.text).find((x) => x.includes('資料播放'))
+    const line = S().log.map((l) => l.text).find((x) => /資料播放|Data playback/.test(x))
     assert.match(line, /^▶ 資料播放：空氣品質（雲林縣 · 模型資料） 09-01 00:00 → 09-05 23:00 PM2\.5（120 筆，μg\/m³）$/)
     assert.ok(!/undefined|NaN|null/.test(line))
   } finally { S().stopPlayback() }
@@ -288,4 +288,223 @@ test('真實 ocean.json：seriesFromAir 100+ 點、映射有明顯動態範圍�
   assert.notDeepEqual(zh, en)
   for (const o of real.options) assert.ok(describeBoard(real, o).length > 0, o.id)                          // 新選項沒有弄壞其他選項（全選項的英文乾淨度見 i18n-data.test.mjs 的全掃）
   inEn(() => assert.ok(!HAN.test(nameText(opt.name)) && !HAN.test(nameText(s.name)) && !HAN.test(nameText(real.air.place)), 'nameText'))
+})
+
+// ================= 環境部觀測並列 / 驅動海況的資料 / 模型風速補洞（第 5 輪）=================
+// 觀測資料一律是這裡的合成 fixture（沒有 MOENV_KEY 的建置不會有 air.obs）。
+import { seriesFromAir as sAir, resolveAirSource, airSourceOf } from './series.js'
+import { airObsSummary, airObsWhereText, airObsPmText, airCompareText, dustModelWind } from './describe.js'
+import { airCompare } from './airCompare.js'
+
+const OSTATION = { name: '麥寮', county: '雲林縣', id: '60', lat: 23.753, lon: 120.251, km: 4.1 }
+const orow = (h, pm25, pm10 = 40, aqi = 62, wind = 2.5, d = 20) => ({ t: T(h, d), pm25, pm10, aqi, wind })
+const OBS = { source: '環境部空氣品質監測網（政府資料開放授權條款－第1版）', sourceUrl: 'https://data.moenv.gov.tw/', license: '政府資料開放授權條款－第1版', station: OSTATION, fetchedAt: '2026-09-20T12:00:00+08:00', history: [orow(9, 8), orow(10, 15), orow(11, 40)] }
+const AIR_WITH_OBS = { ...AIR, obs: OBS }
+const GOV_OBS = { ...GOV, air: AIR_WITH_OBS }
+const noHan = (s) => assert.ok(!HAN.test(s), s)
+const honest = (zh) => !zh.replaceAll('非政府觀測', '').includes('政府觀測')   // 只能有「非政府觀測」
+
+test('resolveAirSource / airSourceOf：model（預設）| obs | auto；要觀測但觀測不可用（< 2 個有效小時）→ model', () => {
+  assert.equal(resolveAirSource(AIR_WITH_OBS), 'model'); assert.equal(resolveAirSource(AIR_WITH_OBS, 'model'), 'model'); assert.equal(resolveAirSource(AIR_WITH_OBS, 'nope'), 'model')
+  assert.equal(resolveAirSource(AIR_WITH_OBS, 'obs'), 'obs'); assert.equal(resolveAirSource(AIR_WITH_OBS, 'auto'), 'obs')
+  for (const a of [AIR, null, undefined, {}, { ...AIR, obs: { ...OBS, history: [orow(9, 8)] } }, { ...AIR, obs: { ...OBS, history: [orow(9, null), orow(10, 'x')] } }]) {
+    assert.equal(resolveAirSource(a, 'obs'), 'model'); assert.equal(resolveAirSource(a, 'auto'), 'model')
+  }
+  assert.equal(airSourceOf(sAir(AIR_WITH_OBS, undefined, { source: 'obs' })), 'obs'); assert.equal(airSourceOf(sAir(AIR_WITH_OBS)), 'model'); assert.equal(airSourceOf(null), 'model'); assert.equal(airSourceOf({ extra: {} }), 'model')
+})
+
+test('seriesFromAir(source)：預設 / model 與過去完全相同（即使有 obs）；obs → 觀測序列（名稱標環境部觀測、extra.source obs、點的欄位、排序去重、無效小時略過）；auto / 不可用時的退路', () => {
+  const model = sAir(AIR_WITH_OBS)
+  assert.deepEqual(model, sAir(AIR)); assert.deepEqual(model, sAir(AIR_WITH_OBS, undefined, { source: 'model' })); assert.deepEqual(model.extra, { model: true })
+  assert.equal(model.name, '空氣品質（雲林縣 · 模型資料）'); assert.ok(!model.name.includes('環境部') && !model.name.includes('觀測'))
+  const o = sAir(AIR_WITH_OBS, undefined, { source: 'obs' })
+  assert.equal(o.kind, 'air'); assert.equal(o.label, 'PM2.5'); assert.equal(o.unit, 'μg/m³'); assert.equal(o.target, 'clarity'); assert.equal(o.step, 0.2)
+  assert.equal(o.name, '空氣品質（雲林縣 · 麥寮 · 環境部觀測）'); assert.ok(!o.name.includes('模型'))
+  assert.deepEqual(o.extra, { model: false, source: 'obs', station: { name: '麥寮', county: '雲林縣' } })
+  assert.deepEqual(o.points.map((p) => p.t), ['09-20 09:00', '09-20 10:00', '09-20 11:00'])
+  assert.deepEqual(o.points[2], { t: '09-20 11:00', v: 40, pm10: 40, aqi: 62, dust: null, wind: 2.5 }); assert.deepEqual(Object.keys(o.points[0]), ['t', 'v', 'pm10', 'dust', 'aqi', 'wind'])
+  assert.deepEqual(o.stats, { min: 8, max: 40, mean: 21 }); assert.equal(o.date, '09-20 09:00 → 09-20 11:00')
+  assert.deepEqual(sAir(AIR_WITH_OBS, undefined, { source: 'auto' }), o)
+  assert.equal(sAir(AIR_WITH_OBS, '空氣', { source: 'obs' }).name, '空氣（雲林縣 · 麥寮 · 環境部觀測）')
+  // 亂序 / 重複 / 壞列 / 越界
+  const messy = { ...AIR, obs: { ...OBS, history: [orow(11, 40), orow(9, 8), orow(9, 9), orow(10, null), orow(12, -3), orow(13, 5000), { t: 'bad', pm25: 5 }, null, 7, orow(10, 15)] } }
+  assert.deepEqual(sAir(messy, undefined, { source: 'obs' }).points.map((p) => [p.t, p.v]), [['09-20 09:00', 9], ['09-20 10:00', 15], ['09-20 11:00', 40]])
+  // 觀測不可用 → 要 obs / auto 也退回模型（名稱標模型，不會偷偷標觀測）
+  for (const a of [AIR, { ...AIR, obs: { ...OBS, history: [orow(9, 8)] } }]) for (const source of ['obs', 'auto']) { const s = sAir(a, undefined, { source }); assert.deepEqual(s.extra, { model: true }); assert.ok(s.name.includes('模型資料')) }
+  assert.equal(sAir({ history: [H(9, 5)], obs: OBS }, undefined, { source: 'obs' }).extra.source, 'obs')   // 觀測可用、模型不足：仍能播觀測
+  assert.equal(sAir({ history: [H(9, 5)], obs: OBS }), null)                                                // 預設 model：模型不足 → null（與過去相同）
+  assert.equal(sAir({ history: [H(9, 5)], obs: { ...OBS, history: [orow(9, 1)] } }, undefined, { source: 'obs' }), null)
+  const noStation = sAir({ ...AIR, obs: { ...OBS, station: null } }, undefined, { source: 'obs' }); assert.equal(noStation.name, '空氣品質（雲林縣 · 環境部觀測）'); assert.deepEqual(noStation.extra.station, { name: '', county: '' })
+})
+
+test('automationFor / formatHud（觀測序列）：與模型序列同一組映射；HUD 標環境部觀測、AQI 不是 US AQI、有風才印風、沒有沙塵；中英文；不含 undefined / null / NaN', () => {
+  const o = sAir(AIR_WITH_OBS, undefined, { source: 'obs' }), m = sAir(AIR_WITH_OBS)
+  for (let i = 0; i < o.points.length; i++) assert.deepEqual(Object.fromEntries(automationFor(o, i)), airMapping(o.points[i].v))
+  assert.deepEqual(automationFor(o, 0).map(([k]) => k), ['clarity', 'trashCount', 'hue', 'glow'])
+  assert.equal(formatHud(o, o.points[1]), '空氣品質（雲林縣 · 麥寮 · 環境部觀測） 09-20 10:00 · PM2.5 15μg/m³ · PM10 40 μg/m³ · AQI 62 · 風 2.5 m/s')
+  assert.equal(formatHud(m, m.points[1]), '空氣品質（雲林縣 · 模型資料） 09-20 10:00 · PM2.5 21μg/m³ · PM10 25 μg/m³ · US AQI 71')      // 模型的 HUD 不變
+  const bare = sAir({ ...AIR, obs: { ...OBS, history: [{ t: T(9), pm25: 5 }, { t: T(10), pm25: 6 }] } }, undefined, { source: 'obs' })
+  assert.equal(formatHud(bare, bare.points[0]), '空氣品質（雲林縣 · 麥寮 · 環境部觀測） 09-20 09:00 · PM2.5 5μg/m³')
+  const meta = { kind: 'air', name: o.name, label: o.label, unit: o.unit, points: o.points, extra: o.extra }                                 // 播放中的 seriesMeta 形態
+  assert.equal(formatHud(meta, o.points[1]), formatHud(o, o.points[1]))
+  for (const p of o.points) { const s = formatHud(o, p); assert.doesNotMatch(s, /undefined|null|NaN|US AQI|模型/); assert.ok(honest(s)) }
+  inEn(() => {
+    assert.equal(formatHud(o, o.points[1]), 'Air quality (Yunlin County · Mailiao · MOENV observation) 09-20 10:00 · PM2.5 15 μg/m³ · PM10 40 μg/m³ · AQI 62 · wind 2.5 m/s')
+    noHan(formatHud(o, o.points[1]))
+  })
+})
+
+test('seriesFromDust(dust, name, air)：水利署風速凍結 / 無效 + air 有逐時模型風速 → metric wind-model（label「風速（模型）」、extra.model、reason、每步 1 小時）；PM10 有效 / 風速還在變 / 沒有 air → 與過去完全相同', () => {
+  const dh = (vals) => vals.map((w, i) => ({ t: T(i * 3), pm10: null, wind: w, temp: 30, rh: 70 }))
+  const DUST = (vals) => ({ county: '雲林縣', history: dh(vals) })
+  const A = { ...AIR, history: [1, 2, 3, 4, 5].map((h) => ({ t: T(h), pm10: 1, pm25: 2, dust: 0, aqi: 3, wind: 1.5 + h * 0.5, windDir: 90 })) }
+  const frozen = seriesFromDust(DUST([5.34, 5.34, 5.34]), undefined, A)
+  assert.equal(frozen.kind, 'dust'); assert.equal(frozen.label, '風速（模型）'); assert.equal(frozen.unit, 'm/s'); assert.equal(frozen.target, 'current'); assert.equal(frozen.step, 0.2)
+  assert.deepEqual(frozen.extra, { metric: 'wind-model', model: true, reason: 'frozen' }); assert.equal(frozen.name, '揚塵（雲林縣）')
+  assert.deepEqual(frozen.points.map((p) => [p.t, p.v]), [['09-20 01:00', 2], ['09-20 02:00', 2.5], ['09-20 03:00', 3], ['09-20 04:00', 3.5], ['09-20 05:00', 4]])
+  assert.deepEqual(frozen.points[0], { t: '09-20 01:00', v: 2, pm: null, w: 2, tp: null, rh: null })                       // 沒有 PM10 / 氣溫 / 濕度：模型沒有這些，不拿別的東西充數
+  assert.deepEqual(frozen.stats, { min: 2, max: 4, mean: 3 }); assert.equal(frozen.date, '09-20 01:00 → 09-20 05:00')
+  assert.equal(seriesFromDust(DUST([]), undefined, A).extra.reason, 'invalid')                                                  // IoW 完全沒有風速
+  assert.equal(seriesFromDust(DUST([null, 3]), undefined, A).extra.reason, 'invalid')                                           // 只有 1 筆有效
+  assert.equal(seriesFromDust({ county: '雲林縣', history: [] }, undefined, A).extra.metric, 'wind-model')
+  // 過去的行為不變
+  const varying = DUST([5.3, 5.4, 5.5]); assert.deepEqual(seriesFromDust(varying, undefined, A), seriesFromDust(varying)); assert.equal(seriesFromDust(varying, undefined, A).extra.metric, 'wind')
+  const pmOk = { county: '雲林縣', history: [{ t: T(0), pm10: 30, wind: 5.34 }, { t: T(3), pm10: 50, wind: 5.34 }] }; assert.deepEqual(seriesFromDust(pmOk, undefined, A), seriesFromDust(pmOk)); assert.equal(seriesFromDust(pmOk, undefined, A).extra.metric, 'pm10')
+  assert.equal(seriesFromDust(DUST([5.34, 5.34]), undefined, undefined).extra.metric, 'wind')                                   // 沒有 air → 舊行為：凍結的風速照播
+  assert.equal(seriesFromDust(DUST([]), undefined, undefined), null); assert.equal(seriesFromDust(DUST([]), '揚塵', { ...A, history: [] }), null)
+  const oneWind = { ...A, history: [{ t: T(1), wind: 3 }, { t: T(2), wind: null }, { t: T(3), wind: 'x' }, { t: T(4), wind: -1 }] }; assert.equal(seriesFromDust(DUST([5.34, 5.34]), undefined, oneWind).extra.metric, 'wind')   // 模型風速不足 2 筆 → 不補洞
+  assert.equal(seriesFromDust(null, undefined, A), null); assert.equal(seriesFromDust(undefined, undefined, A), null)          // 沒有揚塵資料就沒有這一站
+  assert.equal(seriesFromDust(DUST([5.34, 5.34]), '空氣', A).name, '空氣（雲林縣）')
+  // 映射與 HUD
+  const a0 = automationFor(frozen, 0), a4 = automationFor(frozen, 4)
+  assert.deepEqual(a0.map(([k]) => k), ['current', 'clarity', 'trashCount', 'hue']); for (const [, v] of a0) assert.ok(inUnit(v))
+  assert.ok(a4[0][1] > a0[0][1] && a4[1][1] < a0[1][1], '風越大 → 洋流越急、海水越混')
+  assert.equal(formatHud(frozen, frozen.points[1]), '揚塵（雲林縣） 09-20 02:00 · 風速（模型） 2.5m/s')
+  inEn(() => { assert.equal(formatHud(frozen, frozen.points[1]), 'Dust (Yunlin County) 09-20 02:00 · Wind speed (model) 2.5 m/s'); noHan(formatHud(frozen, frozen.points[1])) })
+})
+
+test('describe（觀測）：airObsSummary / airObsWhereText / airObsPmText / airCompareText（中英文、四種結論、short）；沒有觀測 → null / 空字串', () => {
+  const a = airObsSummary(AIR_WITH_OBS)
+  assert.deepEqual(a, { station: '麥寮', county: '雲林縣', t: T(11), pm25: 40, pm10: 40, aqi: 62, wind: 2.5, n: 3 })
+  assert.equal(airObsWhereText('麥寮'), '環境部麥寮站'); assert.equal(airObsWhereText(''), '環境部空品測站'); assert.equal(airObsPmText(a), 'PM2.5 40 · PM10 40 μg/m³ · AQI 62'); assert.equal(airObsPmText({ pm25: 5, pm10: null, aqi: null }), 'PM2.5 5 μg/m³'); assert.equal(airObsPmText(null), '')
+  assert.equal(airObsSummary({ ...AIR, obs: { ...OBS, history: [orow(9, 8), orow(10, null)] } }).t, T(9))                        // 最新一筆沒有 PM2.5 → 退回前一筆
+  for (const junk of [null, undefined, {}, AIR, { obs: null }, { obs: { history: [] } }, { obs: { history: [orow(9, null)] } }, { obs: { history: [{ t: 'bad', pm25: 5 }] } }]) assert.equal(airObsSummary(junk), null, JSON.stringify(junk))
+  const cmp = (bias, mae = Math.abs(bias)) => ({ bias, mae, n: 96, station: { name: '麥寮' } })
+  assert.equal(airCompareText(cmp(8.2, 9.1)), '與環境部麥寮站觀測相比，模型平均高估 8.2 μg/m³（平均絕對誤差 9.1，共 96 小時）')
+  assert.equal(airCompareText(cmp(-3.4, 4)), '與環境部麥寮站觀測相比，模型平均低估 3.4 μg/m³（平均絕對誤差 4.0，共 96 小時）')
+  assert.equal(airCompareText(cmp(0.4, 2)), '與環境部麥寮站觀測相比，模型與觀測大致吻合（平均差 +0.4 μg/m³，平均絕對誤差 2.0，共 96 小時）')
+  assert.equal(airCompareText(cmp(-0.4, 8)), '與環境部麥寮站觀測相比，模型平均差僅 −0.4 μg/m³，但逐小時落差明顯（平均絕對誤差 8.0，共 96 小時）')
+  assert.equal(airCompareText(cmp(8.2, 9.1), { short: true }), '模型平均高估 8.2 μg/m³（平均絕對誤差 9.1，共 96 小時）')
+  assert.equal(airCompareText(null), ''); assert.equal(airCompareText({}), '')
+  inEn(() => {
+    assert.equal(airObsWhereText('麥寮'), 'MOENV’s Mailiao station'); assert.equal(airObsWhereText(''), 'a MOENV air-quality station')
+    assert.equal(airCompareText(cmp(8.2, 9.1)), 'Against observations at MOENV’s Mailiao station, the model overestimates PM2.5 by 8.2 μg/m³ on average (mean absolute error 9.1, 96 hours)')
+    assert.equal(airCompareText(cmp(-3.4, 4), { short: true }), 'Model underestimates by 3.4 μg/m³ on average (mean absolute error 4.0, 96 hours)')
+    assert.match(airCompareText(cmp(0.4, 2)), /broadly agree \(mean difference \+0\.4 μg\/m³/); assert.match(airCompareText(cmp(-0.4, 8)), /mean difference is only −0\.4 μg\/m³, but the hour-by-hour gaps are large/)
+    for (const c of [cmp(8, 9), cmp(-8, 9), cmp(0.3, 1), cmp(0.3, 9)]) for (const short of [false, true]) noHan(airCompareText(c, { short }))
+  })
+})
+
+test('describeBoard(air + obs)：原有三列不變（分享圖只取前 3 列，仍是模型 + 來源 + 映射），其後多「觀測 / 落差 / 驅動」；驅動 = 觀測 → 映射改用觀測的 PM2.5；驅動 = 模型 → 標「模型資料，非政府觀測」；中英文；沒有 obs → 完全不變', () => {
+  const now = new Date(2026, 8, 20, 12, 0)
+  const base = describeBoard(GOV, OPT, { now }), withObs = describeBoard(GOV_OBS, OPT, { now })
+  assert.deepEqual(withObs.slice(0, 2), base.slice(0, 2))
+  assert.equal(withObs[2].k, '映射'); assert.ok(withObs[2].v.startsWith('PM2.5 ↑ → 海水清澈 '))
+  assert.deepEqual(withObs.map((r) => r.k), ['空氣品質', '來源', '映射', '觀測', '落差', '驅動', '氣象'])
+  assert.deepEqual(base.map((r) => r.k), ['空氣品質', '來源', '映射', '氣象'])                                                       // 沒有 obs：與過去相同
+  assert.deepEqual(withObs[3], { k: '觀測', v: '環境部麥寮站 · PM2.5 40 · PM10 40 μg/m³ · AQI 62 · 09-20 11:00' })
+  assert.match(withObs[4].v, /^模型平均(高|低)估 \d+\.\d μg\/m³（平均絕對誤差 \d+\.\d，共 3 小時）$/)
+  assert.deepEqual(withObs[5], { k: '驅動', v: '環境部觀測 · 政府資料開放授權條款－第1版' })
+  // 映射：觀測驅動時用觀測最新 PM2.5（40 → 清澈 0.61、垃圾 0.30、輝光 0.55）；模型驅動時仍是選項的 params
+  assert.equal(withObs[2].v, `PM2.5 ↑ → 海水清澈 ${airMapping(40).clarity.toFixed(2)} · 垃圾 ${airMapping(40).trashCount.toFixed(2)} · 輝光 ${airMapping(40).glow.toFixed(2)}`)
+  const modelDriven = describeBoard({ ...GOV_OBS, airDrive: 'model' }, OPT, { now })
+  assert.equal(modelDriven[2].v, base[2].v); assert.deepEqual(modelDriven[5], { k: '驅動', v: '模型資料，非政府觀測' })
+  assert.deepEqual(describeBoard({ ...GOV_OBS, airDrive: 'obs' }, OPT, { now }), withObs)
+  assert.ok(honest(modelDriven.map((r) => r.v).join('\n')))
+  // 分享圖只取前 3 列（TopBar 的做法）：來源列仍是「非政府觀測」——觀測資料不會擠掉那句
+  assert.ok(withObs.slice(0, 3).some((r) => r.k === '來源' && r.v.includes('非政府觀測值')))
+  // OUT 日誌也帶
+  assert.ok(describeForLog(GOV_OBS, OPT, { now }).some((l) => l.startsWith('資料 觀測｜環境部麥寮站')))
+  // 英文
+  const en = inEn(() => describeBoard(GOV_OBS, OPT, { now }).map((r) => `${r.k}｜${r.v}`))
+  assert.deepEqual(en.slice(3, 6), [
+    'Observed｜MOENV’s Mailiao station · PM2.5 40 · PM10 40 μg/m³ · AQI 62 · 09-20 11:00',
+    en[4],
+    'Driven by｜MOENV observations · Taiwan Open Government Data License v1',
+  ])
+  assert.match(en[4], /^Gap｜Model (over|under)estimates by \d+\.\d μg\/m³ on average \(mean absolute error \d+\.\d, 3 hours\)$/)
+  for (const l of en) noHan(l)
+  const enM = inEn(() => describeBoard({ ...GOV_OBS, airDrive: 'model' }, OPT, { now }).map((r) => `${r.k}｜${r.v}`)); assert.equal(enM[5], 'Driven by｜Model data, not government observations')
+  // 觀測只有 1 個有效小時（不夠驅動海況、也比不出落差）：只多一列「觀測」（那筆仍是真的觀測值），驅動海況的是模型，所以「驅動」列標模型、沒有「落差」
+  const one = describeBoard({ ...GOV, air: { ...AIR, obs: { ...OBS, history: [orow(9, 8)] } } }, OPT, { now })
+  assert.deepEqual(one.map((r) => r.k), ['空氣品質', '來源', '映射', '觀測', '驅動', '氣象']); assert.deepEqual(one[4], { k: '驅動', v: '模型資料，非政府觀測' })
+  assert.deepEqual(describeBoard({ ...GOV, air: { ...AIR, obs: { ...OBS, history: [] } } }, OPT, { now }), base)          // 沒有任何有效觀測 → 與沒有 obs 相同
+})
+
+test('describeBoard(dust)：水利署風速凍結 + air 有逐時模型風速 → 多一列「風速為模型資料（Open-Meteo），水利署感測器凍結」；PM10 有效 / 沒有模型風速 → 列不變；中英文', () => {
+  const now = new Date(2026, 8, 20, 12, 0)
+  const dust = { county: '雲林縣', stations: [{ pm10: null, wind: 5.3, temp: 30, rh: 70, t: T(9) }], history: [0, 3, 6].map((h) => ({ t: T(h), pm10: null, wind: 5.34, temp: 30, rh: 70 })) }
+  const dOpt = { id: 'dust-yunlin', name: '揚塵 · 雲林縣', kind: 'dust', level: 0, params: { clarity: 0.8, trashCount: 0.12, current: 0.25 } }
+  const A = { ...AIR, history: [H(8, 20), H(9, 21), H(10, 22)].map((r, i) => ({ ...r, wind: 3 + i * 0.5, windDir: 90 })) }
+  const gov = { weather: GOV.weather, dust, air: A, options: [dOpt, OPT] }
+  const rows = describeBoard(gov, dOpt, { now })
+  assert.deepEqual(rows.map((r) => r.k), ['揚塵', '映射', '風速', '氣象'])
+  assert.deepEqual(rows[2], { k: '風速', v: '風速為模型資料（Open-Meteo），水利署感測器凍結 · 最新 4 m/s（09-20 10:00）' })
+  assert.deepEqual(dustModelWind(gov), { reason: 'frozen', v: 4, t: '09-20 10:00' })
+  const en = inEn(() => describeBoard(gov, dOpt, { now })); assert.equal(en[2].v, 'Wind speed is model data (Open-Meteo); the WRA sensor is frozen · latest 4 m/s (09-20 10:00)'); for (const r of en) noHan(`${r.k}｜${r.v}`)
+  assert.deepEqual(describeBoard({ ...gov, air: AIR }, dOpt, { now }).map((r) => r.k), ['揚塵', '映射', '氣象'])                  // 模型沒有風速 → 不補洞、沒有這一列（與過去相同）
+  assert.deepEqual(describeBoard({ ...gov, dust: { ...dust, history: [0, 3, 6].map((h, i) => ({ t: T(h), pm10: 30 + i, wind: 5.34 })) } }, dOpt, { now }).map((r) => r.k), ['揚塵', '映射', '氣象'])   // PM10 有效 → 不是模型風速
+  assert.equal(dustModelWind({ ...gov, air: null }), null); assert.equal(dustModelWind(null), null)
+  const inv = describeBoard({ ...gov, dust: { ...dust, history: [] } }, dOpt, { now })[2]; assert.match(inv.v, /水利署感測器無有效風速/)
+})
+
+test('store：playAir 依 gov.airDrive 選來源（沒設 = auto：有觀測就用觀測）；日誌標環境部觀測 / 模型；playDust 把 air 傳進去（風速凍結 → 模型風速 wind-model，120 步 × 0.2 秒）', async () => {
+  const { useStore, seriesMeta } = await import('../store/useStore.js')
+  const S = () => useStore.getState()
+  const air = { ...AIR, history: Array.from({ length: 24 }, (_, i) => ({ ...H(i, 10 + i), wind: 2 + (i % 4) })), obs: { ...OBS, history: Array.from({ length: 24 }, (_, i) => orow(i, 5 + i)) } }
+  const dust = { county: '雲林縣', history: [0, 3, 6].map((h) => ({ t: T(h), pm10: null, wind: 5.34, temp: 30, rh: 70 })) }
+  const play = (gov, fn) => { S().stopPlayback(); seriesMeta.active = false; useStore.setState({ log: [] }); S().setGov({ defaultOption: 'air-yunlin', ...gov }); S().setGovOption('air-yunlin'); fn(); const s = { ...seriesMeta, points: seriesMeta.points }; const line = S().log.map((l) => l.text).find((x) => /資料播放|Data playback/.test(x)); S().stopPlayback(); return { s, line } }
+  try {
+    const dflt = play({ ...GOV, air }, () => S().playAir())
+    assert.equal(dflt.s.extra.source, 'obs'); assert.equal(dflt.s.points.length, 24); assert.equal(dflt.s.points[0].v, 5)
+    assert.match(dflt.line, /^▶ 資料播放：空氣品質（雲林縣 · 麥寮 · 環境部觀測） 09-20 00:00 → 09-20 23:00 PM2\.5（24 筆，μg\/m³）$/)
+    assert.ok(!dflt.line.includes('模型'))
+    const model = play({ ...GOV, air, airDrive: 'model' }, () => S().playAir())
+    assert.deepEqual(model.s.extra, { model: true }); assert.equal(model.s.points[0].v, 10); assert.match(model.line, /空氣品質（雲林縣 · 模型資料）/); assert.ok(honest(model.line) && !model.line.includes('環境部'))
+    assert.equal(play({ ...GOV, air, airDrive: 'obs' }, () => S().playAir()).s.extra.source, 'obs')
+    assert.deepEqual(play({ ...GOV, air: AIR }, () => S().playAir()).s.extra, { model: true })                                  // 沒有 obs → 模型（與過去相同）
+    assert.deepEqual(play({ ...GOV, air: { ...AIR, obs: { ...OBS, history: [orow(9, 8)] } }, airDrive: 'obs' }, () => S().playAir()).s.extra, { model: true })   // 觀測不可用 → 模型
+    const en = inEn(() => play({ ...GOV, air }, () => S().playAir()).line); assert.match(en, /Air quality \(Yunlin County · Mailiao · MOENV observation\)/); noHan(en)
+    // playDust
+    S().setGov({ ...GOV, air, dust, options: [{ id: 'dust-yunlin', name: '揚塵 · 雲林縣', kind: 'dust', level: 0, params: { clarity: 0.8, trashCount: 0.1, current: 0.3 } }, OPT], defaultOption: 'dust-yunlin' }); S().setGovOption('dust-yunlin'); seriesMeta.active = false; useStore.setState({ log: [] })
+    S().playDust()
+    assert.equal(seriesMeta.kind, 'dust'); assert.equal(seriesMeta.extra.metric, 'wind-model'); assert.equal(seriesMeta.points.length, 24); assert.equal(seriesMeta.label, '風速（模型）'); assert.equal(seriesMeta.step, 0.2)
+    assert.ok(Math.abs(S().rec.duration - 24 * 0.2) < 1e-9); assert.match(S().log.map((l) => l.text).find((x) => x.includes('資料播放')), /揚塵（雲林縣）.*風速（模型）（24 筆，m\/s）/)
+    S().stopPlayback()
+    S().setGov({ ...GOV, air: { ...air, history: air.history.map(({ wind, ...r }) => r) }, dust, options: [{ id: 'dust-yunlin', name: '揚塵 · 雲林縣', kind: 'dust', level: 0, params: { clarity: 0.8, trashCount: 0.1, current: 0.3 } }, OPT], defaultOption: 'dust-yunlin' }); S().setGovOption('dust-yunlin'); seriesMeta.active = false
+    S().playDust(); assert.equal(seriesMeta.extra.metric, 'wind'); assert.equal(seriesMeta.points.length, 3)               // 模型沒有風速 → 過去的行為（凍結的水利署風速照播）
+  } finally { S().stopPlayback(); assert.equal(getLocale(), 'zh') }
+})
+
+test('誠實（觀測並列）：模型序列 / 模型標籤 / 模型列的任何文字都沒有「政府觀測」（只有「非政府觀測」）也沒有「環境部」；觀測序列 / 標籤沒有「模型」；英文同理', () => {
+  const m = sAir(AIR_WITH_OBS), o = sAir(AIR_WITH_OBS, undefined, { source: 'obs' })
+  const modelZh = [m.name, ...m.points.map((p) => formatHud(m, p)), ...describeBoard({ ...GOV_OBS, airDrive: 'model' }, OPT).filter((r) => ['空氣品質', '來源', '映射', '驅動'].includes(r.k)).map((r) => r.v)].join('\n')
+  assert.ok(honest(modelZh) && !modelZh.includes('環境部'), modelZh)
+  const obsZh = [o.name, ...o.points.map((p) => formatHud(o, p)), describeBoard(GOV_OBS, OPT).find((r) => r.k === '驅動').v, describeBoard(GOV_OBS, OPT).find((r) => r.k === '觀測').v].join('\n')
+  assert.ok(!obsZh.includes('模型') && !obsZh.includes('CAMS') && !obsZh.includes('Open-Meteo'), obsZh)
+  inEn(() => {
+    const modelEn = [nameText(m.name), ...m.points.map((p) => formatHud(m, p)), describeBoard({ ...GOV_OBS, airDrive: 'model' }, OPT).find((r) => r.k === 'Driven by').v].join('\n')
+    assert.ok(!/MOENV|observ/i.test(modelEn.replaceAll('not government observations', '')), modelEn)
+    const obsEn = [nameText(o.name), ...o.points.map((p) => formatHud(o, p))].join('\n'); assert.ok(!/model|CAMS|Open-Meteo/i.test(obsEn), obsEn)
+  })
+})
+
+test('describeBoard(air + obs)：ctx.airDrive（正在播放的序列用的來源）優先於 gov.airDrive——導覽播模型序列時，看板不會說「驅動 = 觀測」', () => {
+  const now = new Date(2026, 8, 20, 12, 0)
+  const drive = (gov, ctx) => describeBoard(gov, OPT, { now, ...ctx }).find((r) => r.k === '驅動').v
+  assert.equal(drive(GOV_OBS, {}), '環境部觀測 · 政府資料開放授權條款－第1版')                                  // 沒有偏好 → auto → 觀測
+  assert.equal(drive(GOV_OBS, { airDrive: 'model' }), '模型資料，非政府觀測')                                   // 播放中的是模型序列
+  assert.equal(drive({ ...GOV_OBS, airDrive: 'model' }, { airDrive: 'obs' }), '環境部觀測 · 政府資料開放授權條款－第1版')
+  assert.equal(drive({ ...GOV_OBS, airDrive: 'obs' }, {}), '環境部觀測 · 政府資料開放授權條款－第1版')
+  assert.equal(drive({ ...GOV, air: { ...AIR, obs: { ...OBS, history: [orow(9, 8)] } } }, { airDrive: 'obs' }), '模型資料，非政府觀測')   // 觀測不可用 → 一律模型
 })

@@ -1,17 +1,25 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useT, useLocale, toggleLocale, translate, localeTag, T } from './i18n/index.js'
 import {
-  applyVerdict, browserEnv, buildReport, collectMeta, copyText, createCancel, createPointerTracker, createProbe, downloadText,
-  getAutoChecks, getCheck, getChecks, getGroups, makeResult, pointerOutcome, renderDetail, reportFileName, runAutoChecks,
+  HAND_BONES, NARRATION_LINE, applyVerdict, browserEnv, buildReport, collectMeta, copyText, createCancel, createPointerTracker, createProbe, downloadText,
+  fmtMsg, getAutoChecks, getCheck, getChecks, getGroups, getInteractiveChecks, guideSupport, makeResult, pointerOutcome, renderDetail, reportFileName, runAutoChecks,
   saveSummary, statusKey, summarize,
 } from './lib/diagnostics.js'
+import { createGuide, guideBack, guideGoto, guideNext, guideRestart, guideCurrent, planGuide, wantsGuided } from './lib/diagnosticsGuide.js'
+import { clampNote, loadNote, saveNote } from './lib/diagnosticsNote.js'
+import DeviceNote from './DiagnosticsNote.jsx'
+import GuideView from './DiagnosticsGuide.jsx'
 import './styles/diagnostics.css'
+import './styles/diagnostics-guide.css'
 
 // 裝置診斷頁（?diagnostics=1）：展前在現場的實際硬體逐項檢查，並匯出報告。不載 three / 主畫面。
 // 邏輯全在 lib/diagnostics.js（環境可注入、node 可測）；這裡只管畫面、把使用者的按鈕接到「探測器」、以及離開頁面時的清理：
 //   · 相機 / 麥克風 / 語音只在使用者按下按鈕後才啟動（同一個點擊事件內直接呼叫 probe.start()，iOS 的權限與 AudioContext 才不會因手勢過期失敗）。
 //   · 任何結束路徑（完成、錯誤、再按一次停止、pagehide、元件卸載）都會 stop() 所有探測器——它們會同步釋放 track / 辨識 / 計時器 / 監聽。
 //   · React.StrictMode 會讓 effect 跑兩次：所有 effect 都可重複執行、cleanup 完整。
+// 導引模式（「依序帶我做完互動檢查」/ ?guided=1）：先跑完快速檢查，再一次一張全畫面卡片帶你做完互動檢查（狀態機在 lib/diagnosticsGuide.js，畫面在 DiagnosticsGuide.jsx）。
+//   離開 / 換項 / 做完都會 stop() 當下的探測器 → 相機、麥克風、語音、計時器確實釋放。
+// 裝置備註（選填）：DiagnosticsNote.jsx；草稿存 localStorage（LS.diagnote），只有填了的欄位、只在按「複製 / 下載」時才進報告。
 
 const SKIP_MSG = T('使用者略過了這一項')
 
@@ -24,6 +32,19 @@ function Badge({ status, running }) {
 
 function Chip({ kind, label, n }) {
   return <div className={'diag-chip c-' + kind}><b>{n}</b><span>{label}</span></div>
+}
+
+// 結果說明：一般是一行；msg 是陣列且該項標了 detailList（看門狗自我檢查…段落很多）→ 一段一行的清單，比較好讀
+const flatMsg = (m) => (Array.isArray(m) ? m.flatMap(flatMsg) : [m])
+function Detail({ eff, c, interactive }) {
+  const t = useT()
+  if (!eff) return null
+  if (c && c.detailList && Array.isArray(eff.msg)) {
+    const lines = flatMsg(eff.msg).map((m) => fmtMsg(m, t)).filter(Boolean)
+    return lines.length ? <ul className="diag-detail-list" aria-live={interactive ? 'polite' : undefined}>{lines.map((l, i) => <li key={i}>{l}</li>)}</ul> : null
+  }
+  const detail = renderDetail(eff, t)
+  return detail ? <p className="diag-detail" aria-live={interactive ? 'polite' : undefined}>{detail}</p> : null
 }
 
 function Verdict({ check, raw, verdict, onVerdict }) {
@@ -161,6 +182,68 @@ function ScreensLive({ live }) {
   )
 }
 
+// 語音旁白：測試句 + 聲音清單（zh-TW / en-US 各幾個、是否有離線聲音）。「念一句」要直接按按鈕（iOS 只在點擊當下允許出聲）
+function NarrationLive({ live, running }) {
+  const t = useT()
+  const v = live && live.voices
+  const cnt = (n, local) => (n ? t('{n} 個（離線 {m}）', { n, m: local }) : t('0 個'))
+  return (
+    <div className="diag-live">
+      <p className="diag-speech" aria-label={t('測試句')}>{t(NARRATION_LINE)}</p>
+      <dl className="diag-kv">
+        <dt>zh-TW</dt><dd>{v ? cnt(v.zhTW, v.zhTWLocal) : '—'}</dd>
+        <dt>en-US</dt><dd>{v ? cnt(v.enUS, v.enUSLocal) : '—'}</dd>
+      </dl>
+      {running && <p className="diag-note" role="status">{t('旁白進行中…')}</p>}
+    </div>
+  )
+}
+
+// 看門狗自我檢查：取樣中的進度條與即時計數（結果與 3 組判定的說明在上方的結果清單）
+function WatchdogLive({ live, running }) {
+  const t = useT()
+  if (!running) return null   // 取樣結束後的數字與判定都在上方的結果清單裡
+  const lv = live || {}
+  const pct = Math.min(100, Math.round(((lv.elapsedMs || 0) / 3000) * 100))
+  return (
+    <div className="diag-live">
+      <div className="diag-meter" role="progressbar" aria-label={t('取樣進度')} aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}><i style={{ width: pct + '%' }} /></div>
+      <p className="diag-note" role="status">{t('取樣中：{frames} 幀，最大幀間隔 {gap} ms', { frames: lv.frames || 0, gap: lv.maxGapMs || 0 })}</p>
+    </div>
+  )
+}
+
+// 相機手勢：鏡像預覽 + 手部骨架（canvas 疊在影片上，座標是正規化的 0..1，所以影片用 object-fit: fill 才對得上）；讀數每 200ms 才更新一次
+function GestureLive({ live, running, videoRef, canvasRef }) {
+  const t = useT()
+  const lv = live || {}
+  const phaseText = lv.phase === 'camera' ? t('等待相機授權…') : lv.phase === 'loading' ? t('載入手勢模型…（第一次約 8 MB，需要網路）') : lv.phase === 'running' ? t('辨識中：請把手放在鏡頭前，張開手掌、再捏合拇指與食指') : ''
+  const names = (lv.gestures || []).map((g) => (g === 'open_palm' ? t('張手') : g === 'pinch' ? t('捏合') : g)).join('、')
+  return (
+    <div className="diag-live">
+      <div className="diag-preview diag-gesture" style={{ aspectRatio: lv.aspect || '4 / 3' }}>
+        <div className="diag-mirror">
+          <video ref={videoRef} muted playsInline aria-label={t('相機預覽（只顯示在這裡，不會錄影或上傳）')} />
+          <canvas ref={canvasRef} width={320} height={240} aria-hidden="true" />
+        </div>
+        {!running && <div className="diag-preview-ph">{t('預覽沒有開啟')}</div>}
+      </div>
+      {running && <p className="diag-note" role="status"><span className="diag-rec" aria-hidden="true" />{t('相機使用中：按「關閉相機」或離開頁面即會釋放')}</p>}
+      {running && phaseText && <p className="diag-note" role="status">{phaseText}</p>}
+      {live && live.ended && <p className="diag-note warn" role="status">{t('相機中途中斷了（被拔除或被其他 App 搶走）')}</p>}
+      {(lv.frames > 0 || lv.modelMs != null) && (
+        <dl className="diag-kv">
+          <dt>{t('模型載入')}</dt><dd>{lv.modelMs != null ? t('{s} 秒（{delegate}）', { s: Math.round(lv.modelMs / 100) / 10, delegate: lv.delegate || '—' }) : '—'}</dd>
+          <dt>{t('辨識幀率')}</dt><dd>{lv.fps != null ? f1(lv.fps) + ' FPS' : '—'}</dd>
+          <dt>{t('目前偵測到')}</dt><dd>{t('{n} 隻手', { n: lv.hands || 0 })}</dd>
+          <dt>{t('最多同時偵測')}</dt><dd>{t('{n} 隻手', { n: lv.handsMax || 0 })}</dd>
+          <dt>{t('看到的手勢')}</dt><dd>{names || '—'}</dd>
+        </dl>
+      )}
+    </div>
+  )
+}
+
 // 觸控筆與觸控畫板：事件餵給純邏輯的 tracker（lib/diagnostics.js），畫面每 120ms 才更新一次讀數
 const PEN_COLOR = { pen: '#5dcaa5', touch: '#4aa3ff', mouse: '#ff9d2b', other: '#c8cbd8' }
 function PointerPad({ onOutcome, onReset }) {
@@ -274,11 +357,18 @@ export default function DiagnosticsApp() {
   const [note, setNote] = useState(null)          // 'copied' | 'copy-failed' | 'downloaded' | 'download-failed'
   const [manual, setManual] = useState('')        // 複製失敗時顯示、讓使用者手動全選複製的報告文字
   const [facing, setFacingState] = useState('user')
+  const [devNote, setDevNote] = useState(() => loadNote())    // 裝置備註（選填）：草稿在 localStorage，只有填了的欄位、按複製 / 下載時才進報告
+  const [guide, setGuide] = useState(null)              // 導引模式的狀態（lib/diagnosticsGuide.js）；null = 顯示清單
+  const [plan, setPlan] = useState(null)                // { order, steps, skipped }
+  const [starting, setStarting] = useState(false)       // 「依序帶我做完互動檢查」正在先跑快速檢查
 
   const probes = useRef({})
   const quickCancel = useRef(null)
+  const quickPromise = useRef(null)
   const revokers = useRef(new Set())
-  const videoRef = useRef(null)
+  const videoRef = useRef(null)          // 相機檢查的預覽
+  const gestureVideoRef = useRef(null)   // 相機手勢的預覽（清單裡兩個預覽同時存在，所以各用各的元素）
+  const overlayRef = useRef(null)        // 手部骨架的 canvas
   const facingRef = useRef('user')
   const setFacing = (v) => { facingRef.current = v; setFacingState(v) }
 
@@ -303,7 +393,7 @@ export default function DiagnosticsApp() {
 
   // 離開頁面 / 卸載：停掉所有快速檢查與探測器（相機 / 麥克風 / 辨識 / 計時器 / 監聽），釋放下載用的 object URL
   const stopAll = useCallback(() => {
-    if (quickCancel.current) quickCancel.current.cancel()
+    if (quickCancel.current) { quickCancel.current.cancel(); quickCancel.current = null; quickPromise.current = null }   // StrictMode 重掛時要能重新開始
     for (const p of Object.values(probes.current)) p.stop()
   }, [])
   useEffect(() => {
@@ -319,6 +409,11 @@ export default function DiagnosticsApp() {
     }
   }, [stopAll])
 
+  useEffect(() => {   // 裝置備註草稿：停止輸入 0.3 秒後存起來（全空 = 移除紀錄）；存取失敗不影響使用
+    const id = setTimeout(() => { saveNote(devNote) }, 300)
+    return () => clearTimeout(id)
+  }, [devNote])
+
   useEffect(() => {   // 提示訊息 4 秒後自動消失
     if (!note) return undefined
     const id = setTimeout(() => setNote(null), 4000)
@@ -326,44 +421,70 @@ export default function DiagnosticsApp() {
   }, [note])
 
   // ---- 快速檢查 ----
-  const runQuick = useCallback(async () => {
-    if (quickCancel.current) return
+  const runQuick = useCallback(() => {
+    if (quickPromise.current) return quickPromise.current   // 已經在跑：等同一輪（導引模式的按鈕與「執行所有快速檢查」不會各跑一份）
     const cancel = createCancel()
     quickCancel.current = cancel
     const auto = getAutoChecks()
     setQuick({ running: true, done: 0, total: auto.length, current: null })
-    await runAutoChecks(env, {
-      checks: auto, cancel,
-      onStart: (c) => setQuick((q) => ({ ...q, current: c.id })),
-      onResult: (r) => { setResults((p) => ({ ...p, [r.id]: r })); setQuick((q) => ({ ...q, done: q.done + 1 })) },
-    })
-    if (quickCancel.current === cancel) quickCancel.current = null
-    setQuick((q) => ({ ...q, running: false, current: null }))
+    const p = (async () => {
+      await runAutoChecks(env, {
+        checks: auto, cancel,
+        // 已被取消的舊一輪（離開頁面 / StrictMode 重掛）不再碰畫面狀態：新一輪的計數與「執行中」不會被它蓋掉
+        onStart: (c) => { if (!cancel.cancelled) setQuick((q) => ({ ...q, current: c.id })) },
+        onResult: (r) => { if (cancel.cancelled) return; setResults((prev) => ({ ...prev, [r.id]: r })); setQuick((q) => ({ ...q, done: q.done + 1 })) },
+      })
+      if (quickCancel.current === cancel) { quickCancel.current = null; quickPromise.current = null }
+      if (!quickCancel.current) setQuick((q) => ({ ...q, running: false, current: null }))   // 已有新的一輪在跑就不要動它的狀態
+      return !cancel.cancelled
+    })()
+    quickPromise.current = p
+    return p
   }, [env])
 
   // ---- 互動檢查 ----
-  const attach = useCallback(async (stream) => {
-    const v = videoRef.current
+  const makeAttach = (ref) => async (stream) => {
+    const v = ref.current
     if (!v) return null
     v.srcObject = stream
     v.muted = true
     try { await v.play() } catch (e) { /* 自動播放被擋不影響：串流仍在，預覽稍後就會出現 */ }
     return v
-  }, [])
-  const detach = useCallback(() => {
-    const v = videoRef.current
+  }
+  const makeDetach = (ref) => () => {
+    const v = ref.current
     if (!v) return
     try { v.pause() } catch (e) { /* ignore */ }
     v.srcObject = null
+  }
+  // 手部骨架：landmark 是正規化座標（0..1），畫布 320×240 拉滿預覽；影片用 object-fit: fill 所以對得上。[] = 清除
+  const drawHands = useCallback((hands) => {
+    const c = overlayRef.current
+    if (!c) return
+    const g = c.getContext('2d')
+    if (!g) return
+    const W = c.width, H = c.height
+    g.clearRect(0, 0, W, H)
+    if (!hands || !hands.length) return
+    g.lineWidth = 2; g.lineCap = 'round'; g.strokeStyle = '#5dcaa5'; g.fillStyle = '#ffb454'
+    for (const pts of hands) {
+      for (const [a, b] of HAND_BONES) {
+        const p = pts[a], q = pts[b]
+        if (!p || !q) continue
+        g.beginPath(); g.moveTo(p.x * W, p.y * H); g.lineTo(q.x * W, q.y * H); g.stroke()
+      }
+      for (const p of pts) { g.beginPath(); g.arc(p.x * W, p.y * H, 2.5, 0, Math.PI * 2); g.fill() }
+    }
   }, [])
 
   const getProbe = (id) => {
     if (probes.current[id]) return probes.current[id]
+    const ref = id === 'gesture' ? gestureVideoRef : videoRef
     const opts = {
       onUpdate: (patch) => setLive((p) => ({ ...p, [id]: { ...(p[id] || {}), ...patch } })),
       onResult: (r) => setResults((p) => ({ ...p, [id]: r })),
       onRunning: (v) => setRunning((p) => ({ ...p, [id]: v })),
-      attach, detach,
+      attach: makeAttach(ref), detach: makeDetach(ref), draw: drawHands,
       get facing() { return facingRef.current },
       get lang() { return localeTag() },   // 每次啟動時讀當下語系（zh-TW / en-US）
     }
@@ -391,7 +512,7 @@ export default function DiagnosticsApp() {
   const onPointerReset = useCallback(() => setResults((p) => { if (!('pointer' in p)) return p; const n = { ...p }; delete n.pointer; return n }), [])
 
   // ---- 報告 ----
-  const makeReport = () => buildReport({ checks, results: effective, meta: collectMeta(env), tr: t, locale })
+  const makeReport = () => buildReport({ checks, results: effective, meta: collectMeta(env), tr: t, locale, note: devNote })
   const onCopy = async () => {
     const rep = makeReport()
     const res = await copyText(rep.text, env)
@@ -402,6 +523,43 @@ export default function DiagnosticsApp() {
     const r = downloadText(JSON.stringify(rep.json, null, 2), reportFileName(), env)
     if (r.ok) { revokers.current.add(r.revoke); setNote('downloaded') } else setNote('download-failed')
   }
+
+  // ---- 導引模式 ----
+  const stopProbes = useCallback(() => { for (const p of Object.values(probes.current)) p.stop() }, [])
+  // 進入導引：依這台裝置的能力排好要做的項目；沒有能力的（沒有震動馬達、沒有 MIDI…）自動略過並記成「不支援」（註明原因）
+  const enterGuide = useCallback(() => {
+    stopProbes()
+    const p = planGuide(getInteractiveChecks(), (id) => guideSupport(id, env))
+    const skippedIds = new Set(p.skipped.map((x) => x.id))
+    setResults((prev) => { const n = { ...prev }; for (const x of p.skipped) n[x.id] = makeResult(getCheck(x.id), x.outcome, 0); return n })
+    setVerdicts((prev) => { const n = { ...prev }; for (const id of skippedIds) delete n[id]; return n })
+    setPlan(p)
+    setGuide(createGuide(p))
+  }, [env, stopProbes])
+  // 「依序帶我做完互動檢查」：先自動跑完所有快速檢查，再進入導引（序號：後按的贏，離開頁面 / StrictMode 重掛時舊的一次不會繼續）
+  const startSeq = useRef(0)
+  const startGuided = useCallback(async (isAlive = () => true) => {
+    const seq = ++startSeq.current
+    const stale = () => !isAlive() || startSeq.current !== seq
+    setStarting(true)
+    let ok = false
+    try { ok = await runQuick() } catch (e) { ok = false }
+    if (stale()) return
+    setStarting(false)
+    if (ok !== false) enterGuide()
+  }, [runQuick, enterGuide])
+  useEffect(() => {   // ?guided=1：載入後直接進入導引（網址在 effect 內才讀）
+    let want = false
+    try { want = wantsGuided(window.location.search) } catch (e) { want = false }
+    if (!want) return undefined
+    let alive = true
+    startGuided(() => alive)
+    return () => { alive = false }
+  }, [startGuided])
+  const guideStep = (fn) => { const cur = guide ? guideCurrent(guide) : null; if (cur) stopProbe(cur); setGuide((g) => (g ? fn(g) : g)) }   // 換項前先關掉當下這一項（相機 / 麥克風 / 語音 / 計時器）
+  const leaveGuide = () => { stopProbes(); setGuide(null); setPlan(null) }
+  const quickSummary = useMemo(() => summarize(getAutoChecks(), effective), [effective])
+  const checkById = useMemo(() => Object.fromEntries(checks.map((c) => [c.id, c])), [checks])
 
   const toggleGroup = (id) => setOpen((p) => ({ ...p, [id]: !p[id] }))
   const allOpen = groups.every((g) => open[g.id])
@@ -421,6 +579,9 @@ export default function DiagnosticsApp() {
       case 'cam': return <CameraLive live={lv} running={isRun} videoRef={videoRef} facing={facing} setFacing={setFacing} />
       case 'mic': return <MicLive live={lv} running={isRun} />
       case 'speech': return <SpeechLive live={lv} running={isRun} />
+      case 'narration': return <NarrationLive live={lv} running={isRun} />
+      case 'watchdog': return <WatchdogLive live={lv} running={isRun} />
+      case 'gesture': return <GestureLive live={lv} running={isRun} videoRef={gestureVideoRef} canvasRef={overlayRef} />
       case 'midi': return <MidiLive live={lv} />
       case 'gamepad': return <GamepadLive live={lv} />
       case 'orient': return <OrientLive live={lv} />
@@ -428,6 +589,20 @@ export default function DiagnosticsApp() {
       case 'pointer': return <PointerPad onOutcome={onPointerOutcome} onReset={onPointerReset} />
       default: return null
     }
+  }
+
+  // 導引模式：全畫面卡片取代清單（所有 hooks 都在上面，這裡才能提早 return）
+  if (guide && plan) {
+    const ctx = {
+      guide, plan, checks: checkById, results, effective, verdicts, running, quickSummary,
+      noteNode: <DeviceNote key={guide.phase} note={devNote} setNote={setDevNote} env={env} defaultOpen idPrefix="diag-gnote" />,
+      onCopy, onDownload, msgText: noteText, manual,
+      onNext: () => guideStep(guideNext), onBack: () => guideStep(guideBack), onRestart: () => guideStep(guideRestart), onGoto: (i) => guideStep((g) => guideGoto(g, i)), onLeave: leaveGuide,
+      onStart: startProbe, onStop: stopProbe, onSkip: skip,
+      onVerdict: (id, v) => { onVerdict(id, v); if (v) stopProbe(id) },   // 回答完「正常 / 不正常」就關掉這一項（相機預覽不必等到 30 秒逾時）
+      parts: { Badge, Chip, Verdict, Detail, renderLive },
+    }
+    return <div className="diag-app diag-app-guide"><GuideView ctx={ctx} /></div>
   }
 
   return (
@@ -441,6 +616,14 @@ export default function DiagnosticsApp() {
           </button>
         </div>
         <p className="diag-privacy">{t('這個頁面不會上傳任何東西：所有檢查都在這台裝置的瀏覽器裡執行；相機、麥克風與語音只在你按下按鈕後才啟動，離開頁面就會全部關閉。報告只在你按「複製」或「下載」時產生，且不含個人資料、IP、影像或音訊。')}</p>
+
+        <div className="diag-guided-cta">
+          <button type="button" className="diag-btn primary big" onClick={() => startGuided()} disabled={quick.running || starting}>
+            {starting ? t('先跑快速檢查… {done}/{total}', { done: quick.done, total: quick.total }) : t('依序帶我做完互動檢查')}
+          </button>
+          <p className="diag-note">{t('一鍵先跑完快速檢查，再一次帶你做一項互動檢查（旁白、看門狗、相機手勢優先）；離開或做完都會關閉相機與麥克風。')}</p>
+        </div>
+        <DeviceNote note={devNote} setNote={setDevNote} env={env} />
 
         <div className="diag-summary" role="group" aria-label={t('診斷總覽')}>
           <Chip kind="pass" label={t('通過')} n={summary.pass} />
@@ -484,7 +667,6 @@ export default function DiagnosticsApp() {
                   const eff = effective[c.id]
                   const isRun = c.kind === 'auto' ? quick.running && quick.current === c.id : !!running[c.id]
                   const interactive = c.kind === 'interactive'
-                  const detail = eff ? renderDetail(eff, t) : ''
                   return (
                     <li className="diag-row" key={c.id} data-check={c.id}>
                       <div className="diag-row-head">
@@ -492,7 +674,7 @@ export default function DiagnosticsApp() {
                         <Badge status={eff ? eff.status : null} running={isRun} />
                       </div>
                       {c.hint && <p className="diag-hint">{t(c.hint)}</p>}
-                      {detail && <p className="diag-detail" aria-live={interactive ? 'polite' : undefined}>{detail}</p>}
+                      <Detail eff={eff} c={c} interactive={interactive} />
                       {eff && eff.ms > 0 && c.kind === 'auto' && <span className="diag-ms">{eff.ms} ms</span>}
                       {interactive && (
                         <>

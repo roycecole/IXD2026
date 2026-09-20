@@ -3,16 +3,19 @@
 // 動作對應（假 store，再加一組用真的 useStore 驗證「大浪+氣泡」的 pad 索引）。
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import {
   COMMANDS, COMMAND_IDS, COOLDOWN_MS, PAD_NOTE_BASE, PAD_FX, CALM_TARGETS, FAST_TARGETS,
   normalize, matchCommands, createCommandTracker, runCommand, padNote, labelOf, heardText, logText, getCommand,
+  TOUR_COMMAND_IDS, isTourCommand, routeTourCommand, createVoiceRouter, STOP_DEFER_MS,
 } from './voiceCommands.js'
 import { registerEn, setLocale, t } from '../i18n/index.js'
 import voiceEn from '../i18n/en/voice.js'
 import shellEn from '../i18n/en/ui-shell.js'
 import storeEn from '../i18n/en/store.js'
+import guidecmdEn from '../i18n/en/guidecmd.js'
 
-registerEn({ ...shellEn, ...storeEn, ...voiceEn })
+registerEn({ ...shellEn, ...storeEn, ...voiceEn, ...guidecmdEn })
 const ids = (text, lang = 'zh', opts) => matchCommands(text, lang, opts).map((m) => m.id)
 
 // ---------------------------------------------------------------- 正規化
@@ -31,13 +34,15 @@ test('normalize：大小寫、全形 / 半形、標點、空白', () => {
 })
 
 // ---------------------------------------------------------------- 指令表
-test('指令表：10 個指令、id 不重複、每個都有 zh / en / 顯示鍵 / 動作', () => {
-  assert.deepEqual(COMMAND_IDS, ['whale', 'dolphin', 'turtle', 'bigwave', 'sparkle', 'purify', 'clean', 'calm', 'faster', 'stop'])
+test('指令表：10 個海的指令 + 6 個導覽員指令、id 不重複、每個都有 zh / en / 顯示鍵 / 動作', () => {
+  assert.deepEqual(COMMAND_IDS, ['whale', 'dolphin', 'turtle', 'bigwave', 'sparkle', 'purify', 'clean', 'calm', 'faster', 'stop',
+    'tourNext', 'tourPrev', 'tourPause', 'tourResume', 'tourStart', 'tourStop'])
+  assert.deepEqual(TOUR_COMMAND_IDS, ['tourNext', 'tourPrev', 'tourPause', 'tourResume', 'tourStart', 'tourStop'])
   assert.equal(new Set(COMMAND_IDS).size, COMMAND_IDS.length)
   for (const c of COMMANDS) {
     assert.ok(c.zh instanceof RegExp && c.en instanceof RegExp, c.id)
     assert.ok(c.label && c.say && c.fx, c.id)
-    assert.ok(c.action && (c.action.call || c.action.pad != null || c.action.move), c.id)
+    assert.ok(c.action && (c.action.call || c.action.pad != null || c.action.move || c.action.tour), c.id)
     assert.equal(getCommand(c.id), c)
   }
   assert.equal(getCommand('nope'), null)
@@ -380,4 +385,313 @@ test('每個指令的 say / fx / label 英文模式下都有譯文且不含中�
       assert.ok(!/[㐀-鿿]/.test(out), `${c.id}: ${k} → ${out}`)
     }
   } finally { setLocale('zh') }
+})
+
+// =====================================================================================================
+// 導覽員語音指令：詞表、與既有指令的互斥、tracker、執行（routeTourCommand）、VoiceService 接線（createVoiceRouter）
+// =====================================================================================================
+const TOUR_ZH = {
+  tourNext: ['下一站', '下一個站', '下個站', '下一个站', '下一站！', '下 一 站', '請下一站', '換下一站', '下一占', '下一佔'],
+  tourPrev: ['上一站', '上一個站', '上個站', '前一站', '回到上一站', '上一占'],
+  tourPause: ['暫停導覽', '導覽暫停', '暂停导览', '导览暂停', '暫停資料導覽', '暫停道覽', '暫停 導覽', '請暫停導覽'],
+  tourResume: ['繼續導覽', '導覽繼續', '继续导览', '接續導覽', '恢復導覽', '繼續資料導覽'],
+  tourStart: ['開始導覽', '开始导览', '開啟導覽', '啟動導覽', '開始資料導覽', '請開始導覽'],
+  tourStop: ['結束導覽', '停止導覽', '结束导览', '關閉導覽', '退出導覽', '終止導覽', '結束資料導覽'],
+}
+const TOUR_EN = {
+  tourNext: ['next stop', 'Next Stop!', 'next stops', 'nextstop', 'go to the next stop'],
+  tourPrev: ['previous stop', 'Previous stop', 'prev stop', 'preview stop', 'go to previous stop'],
+  tourPause: ['pause tour', 'pause the tour', 'Pause Tour!', 'paws tour', 'pause the tore'],
+  tourResume: ['resume tour', 'resume the tour', 'continue the tour', 'continue tour', 'resumé tour'],
+  tourStart: ['start tour', 'start the tour', 'begin tour', 'start a tour', 'star tour', 'starts the tour'],
+  tourStop: ['stop tour', 'stop the tour', 'end tour', 'end the tour', 'exit tour', 'quit the tour', 'stopped the tour'],
+}
+for (const [id, phrases] of Object.entries(TOUR_ZH)) {
+  test(`導覽員指令（中文）「${id}」的各種說法：只觸發它自己（不會同時觸發「停止」等既有指令）`, () => {
+    for (const p of phrases) assert.deepEqual(ids(p, 'zh'), [id], `「${p}」應只觸發 ${id}，實際：${JSON.stringify(ids(p, 'zh'))}`)
+  })
+}
+for (const [id, phrases] of Object.entries(TOUR_EN)) {
+  test(`導覽員指令（英文）「${id}」的各種說法（兩個字以上的片語）：只觸發它自己`, () => {
+    for (const p of phrases) assert.deepEqual(ids(p, 'en'), [id], `"${p}" should trigger only ${id}, got ${JSON.stringify(ids(p, 'en'))}`)
+  })
+}
+
+test('導覽員指令：中英文跨語言也認得（zh 辨識器寫出拉丁字母、en 辨識器不會出現中文但多比對無害）', () => {
+  assert.deepEqual(ids('next stop', 'zh'), ['tourNext'])
+  assert.deepEqual(ids('下一站', 'en'), ['tourNext'])
+  assert.deepEqual(ids('pause tour', 'zh-TW'), ['tourPause'])
+  assert.deepEqual(ids('next stop', 'zh', { cross: false }), [])
+})
+
+test('導覽員指令：不接受單獨的常見詞（環境音誤觸發）——英文單字 / 只有「導覽」/ 只有半句都不觸發任何導覽員指令', () => {
+  const noTour = (text, lang) => assert.deepEqual(ids(text, lang).filter(isTourCommand), [], `「${text}」不該觸發導覽員指令`)
+  for (const w of ['next', 'stop', 'pause', 'resume', 'start', 'tour', 'previous', 'continue', 'begin', 'end', 'stops', 'the tour', 'a stop', 'bus stop',
+    'next please', 'tour guide', 'tourist', 'restart', 'stopwatch', 'pauses', 'my next', 'start now', 'resume writing', 'pause music',
+    'after we finish the tour', 'cancel the tour booking', 'end of the tour', 'the tour ends here', 'next tour is at noon', 'bus stops here']) noTour(w, 'en')
+  for (const w of ['導覽', '導覽員', '資料導覽', '導覽很有趣', '下一', '站', '暫停', '繼續', '開始', '結束', '停止', '上一', '捷運站', '停車站', '車站在哪',
+    '一站式服務', '第一站', '最後一站', '這一站', '下一步', '下一個', '上一頁', '下一頁', '繼續說', '開始吧', '結束了', '暫停一下', '導覽結束了', '導覽開始',
+    '請勿離開導覽區', '取消導覽行程', '請往下一個展區走', '上個月', '前一個展區']) noTour(w, 'zh')
+  assert.deepEqual(ids('導覽', 'zh'), []); assert.deepEqual(ids('資料導覽很有趣', 'zh'), [])
+  assert.deepEqual(ids('tour', 'en'), []); assert.deepEqual(ids('next', 'en'), [])
+  assert.deepEqual(ids('暫停', 'zh'), ['stop'], '沒有「導覽」字樣的「暫停」仍是既有的停止指令'); assert.deepEqual(ids('停止', 'zh'), ['stop']); assert.deepEqual(ids('stop', 'en'), ['stop'])
+})
+
+test('互斥：既有指令的所有說法都不會觸發導覽員指令（反之亦然：含「導覽」的片語不會觸發既有指令）', () => {
+  for (const table of [ZH, EN]) for (const [id, phrases] of Object.entries(table)) for (const p of phrases) {
+    const got = ids(p, table === ZH ? 'zh' : 'en')
+    assert.ok(!got.some(isTourCommand), `「${p}」（${id}）不該觸發導覽員指令：${JSON.stringify(got)}`)
+  }
+  for (const table of [TOUR_ZH, TOUR_EN]) for (const phrases of Object.values(table)) for (const p of phrases) {
+    const got = ids(p, table === TOUR_ZH ? 'zh' : 'en')
+    assert.ok(got.length === 1 && isTourCommand(got[0]), `「${p}」不該觸發既有指令：${JSON.stringify(got)}`)
+  }
+  // 含「導覽」的句子：沒有導覽員指令片語就什麼都不觸發
+  for (const s of ['導覽', '這個導覽很棒', '資料導覽在哪', '導覽員說明', 'guide tour please', 'the tour was fun']) assert.deepEqual(ids(s, /[㐀-鿿]/.test(s) ? 'zh' : 'en'), [], s)
+})
+
+test('互斥：一句話裡導覽員指令與其他指令並存 → 各算各的、依出現順序（導覽指令只佔用自己那段文字）', () => {
+  assert.deepEqual(ids('暫停導覽 鯨魚', 'zh'), ['tourPause', 'whale'])
+  assert.deepEqual(ids('鯨魚 停止導覽', 'zh'), ['whale', 'tourStop'])
+  assert.deepEqual(ids('停止導覽 停止', 'zh'), ['tourStop', 'stop'])
+  assert.deepEqual(ids('停止 停止導覽', 'zh'), ['stop', 'tourStop'])
+  assert.deepEqual(ids('下一站 大浪', 'zh'), ['tourNext', 'bigwave'])
+  assert.deepEqual(ids('stop tour, stop', 'en'), ['tourStop', 'stop'])
+  assert.deepEqual(ids('next stop and whale', 'en'), ['tourNext', 'whale'])
+  assert.deepEqual(ids('next stop and stop', 'en'), ['tourNext', 'stop'])
+  assert.deepEqual(ids('pause tour then resume tour', 'en'), ['tourPause', 'tourResume'])
+  assert.deepEqual(ids('下一站 下一站', 'zh'), ['tourNext', 'tourNext'])
+})
+
+test('導覽員指令走既有 tracker：interim → final 只觸發一次；同一指令 1.5 秒冷卻；不同指令互不影響', () => {
+  const tr = createCommandTracker({ lang: 'zh' })
+  assert.deepEqual(fired(tr, [item(0, '下一站')], 0), ['tourNext'])
+  assert.deepEqual(fired(tr, [item(0, '下一站', true)], 700), [])
+  assert.deepEqual(fired(tr, [item(1, '下一站', true)], 1000), [], '冷卻中')
+  assert.deepEqual(fired(tr, [item(2, '上一站', true)], 1100), ['tourPrev'], '不同指令不受影響')
+  assert.deepEqual(fired(tr, [item(3, '下一站', true)], 1500), ['tourNext'], '冷卻結束')
+  const en = createCommandTracker({ lang: 'en-US' })
+  assert.deepEqual(fired(en, [item(0, 'pause the tour')], 0), ['tourPause'])
+  assert.deepEqual(fired(en, [item(0, 'pause the tour', true)], 500), [])
+})
+
+test('interim 逐字出現：「暫停導覽」會先聽到「暫停」（tracker 會先觸發 stop，由 createVoiceRouter 延後處理），下一個 interim 才變成 tourPause', () => {
+  const tr = createCommandTracker({ lang: 'zh' })
+  assert.deepEqual(tr.feed([item(0, '暫停')], 0).map((f) => [f.id, f.interim, f.index]), [['stop', true, 0]])
+  assert.deepEqual(tr.feed([item(0, '暫停導覽')], 250).map((f) => [f.id, f.interim, f.index]), [['tourPause', true, 0]])
+  const en = createCommandTracker({ lang: 'en-US' })
+  assert.deepEqual(en.feed([item(0, 'stop')], 0).map((f) => f.id), ['stop'])
+  assert.deepEqual(en.feed([item(0, 'stop tour')], 250).map((f) => f.id), ['tourStop'])
+})
+
+test('回饋文字：聽到：下一站 / Heard: next stop；日誌「語音指令：暫停導覽」；標籤中英文', () => {
+  setLocale('zh')
+  assert.equal(heardText(['tourNext']), '聽到：下一站')
+  assert.equal(heardText(['tourPause', 'whale']), '聽到：暫停導覽、鯨魚')
+  assert.equal(logText('tourStop'), '語音指令：結束導覽')
+  assert.deepEqual(['tourNext', 'tourPrev', 'tourPause', 'tourResume', 'tourStart', 'tourStop'].map(labelOf), ['下一站', '上一站', '暫停導覽', '繼續導覽', '開始導覽', '結束導覽'])
+  setLocale('en')
+  try {
+    assert.equal(heardText(['tourNext']), 'Heard: next stop')
+    assert.equal(heardText(['tourPause', 'whale']), 'Heard: pause tour, whale')
+    assert.equal(logText('tourStop'), 'Voice command: End tour')
+    assert.deepEqual(['tourNext', 'tourPrev', 'tourPause', 'tourResume', 'tourStart', 'tourStop'].map(labelOf), ['Next stop', 'Previous stop', 'Pause tour', 'Resume tour', 'Start tour', 'End tour'])
+  } finally { setLocale('zh') }
+})
+
+test('runCommand：導覽員指令不是「海」的動作——回傳 false、不碰 store（要走 routeTourCommand）', () => {
+  const s = fakeStore()
+  for (const id of TOUR_COMMAND_IDS) assert.equal(runCommand(id, s), false, id)
+  assert.deepEqual(s.calls, [])
+})
+
+// ---- routeTourCommand ----
+function fakeRunner(init = {}) {
+  const calls = []
+  const st = { running: false, paused: false, startOk: true, ...init }
+  const chk = (self) => { if (self !== r) throw new TypeError('Illegal invocation') }   // 模擬原生物件：脫離原物件呼叫就丟 Illegal invocation
+  const r = {
+    isRunning() { chk(this); return st.running },
+    isPaused() { chk(this); return st.running && st.paused },
+    next() { chk(this); calls.push('next'); return true },
+    prev() { chk(this); calls.push('prev'); return true },
+    pause() { chk(this); calls.push('pause'); st.paused = true; return true },
+    resume() { chk(this); calls.push('resume'); st.paused = false; return true },
+    start(o) { chk(this); calls.push(['start', o]); if (st.startOk) st.running = true; return st.startOk },
+    stop(reason) { chk(this); calls.push(['stop', reason]); st.running = false; return true },
+  }
+  return { r, calls, st }
+}
+const route = (id, runnerInit, extra = {}) => {
+  const f = fakeRunner(runnerInit)
+  const logs = [], guide = []
+  const res = routeTourCommand({ id, runner: f.r, touchGuide: () => guide.push(1), log: (x) => logs.push(x), ...extra })
+  return { res, logs, guide: guide.length, ...f }
+}
+
+test('routeTourCommand：導覽進行中 → 下一站 / 上一站 / 暫停 / 繼續 / 結束 各呼叫對應動作；一律 touchGuide()、寫「語音指令」日誌', () => {
+  setLocale('zh')
+  let x = route('tourNext', { running: true }); assert.deepEqual(x.calls, ['next']); assert.equal(x.res, 'ran'); assert.equal(x.guide, 1); assert.deepEqual(x.logs, ['語音指令：下一站'])
+  x = route('tourPrev', { running: true }); assert.deepEqual(x.calls, ['prev']); assert.deepEqual(x.logs, ['語音指令：上一站'])
+  x = route('tourPause', { running: true }); assert.deepEqual(x.calls, ['pause']); assert.deepEqual(x.logs, ['語音指令：暫停導覽'])
+  x = route('tourResume', { running: true, paused: true }); assert.deepEqual(x.calls, ['resume']); assert.deepEqual(x.logs, ['語音指令：繼續導覽'])
+  x = route('tourStop', { running: true }); assert.deepEqual(x.calls, [['stop', 'user']]); assert.deepEqual(x.logs, ['語音指令：結束導覽'])
+})
+
+test('routeTourCommand：導覽沒在進行 → next / prev / pause / resume / stop 無動作，但寫一行 IN 日誌「語音：下一站（導覽沒在進行）」；仍 touchGuide（有人在場）', () => {
+  setLocale('zh')
+  for (const [id, label] of [['tourNext', '下一站'], ['tourPrev', '上一站'], ['tourPause', '暫停導覽'], ['tourResume', '繼續導覽'], ['tourStop', '結束導覽']]) {
+    const x = route(id, { running: false })
+    assert.deepEqual(x.calls, [], id); assert.equal(x.res, 'idle', id); assert.equal(x.guide, 1, id)
+    assert.deepEqual(x.logs, [`語音：${label}（導覽沒在進行）`], id)
+  }
+  setLocale('en')
+  try { assert.deepEqual(route('tourNext', { running: false }).logs, ['Voice: Next stop (no tour is running)']) } finally { setLocale('zh') }
+})
+
+test('routeTourCommand：開始導覽 = runner.start({ auto: false })（不是自動導覽）；已在進行 → 無動作；起不來 → 日誌說明', () => {
+  setLocale('zh')
+  let x = route('tourStart', { running: false })
+  assert.deepEqual(x.calls, [['start', { auto: false }]]); assert.equal(x.res, 'ran'); assert.equal(x.guide, 1); assert.deepEqual(x.logs, ['語音指令：開始導覽'])
+  x = route('tourStart', { running: true }); assert.deepEqual(x.calls, []); assert.equal(x.res, 'noop'); assert.deepEqual(x.logs, ['語音：開始導覽（導覽已在進行）'])
+  x = route('tourStart', { running: false, startOk: false }); assert.equal(x.res, 'failed'); assert.deepEqual(x.logs, ['語音：開始導覽（目前無法開始導覽）'])
+})
+
+test('routeTourCommand：已經暫停時再暫停 / 沒暫停時繼續 → 無動作並說明', () => {
+  setLocale('zh')
+  let x = route('tourPause', { running: true, paused: true }); assert.deepEqual(x.calls, []); assert.equal(x.res, 'noop'); assert.deepEqual(x.logs, ['語音：暫停導覽（已經暫停）'])
+  x = route('tourResume', { running: true, paused: false }); assert.deepEqual(x.calls, []); assert.equal(x.res, 'noop'); assert.deepEqual(x.logs, ['語音：繼續導覽（導覽沒有暫停）'])
+})
+
+test('routeTourCommand：任何錯誤都不丟例外（runner 丟例外 / 沒有 runner / log 或 touchGuide 丟例外 / 未知 id）', () => {
+  const boom = { isRunning: () => true, isPaused: () => false, next() { throw new Error('boom') }, prev() {}, pause() {}, resume() {}, start() {}, stop() {} }
+  assert.equal(routeTourCommand({ id: 'tourNext', runner: boom, touchGuide() {}, log() {} }), 'failed')
+  assert.equal(routeTourCommand({ id: 'tourNext', touchGuide() {}, log() {} }), 'idle')
+  assert.equal(routeTourCommand({ id: 'tourStart', touchGuide() {}, log() {} }), 'failed')
+  const f = fakeRunner({ running: true })
+  assert.equal(routeTourCommand({ id: 'tourNext', runner: f.r, touchGuide() { throw new Error('x') }, log() { throw new Error('y') } }), 'ran')
+  assert.deepEqual(f.calls, ['next'], 'touchGuide / log 出錯不影響動作')
+  assert.equal(routeTourCommand({ id: 'whale', runner: f.r }), 'unknown'); assert.equal(routeTourCommand({ id: 'nope' }), 'unknown'); assert.equal(routeTourCommand(), 'unknown')
+  assert.deepEqual(f.calls, ['next'])
+})
+
+// ---- createVoiceRouter：VoiceService 的接線 ----
+function fakeTimers() {
+  let now = 0, seq = 0
+  const q = new Map()
+  const bare = (fn) => function (...a) { if (this !== undefined && this !== globalThis) throw new TypeError('Illegal invocation'); return fn(...a) }   // 和原生 setTimeout 一樣：不能掛在別的物件上呼叫
+  return {
+    schedule: bare((fn, ms) => { const id = ++seq; q.set(id, { at: now + ms, fn }); return id }),
+    cancel: bare((id) => { q.delete(id) }),
+    advance(ms) { const end = now + ms; for (;;) { let best = null; for (const [id, x] of q) if (x.at <= end && (!best || x.at < best[1].at)) best = [id, x]; if (!best) break; q.delete(best[0]); now = Math.max(now, best[1].at); best[1].fn() } now = end },
+    pending: () => q.size,
+  }
+}
+function routerEnv(runnerInit) {
+  const f = fakeRunner(runnerInit), tm = fakeTimers()
+  const seaRan = [], shown = [], logs = [], guide = []
+  const router = createVoiceRouter({
+    runner: f.r, touchGuide: () => guide.push(1), log: (x) => logs.push(x),
+    runSea: (x) => seaRan.push(x.id), show: (x) => shown.push(x.id),
+    schedule: tm.schedule, cancel: tm.cancel,
+  })
+  return { router, tm, seaRan, shown, logs, guide, ...f }
+}
+const F = (id, index = 0, interim = false) => ({ id, word: id, index, interim })
+
+test('createVoiceRouter：導覽員指令走 routeTourCommand（touchGuide、不呼叫 runSea——那裡才有 touch()）；「聽到」提示照常顯示', () => {
+  const e = routerEnv({ running: true })
+  e.router.handle(F('tourNext')); e.router.handle(F('tourPause'))
+  assert.deepEqual(e.calls, ['next', 'pause']); assert.deepEqual(e.seaRan, [], '導覽員指令不走 runSea（不會呼叫 touch() 而中止導覽）')
+  assert.equal(e.guide.length, 2); assert.deepEqual(e.shown, ['tourNext', 'tourPause'])
+  const idle = routerEnv({ running: false })
+  idle.router.handle(F('tourNext')); assert.deepEqual(idle.calls, []); assert.deepEqual(idle.seaRan, []); assert.deepEqual(idle.shown, ['tourNext'], '沒在導覽也顯示「聽到」，讓使用者知道有聽到')
+  assert.equal(idle.logs.length, 1)
+})
+
+test('createVoiceRouter：海的指令走 runSea 並顯示；未知 id / 壞輸入不丟例外', () => {
+  const e = routerEnv({ running: true })
+  e.router.handle(F('whale')); e.router.handle(F('bigwave', 1))
+  assert.deepEqual(e.seaRan, ['whale', 'bigwave']); assert.deepEqual(e.shown, ['whale', 'bigwave']); assert.equal(e.guide.length, 0)
+  assert.doesNotThrow(() => { e.router.handle(null); e.router.handle({}); e.router.handle(F('nope')) })
+  assert.deepEqual(e.seaRan, ['whale', 'bigwave'])
+})
+
+test('導覽進行中，interim 的「停」延後 900ms：同一段逐字稿接著出現「暫停導覽」→ 取消它，導覽只被暫停、沒有被 touch() 中止', () => {
+  assert.equal(STOP_DEFER_MS, 900)
+  const e = routerEnv({ running: true })
+  e.router.handle(F('stop', 3, true))                       // 「暫停」先出現（interim）
+  assert.deepEqual(e.seaRan, [], '先不執行'); assert.deepEqual(e.shown, [], '也先不顯示「聽到：停止」')
+  e.tm.advance(300)
+  e.router.handle(F('tourPause', 3, true))                  // 接著變成「暫停導覽」
+  assert.deepEqual(e.calls, ['pause']); assert.deepEqual(e.seaRan, []); assert.deepEqual(e.shown, ['tourPause'])
+  assert.equal(e.tm.pending(), 0, '延後的計時器已取消')
+  e.tm.advance(5000); assert.deepEqual(e.seaRan, [], '之後也不會補執行')
+})
+
+test('導覽進行中，interim 的「停」沒有等到導覽員指令 → 900ms 後照常執行一次（先 runSea 再 show）', () => {
+  const e = routerEnv({ running: true })
+  e.router.handle(F('stop', 0, true))
+  e.tm.advance(899); assert.deepEqual(e.seaRan, [])
+  e.tm.advance(1); assert.deepEqual(e.seaRan, ['stop']); assert.deepEqual(e.shown, ['stop'])
+  e.tm.advance(5000); assert.deepEqual(e.seaRan, ['stop'], '只執行一次')
+})
+
+test('「停」不延後的情形：final 結果、導覽沒在進行、非「停」指令', () => {
+  const a = routerEnv({ running: true })
+  a.router.handle(F('stop', 0, false)); assert.deepEqual(a.seaRan, ['stop'], 'final：立刻執行')
+  const b = routerEnv({ running: false })
+  b.router.handle(F('stop', 0, true)); assert.deepEqual(b.seaRan, ['stop'], '導覽沒在進行：與以前一樣立刻執行'); assert.equal(b.tm.pending(), 0)
+  const c = routerEnv({ running: true })
+  c.router.handle(F('whale', 0, true)); assert.deepEqual(c.seaRan, ['whale'])
+})
+
+test('延後中的「停」遇到別段逐字稿的指令：先把「停」照常執行（維持先後順序）；遇到別段的導覽員指令也一樣', () => {
+  const e = routerEnv({ running: true })
+  e.router.handle(F('stop', 0, true))
+  e.router.handle(F('whale', 1, true))
+  assert.deepEqual(e.seaRan, ['stop', 'whale']); assert.equal(e.tm.pending(), 0)
+  const g = routerEnv({ running: true })
+  g.router.handle(F('stop', 0, true)); g.router.handle(F('tourNext', 1, true))
+  assert.deepEqual(g.seaRan, ['stop'], '不同段：「停」是獨立的指令，照常執行'); assert.deepEqual(g.calls, ['next'])
+})
+
+test('dispose：取消延後中的「停」（卸載後不再執行、不留計時器）；runSea / show 丟例外不影響後續', () => {
+  const e = routerEnv({ running: true })
+  e.router.handle(F('stop', 0, true)); e.router.dispose()
+  assert.equal(e.tm.pending(), 0); e.tm.advance(5000); assert.deepEqual(e.seaRan, [])
+  assert.doesNotThrow(() => e.router.dispose())
+  const f = fakeRunner({ running: true }); const seen = []
+  const r = createVoiceRouter({ runner: f.r, touchGuide() {}, log() {}, runSea() { throw new Error('a') }, show(x) { seen.push(x.id); throw new Error('b') }, schedule: (fn, ms) => setTimeout(fn, ms), cancel: (id) => clearTimeout(id) })
+  assert.doesNotThrow(() => { r.handle(F('whale')); r.handle(F('tourNext')) })
+  assert.deepEqual(seen, ['whale', 'tourNext']); assert.deepEqual(f.calls, ['next'])
+})
+
+test('整合：tracker → router，interim「暫停」→「暫停導覽」（導覽進行中）只暫停導覽；單說「停止」則在延後後才執行停止', () => {
+  const e = routerEnv({ running: true })
+  const tr = createCommandTracker({ lang: 'zh' })
+  for (const f of tr.feed([item(0, '暫停')], 0)) e.router.handle(f)
+  e.tm.advance(200)
+  for (const f of tr.feed([item(0, '暫停導覽')], 200)) e.router.handle(f)
+  for (const f of tr.feed([item(0, '暫停導覽', true)], 900)) e.router.handle(f)
+  e.tm.advance(3000)
+  assert.deepEqual(e.calls, ['pause']); assert.deepEqual(e.seaRan, [])
+  const g = routerEnv({ running: true })
+  const tr2 = createCommandTracker({ lang: 'en-US' })
+  for (const f of tr2.feed([item(0, 'stop')], 0)) g.router.handle(f)
+  for (const f of tr2.feed([item(0, 'stop the tour')], 300)) g.router.handle(f)
+  g.tm.advance(3000)
+  assert.deepEqual(g.calls, [['stop', 'user']]); assert.deepEqual(g.seaRan, [])
+  const h = routerEnv({ running: true })
+  const tr3 = createCommandTracker({ lang: 'zh' })
+  for (const f of tr3.feed([item(0, '停止')], 0)) h.router.handle(f)
+  h.tm.advance(1000)
+  assert.deepEqual(h.seaRan, ['stop']); assert.deepEqual(h.calls, [])
+})
+
+test('原始碼守則：voiceCommands.js 不含 lookbehind、沒有全域環境存取（純函式）；routeTourCommand 沒有呼叫 touch()', () => {
+  const src = readFileSync(new URL('./voiceCommands.js', import.meta.url), 'utf8')
+  assert.doesNotMatch(src.replace(/\/\/.*$/gm, ''), /\(\?<[=!]/)
+  const body = src.slice(src.indexOf('export function routeTourCommand'), src.indexOf('export const STOP_DEFER_MS')).replace(/\/\/.*$/gm, '')
+  assert.ok(body.includes('touchGuide') && !/\btouch\(/.test(body))
 })

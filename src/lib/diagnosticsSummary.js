@@ -50,6 +50,7 @@ export function formatSummaryLine(sum, t, tag = 'zh-TW') {
 }
 
 // 「開啟裝置診斷」連結：以目前語系開新分頁（診斷頁的語系偏好只存在 localStorage，?lang= 讓新分頁一開始就跟目前的介面一致）
-export function diagnosticsHref(locale) {
-  return '?diagnostics=1' + (locale === 'en' || locale === 'zh' ? '&lang=' + locale : '')
+//   opts.guided：true → 加 &guided=1，診斷頁載入後直接進入「依序帶我做完互動檢查」導引模式（先自動跑完快速檢查）
+export function diagnosticsHref(locale, opts) {
+  return '?diagnostics=1' + (opts && opts.guided ? '&guided=1' : '') + (locale === 'en' || locale === 'zh' ? '&lang=' + locale : '')
 }

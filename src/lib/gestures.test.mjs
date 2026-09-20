@@ -893,3 +893,275 @@ test('偵測連續失敗（CPU）→ error detect；onFrame 丟例外不會讓�
   assert.ok(h2.lm().calls.length > 10, 'onFrame 例外不影響偵測')
   h2.rt.stop()
 })
+
+// =====================================================================
+// 揮手換站（createWaveDetector / routeWave / suppressCalm）——全部是合成資料；門檻沒有真機驗證
+// =====================================================================
+import { WAVE, WAVE_ACTION, palmBox, createWaveDetector, routeWave } from './gestures.js'
+
+const WSTEP = 67                                                   // 15 fps
+const smooth = (u) => u * u * (3 - 2 * u)
+const handAt = (mk, tx, ty, o = {}) => place(mk(), { scale: 0.2, tx, ty, ...o })
+// 把一段「位置隨時間」餵給偵測器；回傳 [{ t, event }]（只含有事件的幀）。pos(t) → tx（原始影像 x）或 null（這一幀沒有手）；也可回傳 { tx, ty, mk }。
+function drive(det, from, to, pos, o = {}) {
+  const ev = []
+  for (let t = from; t <= to + 1e-6; t += WSTEP) {
+    const p = pos(t)
+    const lm = p == null ? null : (typeof p === 'number' ? handAt(o.mk || POSES.openPalm, p, o.ty ?? 0.6, o.place) : handAt(p.mk || o.mk || POSES.openPalm, p.tx, p.ty ?? o.ty ?? 0.6, o.place))
+    const r = det.update(lm, t, { aspect: o.aspect ?? ASPECT, mirror: o.mirror })
+    if (r.event) ev.push({ t, event: r.event })
+  }
+  return ev
+}
+// 停在 x0 一陣子（t0..t1），再用 dur 毫秒平滑掃到 x1，之後停在 x1 到 t2
+const sweep = (x0, x1, t0, dur) => (t) => (t < t0 ? x0 : t >= t0 + dur ? x1 : x0 + (x1 - x0) * smooth((t - t0) / dur))
+const events = (list) => list.map((e) => e.event)
+
+test('揮手預設值：只有 left → next、right → prev；門檻集中在 WAVE（註明合成資料調校）', () => {
+  assert.deepEqual(WAVE_ACTION, { left: 'next', right: 'prev' })
+  assert.ok(WAVE.windowMs >= 400 && WAVE.windowMs <= 600, '約 0.5 秒')
+  assert.ok(WAVE.cooldownMs >= 800 && WAVE.cooldownMs <= 1500, '冷卻約 1 秒')
+  const src = readFileSync(new URL('./gestures.js', import.meta.url), 'utf8')
+  assert.match(src, /合成資料調校[\s\S]{0,40}真機/)
+  assert.match(src, /export const WAVE = \{/)
+})
+
+test('palmBox：只看手腕與四指根——手指怎麼動，手掌中心都不變', () => {
+  const a = palmBox(handAt(POSES.openPalm, 0.5, 0.6)), b = palmBox(handAt(POSES.fist, 0.5, 0.6))
+  assert.ok(Math.abs(a.cx - b.cx) < 1e-9 && Math.abs(a.cy - b.cy) < 1e-9)
+  assert.ok(a.minX < a.cx && a.cx < a.maxX)
+})
+
+test('向左揮 = left（人面對鏡頭，手往自己的左邊 = 原始影像 x 變大）；向右揮 = right', () => {
+  const det = createWaveDetector()
+  const ev = drive(det, 0, 2500, sweep(0.3, 0.7, 1000, 400))
+  assert.deepEqual(events(ev), ['left'], `實際：${JSON.stringify(ev)}`)
+  assert.ok(ev[0].t >= 1000 + WSTEP * 2 && ev[0].t <= 1400 + WSTEP, `在揮動當中就觸發（低延遲）：${ev[0].t}`)
+  assert.equal(WAVE_ACTION[ev[0].event], 'next')
+  const det2 = createWaveDetector()
+  const ev2 = drive(det2, 0, 2500, sweep(0.7, 0.3, 1000, 400))
+  assert.deepEqual(events(ev2), ['right']); assert.equal(WAVE_ACTION[ev2[0].event], 'prev')
+})
+
+test('鏡像：ctx.mirror === false（原始影像已經是使用者視角）→ 方向相反；左手 / 右手（手形左右翻轉）結果相同', () => {
+  const a = createWaveDetector()
+  assert.deepEqual(events(drive(a, 0, 2500, sweep(0.3, 0.7, 1000, 400), { mirror: false })), ['right'])
+  const b = createWaveDetector()
+  assert.deepEqual(events(drive(b, 0, 2500, sweep(0.7, 0.3, 1000, 400), { mirror: false })), ['left'])
+  for (const mirrorHand of [false, true]) {                         // 左手 = 右手的鏡像
+    const d1 = createWaveDetector(), d2 = createWaveDetector()
+    assert.deepEqual(events(drive(d1, 0, 2500, sweep(0.3, 0.7, 1000, 400), { place: { mirror: mirrorHand } })), ['left'], `mirrorHand=${mirrorHand}`)
+    assert.deepEqual(events(drive(d2, 0, 2500, sweep(0.7, 0.3, 1000, 400), { place: { mirror: mirrorHand } })), ['right'], `mirrorHand=${mirrorHand}`)
+  }
+})
+
+test('各種寬高比 / 手的大小 / 高度 / 旋轉都能判定；有雜訊也行', () => {
+  for (const aspect of [1, 4 / 3, 16 / 9]) for (const scale of [0.12, 0.2, 0.3]) for (const ty of [0.4, 0.6, 0.75]) {
+    const det = createWaveDetector()
+    const ev = drive(det, 0, 2500, sweep(0.3, 0.7, 1000, 400), { aspect, ty, place: { scale, rot: 12 } })
+    assert.deepEqual(events(ev), ['left'], `aspect=${aspect} scale=${scale} ty=${ty}：${JSON.stringify(ev)}`)
+  }
+  for (let seed = 1; seed <= 12; seed++) {
+    const det = createWaveDetector()
+    const ev = drive(det, 0, 2500, sweep(0.7, 0.3, 1000, 400), { place: { noise: 0.006, seed } })
+    assert.deepEqual(events(ev), ['right'], `seed=${seed}：${JSON.stringify(ev)}`)
+  }
+})
+
+test('緩慢移動不算：同樣的距離用 1.2 秒 / 2 秒 / 4 秒慢慢移，都不觸發', () => {
+  for (const dur of [1200, 2000, 4000]) {
+    const det = createWaveDetector()
+    assert.deepEqual(drive(det, 0, 8000, sweep(0.3, 0.7, 1000, dur)), [], `dur=${dur}`)
+  }
+})
+
+test('距離不夠不算：快速但只移動 0.15 的小動作', () => {
+  const det = createWaveDetector()
+  assert.deepEqual(drive(det, 0, 2500, sweep(0.45, 0.6, 1000, 300)), [])
+})
+
+test('握拳 / 比讚 / 食指指 / 比 YA / 半彎 / 五指併攏 快速橫掃都不算（要張開手掌）', () => {
+  for (const name of ['fist', 'thumbsUp', 'point', 'peace', 'claw', 'flatTogether']) {
+    const det = createWaveDetector()
+    assert.deepEqual(drive(det, 0, 2500, sweep(0.3, 0.7, 1000, 400), { mk: POSES[name] }), [], name)
+  }
+})
+
+test('只有手指在動（手掌不動）不算：五指開合、抓放、手指波浪', () => {
+  const det = createWaveDetector()
+  const ev = drive(det, 0, 6000, (t) => ({ tx: 0.5, mk: () => makeHand({ curls: [0, 1, 2, 3].map((i) => 0.5 + 0.5 * Math.sin(t / 90 + i)), thumb: 'out', spread: 0.5 + 0.5 * Math.sin(t / 130) }) }))
+  assert.deepEqual(ev, [])
+})
+
+test('手停著只有雜訊（±0.01）不會誤觸發；手在畫面裡慢慢漂移也不會', () => {
+  for (let seed = 1; seed <= 5; seed++) {
+    const det = createWaveDetector()
+    assert.deepEqual(drive(det, 0, 10000, () => 0.5, { place: { noise: 0.01, seed } }), [], `seed=${seed}`)
+  }
+  const det = createWaveDetector()
+  assert.deepEqual(drive(det, 0, 10000, (t) => 0.3 + 0.4 * (t / 10000), { place: { noise: 0.004, seed: 3 } }), [], '10 秒漂移 0.4 = 0.04/秒')
+})
+
+test('打招呼式的來回揮動（3 Hz、±0.15）不算——這個手勢是單向橫掃（像翻頁），來回抖動的路徑太長', () => {
+  const det = createWaveDetector()
+  assert.deepEqual(drive(det, 0, 5000, (t) => (t < 800 ? 0.5 : 0.5 + 0.15 * Math.sin(2 * Math.PI * 3 * (t - 800) / 1000))), [])
+})
+
+test('主要是垂直方向的動作不算（上下揮）', () => {
+  const det = createWaveDetector()
+  assert.deepEqual(drive(det, 0, 3000, (t) => ({ tx: 0.5 + 0.1 * smooth(Math.min(1, Math.max(0, (t - 1000) / 400))), ty: 0.3 + 0.4 * smooth(Math.min(1, Math.max(0, (t - 1000) / 400))) })), [])
+})
+
+test('偵測跳號（單幀跳 0.4 = 換手 / 誤偵測）不算', () => {
+  const det = createWaveDetector()
+  assert.deepEqual(drive(det, 0, 3000, (t) => (t < 1500 ? 0.3 : 0.7)), [])
+})
+
+test('進出畫面不算：從邊緣掃進來 / 掃出去 / 突然出現就掃 / 手消失', () => {
+  // 從右邊緣進來、減速停在 0.6
+  const a = createWaveDetector()
+  assert.deepEqual(drive(a, 0, 3000, (t) => 1.05 - 0.45 * smooth(Math.min(1, t / 600))), [], '進入')
+  // 手掌已經貼到邊緣（x > 1）的幀不算
+  const b = createWaveDetector()
+  assert.deepEqual(drive(b, 0, 2000, (t) => 1.1 + 0.1 * Math.sin(t / 200)), [])
+  // 慢慢移出畫面
+  const c = createWaveDetector()
+  assert.deepEqual(drive(c, 0, 6000, (t) => (t < 1000 ? 0.5 : 0.5 + 0.6 * ((t - 1000) / 2000))), [], '緩慢離開')
+  // 突然消失（沒有手的幀）
+  const d = createWaveDetector()
+  assert.deepEqual(drive(d, 0, 4000, (t) => (t < 1500 ? 0.5 : null)), [])
+  // 手不在畫面 1 秒後突然出現就掃：手剛出現要先穩定
+  const e = createWaveDetector()
+  const ev = drive(e, 0, 4000, (t) => (t < 1000 ? null : sweep(0.3, 0.7, 1000, 400)(t)))
+  assert.deepEqual(ev, [], '剛出現就掃不算')
+  // 中間消失超過 gapMs：軌跡重來（消失前的位移不能跟消失後的接在一起）
+  const f = createWaveDetector()
+  assert.deepEqual(drive(f, 0, 4000, (t) => (t < 1000 ? 0.3 : t < 1500 ? null : 0.7)), [])
+})
+
+test('終點貼近邊緣（手掃出畫面）不算；同樣的動作在畫面中央完成就算', () => {
+  const a = createWaveDetector()
+  assert.deepEqual(drive(a, 0, 3000, sweep(0.6, 0.88, 1000, 300)), [], '位移不足 + 貼邊')
+  const b = createWaveDetector()
+  assert.deepEqual(events(drive(b, 0, 3000, sweep(0.2, 0.75, 1000, 500))), ['left'])
+})
+
+test('遲滯：一次揮動只觸發一次——快速揮完再快速收回（反方向）也不會觸發第二次', () => {
+  const det = createWaveDetector()
+  const pos = (t) => (t < 1000 ? 0.3 : t < 1400 ? sweep(0.3, 0.7, 1000, 400)(t) : t < 1500 ? 0.7 : sweep(0.7, 0.3, 1500, 400)(t))   // 揮過去，稍停，馬上揮回來
+  const ev = drive(det, 0, 4000, pos)
+  assert.deepEqual(events(ev), ['left'], `實際：${JSON.stringify(ev)}`)
+})
+
+test('遲滯：一段很長的橫掃（掃過整個畫面）只算一次', () => {
+  const det = createWaveDetector()
+  assert.deepEqual(events(drive(det, 0, 4000, sweep(0.15, 0.85, 1000, 1000))), ['left'])
+})
+
+test('冷卻 ≈1 秒 + 就緒：慢慢收回手、停一下之後再揮，可以再觸發；收手過程中不會觸發', () => {
+  const det = createWaveDetector()
+  // 揮左（t≈1.3s 觸發）→ 1.5~3.3 秒慢慢收回（0.22/秒）→ 停到 4.5 秒 → 再揮左
+  const pos = (t) => (t < 1000 ? 0.3 : t < 1500 ? sweep(0.3, 0.7, 1000, 400)(t) : t < 3300 ? 0.7 - 0.4 * ((t - 1500) / 1800) : t < 4500 ? 0.3 : sweep(0.3, 0.7, 4500, 400)(t))
+  const ev = drive(det, 0, 7000, pos)
+  assert.deepEqual(events(ev), ['left', 'left'], JSON.stringify(ev))
+  assert.ok(ev[1].t - ev[0].t >= WAVE.cooldownMs, `間隔 ${ev[1].t - ev[0].t}`)
+})
+
+test('冷卻中再揮不觸發；reset()（換相機來源）不會清掉冷卻', () => {
+  const det = createWaveDetector()
+  const e1 = drive(det, 0, 1500, sweep(0.3, 0.7, 1000, 400))
+  assert.equal(e1.length, 1)
+  det.reset()
+  const e2 = drive(det, 1600, 2300, sweep(0.7, 0.2, 1700, 350))   // 立刻反向再揮：冷卻中
+  assert.deepEqual(e2, [])
+})
+
+test('reset()：軌跡清空，手要重新穩定 entryMs 才可能判定；也不留下「就緒」以外的狀態', () => {
+  const det = createWaveDetector()
+  drive(det, 0, 1000, () => 0.3)
+  det.reset()
+  assert.deepEqual(drive(det, 1067, 2500, sweep(0.3, 0.7, 1100, 400)), [], '重置後剛出現就掃不算')
+  assert.equal(det.armed, true)
+})
+
+test('壞輸入：null / 點數不足 / NaN 不丟例外、不觸發', () => {
+  const det = createWaveDetector()
+  for (const bad of [null, undefined, [], new Array(20).fill({ x: 0.5, y: 0.5 }), new Array(21).fill({ x: NaN, y: 0 })]) assert.doesNotThrow(() => det.update(bad, 100, {}))
+  assert.deepEqual(det.update(handAt(POSES.openPalm, 0.5, 0.6), 200), { event: null })   // ctx 省略也行
+})
+
+test('自訂門檻：opts 覆寫 WAVE（測試 / 真機調整用）', () => {
+  const strict = createWaveDetector({ minDx: 0.6 })
+  assert.deepEqual(drive(strict, 0, 2500, sweep(0.2, 0.75, 1000, 400)), [])
+  const loose = createWaveDetector({ minDx: 0.15, cooldownMs: 300 })
+  assert.deepEqual(events(drive(loose, 0, 2500, sweep(0.4, 0.6, 1000, 300))), ['left'])
+})
+
+// ---- routeWave ----
+function fakeWaveRunner(running) {
+  const calls = []
+  const chk = (self) => { if (self !== r) throw new TypeError('Illegal invocation') }
+  const r = { isRunning() { chk(this); return running }, next() { chk(this); calls.push('next') }, prev() { chk(this); calls.push('prev') } }
+  return { r, calls }
+}
+
+test('routeWave：導覽進行中 → 向左揮 = 下一站、向右揮 = 上一站，走 touchGuide()（不是 touch()）', () => {
+  const { r, calls } = fakeWaveRunner(true)
+  let guide = 0
+  assert.deepEqual(routeWave('left', { runner: r, touchGuide: () => { guide++ } }), { dir: 'left', action: 'next' })
+  assert.deepEqual(routeWave('right', { runner: r, touchGuide: () => { guide++ } }), { dir: 'right', action: 'prev' })
+  assert.deepEqual(calls, ['next', 'prev']); assert.equal(guide, 2)
+})
+
+test('routeWave：導覽沒在進行 → 完全不處理（不換站、不呼叫 touchGuide）；未知方向 / 壞輸入 / 例外都回 null 不外洩', () => {
+  const { r, calls } = fakeWaveRunner(false)
+  let guide = 0
+  assert.equal(routeWave('left', { runner: r, touchGuide: () => { guide++ } }), null)
+  assert.deepEqual(calls, []); assert.equal(guide, 0)
+  const on = fakeWaveRunner(true)
+  assert.equal(routeWave('up', { runner: on.r, touchGuide() {} }), null)
+  assert.equal(routeWave('left'), null); assert.equal(routeWave('left', {}), null)
+  assert.equal(routeWave('left', { runner: { isRunning: () => true, next() { throw new Error('x') } }, touchGuide() {} }), null)
+  assert.deepEqual(routeWave('left', { runner: on.r, touchGuide() { throw new Error('y') } }), { dir: 'left', action: 'next' }, 'touchGuide 出錯不影響換站')
+})
+
+test('routeWave + 偵測器：導覽進行中揮手換站；沒在導覽時同樣的動作什麼都不做', () => {
+  for (const running of [true, false]) {
+    const { r, calls } = fakeWaveRunner(running)
+    const det = createWaveDetector()
+    for (const e of drive(det, 0, 2500, sweep(0.3, 0.7, 1000, 400))) routeWave(e.event, { runner: r, touchGuide() {} })
+    assert.deepEqual(calls, running ? ['next'] : [])
+  }
+})
+
+// ---- suppressCalm：導覽進行中開著揮手換站時，張手不會進入平靜（平靜的寫入是真實輸入，會中止導覽）----
+test('suppressCalm：張手停留再久也不平靜、不寫參數；放開後要重新停留 0.5 秒才會平靜；沒帶旗標時行為與以前完全相同', () => {
+  const tr = createGestureTracker(); const s = store({ current: 0.8, swimSpeed: 0.9, trashCount: 0.7 })
+  const open = place(POSES.openPalm())
+  const sup = { ...s.ctx }
+  let writes = 0, calm = false
+  for (let t = 0; t <= 2000; t += 67) { const o = tr.update(open, t, { ...sup, suppressCalm: true }); writes += o.writes.length; calm = calm || o.calm; if (o.writes.length) s.apply(o.writes) }
+  assert.equal(writes, 0); assert.equal(calm, false); assert.equal(tr.state, GESTURE.OPEN_PALM, '狀態顯示不受影響')
+  assert.deepEqual(s.p, { current: 0.8, swimSpeed: 0.9, trashCount: 0.7 })
+  let calmAt = null
+  for (let t = 2067; t <= 3500; t += 67) { const o = tr.update(open, t, s.ctx); if (o.calm && calmAt == null) calmAt = t }
+  assert.ok(calmAt != null && calmAt - 2067 >= 500 && calmAt - 2067 <= 640, `解除暫停後重新停留才平靜：${calmAt}`)
+  assert.equal(tr.update(open, 3600, { ...s.ctx, suppressCalm: false }).calm, true)
+})
+
+test('suppressCalm 不影響捏合（召喚鯨魚）', () => {
+  const tr = createGestureTracker(); const pinch = place(POSES.pinch(0.04))
+  const fires = []
+  for (let t = 0; t <= 400; t += 67) if (tr.update(pinch, t, { aspect: ASPECT, suppressCalm: true }).events.includes('pinch')) fires.push(t)
+  assert.equal(fires.length, 1)
+})
+
+test('接線守則：GestureService 只在導覽進行中處理揮手、走 routeWave（touchGuide 而不是 touch）、揮手時暫停平靜；OUT 日誌「揮手：…」', () => {
+  const src = readFileSync(new URL('../services/GestureService.jsx', import.meta.url), 'utf8')
+  assert.match(src, /tourRunner\.isRunning\(\)/)
+  assert.match(src, /routeWave\(/)
+  assert.match(src, /touchGuide/)
+  assert.match(src, /suppressCalm: waveOn/)
+  assert.doesNotMatch(src.replace(/\/\/.*$/gm, ''), /\btouch\(\)/, '手勢服務不能呼叫 touch()（會中止導覽）')
+  assert.match(src, /pushLog\('out', t\('揮手：\{action\}'/)
+})

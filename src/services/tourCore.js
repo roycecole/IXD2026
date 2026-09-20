@@ -5,7 +5,10 @@
 //   · toggleTour() / startTour() / stopTour()：鍵盤 T、面板按鈕用
 //   · attachTourGuards()：長駐掛鉤（見該函式）；attachRunningGuards()：導覽進行中的 capture 監聽（含導覽員快速鍵 ← → P）
 //   · linkStarter（createLinkStarter）：網址帶 ?tourstop= 時，資料載入後只啟動一次導覽（見該函式）
-//   · copyTourLink()：「複製此站連結」（TourNav 的按鈕用）
+//   · copyTourLink()：「複製此站連結」（TourNav 的按鈕用；有導覽腳本時連結會帶著腳本，收到的人看到同一份站序與備註）
+//   · armNarrationUnlock()：TourService 掛載時，旁白偏好已開但 iOS 尚未解鎖 → 註冊「第一次使用者手勢」解鎖（見 lib/narration.js 契約）
+// 導覽腳本（lib/tourPlan.js）：tourRunner 的 build 在「每次組站表時」讀 useTourStore.plan——閒置自動 / 手動 / 導覽員（?tourstop=）三種啟動方式一視同仁，
+//   自動導覽循環回第 0 站重建站表時也用當下生效的腳本。?tourstop=<站 id / 序號> 以「腳本內的站」為準（runner.start 的 at 是對 build 出來的站表解析的；不在腳本內 → 第 0 站）。
 // 中斷的原則：「使用者的第一個動作要落在還原後的海上」——
 //   DOM 事件（pointerdown / keydown）用 capture 監聽先中止再往下傳；
 //   非 DOM 輸入（MIDI / 語音 / 手機遙控 / 手把 / 手勢 / 滾輪）都會先呼叫 activity.touch()，touch 的同步掛鉤（onActivity）在動作「之前」中止導覽並還原。
@@ -16,15 +19,20 @@ import { stats } from '../store/stats.js'
 import { LS, saveLS } from '../lib/persist.js'
 import { arState } from '../lib/ar.js'
 import { createTourRunner, buildTour, useTourStore, isAudienceSearch } from '../lib/tour.js'
+import { narrator as sharedNarrator } from '../lib/narration.js'
 import { inspectStore } from '../lib/inspect.js'
 import { isInModal } from '../lib/modalFocus.js'
 import { parseTourLink, buildTourLink, copyText } from '../lib/tourLink.js'
+import { buildPlanLink } from '../lib/tourPlan.js'
 import { t, getLocale } from '../i18n/index.js'
+
+// 目前生效的導覽腳本（網址 ?tour= 帶的 > 已存的啟用腳本 > 沒有）；呼叫端（start 的 opts）明確給 plan（含 null）時以呼叫端為準
+const activePlan = () => { try { return useTourStore.getState().plan || undefined } catch (e) { return undefined } }
 
 export const tourRunner = createTourRunner({
   store: useStore,
-  // AR 實景開著時背景的月亮與河川測站星座都不會畫（見 Scene3D 的 MoonSky / StationStars）→ 略過這兩站，免得字幕在講看不到的東西
-  build: (gov, opts) => buildTour(gov, { ...opts, skip: arState.on ? ['moon', 'stations'] : [] }),
+  // AR 實景開著時背景的月亮與河川測站星座都不會畫（見 Scene3D 的 MoonSky / StationStars）→ 略過這兩站，免得字幕在講看不到的東西（腳本列了這兩站也一樣略過）
+  build: (gov, opts) => buildTour(gov, { plan: activePlan(), ...opts, skip: arState.on ? ['moon', 'stations'] : [] }),
   getActivity: () => activity.last,
   touch,
   now: () => performance.now(),
@@ -49,7 +57,9 @@ function anyModalOpen(now) {
   return modalOpen
 }
 
-let emptyGov = null   // 上次建不出任何一站的資料快照（同一份資料不必每幀重試）
+// 上次建不出任何一站的「資料快照 + 導覽腳本 + AR 狀態」（同一組條件不必每幀重試）：站表取決於這三樣——腳本改了（編輯器套用）或 AR 開關變了，就要重新嘗試，不能一直回 nodata
+let emptyGov = null, emptyPlan
+let emptyAr = false
 
 // 回傳給 App 主迴圈：
 //   'started' / 'running'：導覽進行中（App 不要再做別的）· 'wait'：暫不啟動（彈窗開著等）· 'off'：使用者關閉了閒置自動導覽 / 這是觀眾視窗
@@ -60,18 +70,19 @@ export function tourIdleTick(now = performance.now()) {
   if (tourRunner.isRunning()) return 'running'
   if (!ts.autoIdle) return 'off'
   const gov = useStore.getState().gov
-  if (!gov || !Array.isArray(gov.options) || !gov.options.length || emptyGov === gov) return 'nodata'
+  if (!gov || !Array.isArray(gov.options) || !gov.options.length) return 'nodata'
+  if (emptyGov === gov && emptyPlan === activePlan() && emptyAr === arState.on) return 'nodata'
   if (anyModalOpen(now)) return 'wait'
   if (tourRunner.start({ auto: true })) {
     try { inspectStore.close() } catch (e) { /* 資料卡開著（游標停在卡上不會自動關）就開始換海況、換字幕，兩者會打架：導覽接手前先收掉 */ }
     return 'started'
   }
-  if (tourRunner.lastFail === 'empty') { emptyGov = gov; return 'nodata' }
+  if (tourRunner.lastFail === 'empty') { emptyGov = gov; emptyPlan = activePlan(); emptyAr = arState.on; return 'nodata' }
   return 'wait'
 }
 
-// 這些按鍵不算「操作海」：H 演出模式 / I 資訊面板 / L 系統事件面板 / ? 說明 / T 導覽開關 / 導覽員快速鍵（← 上一站、→ 下一站、P 暫停 / 繼續）/ 修飾鍵與 Tab
-export const KEEP_KEYS = new Set(['t', 'T', 'h', 'H', 'i', 'I', 'l', 'L', '?', 'ArrowLeft', 'ArrowRight', 'p', 'P', 'Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Tab'])
+// 這些按鍵不算「操作海」：H 演出模式 / I 資訊面板 / L 系統事件面板 / G 導覽員 QR（KioskQR，講解者把手機連上來）/ ? 說明 / T 導覽開關 / 導覽員快速鍵（← 上一站、→ 下一站、P 暫停 / 繼續）/ 修飾鍵與 Tab
+export const KEEP_KEYS = new Set(['t', 'T', 'h', 'H', 'i', 'I', 'l', 'L', 'g', 'G', '?', 'ArrowLeft', 'ArrowRight', 'p', 'P', 'Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Tab'])
 // 點到這些元件不算「操作海」、不中斷導覽：導覽自己的卡片 / 字幕、語言切換（切語言時字幕要跟著換、導覽繼續）、
 // 分享 / 分享星球 / 錄影（要擷取「此刻看到的海」，不能先被還原）、資訊面板 / 說明 / 聲音 / 匯出 LOG、離開演出模式。
 // （TopBar 按鈕以 data-k 辨識；找不到對應元素時只是退化成「點了就中斷導覽」。）
@@ -220,10 +231,28 @@ export async function copyTourLink({ tourStore = useTourStore, store = useStore,
   const stop = s.running && Array.isArray(s.stopList) ? s.stopList[s.index] : null
   if (!stop) return 'none'
   const n = s.index + 1
-  const link = buildTourLink({ href: getHref(), stopId: stop.id, hold: !!s.paused, locale: getLocale() })
+  // 有導覽腳本：連結帶著腳本（站序 + 備註 + 名稱），收到的人開啟後看到同一份腳本、直接到這一站；備註太長放不進網址時只帶站序（並在日誌說明）
+  const built = s.plan ? buildPlanLink({ href: getHref(), plan: s.plan, stopId: stop.id, hold: !!s.paused, locale: getLocale() }) : null
+  const link = built ? built.url : buildTourLink({ href: getHref(), stopId: stop.id, hold: !!s.paused, locale: getLocale() })
   let ok = false
   if (link) { try { ok = await copyText(link, env) } catch (e) { ok = false } }
   const st = store.getState()
-  if (st.pushLog) st.pushLog('out', ok ? t('已複製第 {n} 站連結', { n }) : t('複製連結失敗：瀏覽器不允許存取剪貼簿'))
+  if (st.pushLog) st.pushLog('out', ok ? (built && built.truncated ? t('已複製第 {n} 站連結（備註太長，連結沒有帶備註）', { n }) : t('已複製第 {n} 站連結', { n })) : t('複製連結失敗：瀏覽器不允許存取剪貼簿'))
   return ok ? 'ok' : 'fail'
+}
+
+// 旁白的 iOS 解鎖（契約 C6，見 lib/narration.js）：旁白偏好已開（?speak=1 或存過偏好）、但這個頁面還沒成功念過 → 註冊一次性的「第一次使用者手勢」解鎖（無聲），
+// 沒人碰過頁面就被導覽念字幕時 iOS 才不會把 speak() 靜靜吞掉。回傳取消函式（TourService 卸載 / StrictMode 重掛載時呼叫）；不需要解鎖 / 觀眾視窗 / 任何例外 → 回傳空函式。
+// narrator 的方法一律以「方法呼叫」使用（不脫離原物件）。
+export function armNarrationUnlock({ narrator = sharedNarrator, tourStore = useTourStore, win = typeof window !== 'undefined' ? window : undefined } = {}) {
+  let off = null
+  try {
+    const s = tourStore.getState()
+    if (s.speak && !s.remote && !narrator.isUnlocked()) off = narrator.unlockOnFirstGesture(win)
+  } catch (e) { off = null }
+  return () => {
+    const f = off
+    off = null
+    try { if (typeof f === 'function') f() } catch (e) { /* 取消失敗無妨 */ }
+  }
 }

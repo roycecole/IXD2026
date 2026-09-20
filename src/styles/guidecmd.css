@@ -1,0 +1,11 @@
+/* 導覽員語音 / 手勢指令：「裝置」面板兩節裡新增的段落（語音指令的導覽員清單、相機手勢的「揮手換站」開關與狀態）。
+   共用 voice.css / gestures.css 既有的色票與版型，這裡只補新增元素。 */
+
+.voice-sec .voice-guide-list { margin-top: 2px; }
+
+.gesture-wave { flex: 1 0 100%; display: flex; flex-direction: column; gap: 4px; margin-top: 2px; }
+.gesture-wave .gesture-toggle { display: inline-flex; align-items: center; gap: 6px; }
+.gesture-wave-status { margin: 0; font-size: 12px; line-height: 1.6; color: var(--muted); }
+.gesture-wave-status.ready { color: var(--accent); }
+.gesture-wave-status.off { color: var(--dim); }
+.gesture-wave-last { color: var(--accent); }

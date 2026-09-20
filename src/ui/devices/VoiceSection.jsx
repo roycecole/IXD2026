@@ -6,6 +6,10 @@ import { useT } from '../../i18n/index.js'
 import { getVoice, ERROR_TEXT } from '../../lib/voice.js'
 import { COMMANDS } from '../../lib/voiceCommands.js'
 import '../../styles/voice.css'
+import '../../styles/guidecmd.css'
+
+const SEA_COMMANDS = COMMANDS.filter((c) => !c.action.tour)     // 海的指令（會算一次人為操作、中止進行中的導覽）
+const GUIDE_COMMANDS = COMMANDS.filter((c) => c.action.tour)    // 導覽員指令（導覽進行中才有效；不中止導覽）
 
 export default function VoiceSection() {
   const t = useT()
@@ -39,7 +43,7 @@ export default function VoiceSection() {
 
         <p className="dev-sec-hint voice-list-title">{t('可以這樣說（可連著說多個，例如「鯨魚 大浪」）')}</p>
         <ul className="voice-list" aria-label={t('可用的語音指令')}>
-          {COMMANDS.map((c) => (
+          {SEA_COMMANDS.map((c) => (
             <li key={c.id}>
               <span className="voice-say">{t(c.say)}</span>
               <span className="voice-arrow" aria-hidden="true">→</span>
@@ -47,6 +51,19 @@ export default function VoiceSection() {
             </li>
           ))}
         </ul>
+
+        <p className="dev-sec-hint voice-list-title">{t('導覽員指令（不會中止導覽）')}</p>
+        <ul className="voice-list voice-guide-list" aria-label={t('導覽員語音指令')}>
+          {GUIDE_COMMANDS.map((c) => (
+            <li key={c.id}>
+              <span className="voice-say">{t(c.say)}</span>
+              <span className="voice-arrow" aria-hidden="true">→</span>
+              <span className="voice-fx">{t(c.fx)}</span>
+            </li>
+          ))}
+        </ul>
+        <p className="dev-sec-hint">{t('導覽進行中才有效（「開始導覽」隨時可用）；沒在導覽時說了只會在日誌留一行「有聽到」。')}</p>
+        <p className="dev-sec-hint">{t('導覽員平常講解時說到這些詞（例如「下一站是水庫」）也會被當成指令：講解期間想避免誤觸發，可先停止收音，或改用手機遙控器。旁白念字幕時本來就會暫時不辨識。')}</p>
 
         <p className="dev-sec-hint">{t('辨識語言：{tag}。跟著介面語言切換，一次只辨識一種語言；想說另一種語言請先切換介面語言。', { tag: st.lang })}</p>
         <p className="dev-sec-hint">{t('隱私：Chrome / Edge 的語音辨識會把麥克風的聲音送到雲端服務（Google / Microsoft）辨識；Safari 依系統設定處理。本站不錄音、不保存、不上傳任何音訊，只拿辨識出的文字來比對指令。')}</p>

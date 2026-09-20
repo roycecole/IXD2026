@@ -580,7 +580,7 @@ test('重載器：第一次 WebGL / 看門狗異常立刻重載並記錄；反�
   const r5 = mk('B5').crash('webgl', new Error('lost 5'))
   assert.equal(r5.ok, false); assert.equal(r5.halted, true)
   assert.equal(s.status.get().halted, true)
-  s.env.advance(5 * 60000); assert.equal(s.env.reloads.length, before, '熔斷後不再自動重載')
+  s.env.advance(5 * 60000); assert.equal(s.env.reloads.length, before, '熔斷後的冷卻期間不再快速重載（半開復原見下面的「熔斷後半開復原」測試）')
 })
 
 test('重載器：單次飛行（已排定 / 已重載就不再排）；cancel 取消排定；soft 重載寫資訊性紀錄、不受熔斷影響', () => {
@@ -1054,9 +1054,11 @@ test('主畫面的資料更新不受「全螢幕」影響（fullscreen 只用在
     assert.match(read('../ErrorBoundary.jsx'), /startGuards\(\{ config: cfg, env: audienceEnv\(\) \}\)/)
     assert.match(read('../AudienceApp.jsx'), /registerDataHooks\(\{/); assert.match(read('../AudienceApp.jsx'), /getLocalFetchedAt/)
     const svc = read('../services/ResilienceService.jsx')
-    assert.match(svc, /Math\.max\(activity\.last, Number\.isFinite\(activity\.guideAt\) \? activity\.guideAt : -Infinity\)/); assert.match(svc, /getXrController\(\)\.isActive\(\)/)
+    assert.match(svc, /lastInputAt = activity\.last/); assert.match(svc, /guideAt = activity\.guideAt/); assert.match(svc, /remoteAt = remoteActivity\.at/); assert.match(svc, /composeIdleState\(/)
+    assert.match(svc, /getXrController\(\)\.isActive\(\)/); assert.match(svc, /return <OpsLight \/>/, '角落指示燈由 ResilienceService 掛載（App.jsx 不必改）')
+    assert.match(read('../lib/resilience.js'), /Math\.max\(lastInputAt, guide\)/, '導覽員操作（guideAt）與人為輸入取較新的')
     const ops = read('../ui/devices/OpsSection.jsx')
-    assert.match(ops, /xr: T\('AR 桌面使用中'\)/); assert.match(ops, /fullscreen: T\('觀眾視窗全螢幕中'\)/)
+    assert.match(ops, /xr: T\('AR 桌面使用中'\)/); assert.match(ops, /fullscreen: T\('觀眾視窗全螢幕中'\)/); assert.match(ops, /remote: T\('遙控器使用中'\)/)
   })
 })
 
@@ -1232,7 +1234,7 @@ test('ErrorBoundary：倒數到 0 自動重新載入一次；「立即重新載�
   assert.equal(c.timers.m.size, 0); c.tick(60000); assert.equal(c.reloads.length, 0)
 })
 
-test('ErrorBoundary：退避 5 → 15 → 60 秒，10 分鐘內第 5 次停止自動重載並改請人工處理', async () => {
+test('ErrorBoundary：退避 5 → 15 → 60 秒，10 分鐘內第 5 次停止快速重載，改排一次冷卻重試（半開）', async () => {
   const EB = (await bundleJsx('ErrorBoundary.jsx')).default
   const s = ebSetup(EB)
   const delays = []
@@ -1243,12 +1245,47 @@ test('ErrorBoundary：退避 5 → 15 → 60 秒，10 分鐘內第 5 次停止�
     s.now.v += (i === 0 ? 6000 : i === 1 ? 16000 : 61000)
   }
   assert.deepEqual(delays, [5000, 15000, 60000, 60000])
+  const haltedAt = s.now.v
   s.crash(new Error('crash 5'))
-  assert.equal(s.b.state.plan.stop, true); assert.equal(s.timers.m.size, 0, '不再倒數'); assert.equal(s.b.state.deadline, 0)
-  s.now.v += 10 * 60000; assert.equal(s.reloads.length, 0)
-  // 標記：請人工處理 + 手動按鈕，沒有倒數數字
-  const html = renderToStaticMarkup(s.b.render())
-  assert.match(html, /發生錯誤，請人工處理/); assert.match(html, /已停止自動重新載入/); assert.match(html, /重新載入/); assert.doesNotMatch(html, /立即重新載入/); assert.doesNotMatch(html, /res-crash-count/)
+  assert.equal(s.b.state.plan.stop, true); assert.equal(s.b.state.plan.cooldownMs, R.HALF_OPEN_MS)
+  assert.equal(s.timers.m.size, 1, '熔斷也有倒數（冷卻，分鐘級）'); assert.equal(s.b.state.deadline, haltedAt + R.HALF_OPEN_MS); assert.equal(s.b.state.left, R.HALF_OPEN_MS)
+  s.tick(9 * 60000); assert.equal(s.reloads.length, 0, '冷卻前不重載')
+  s.tick(R.HALF_OPEN_MS - 9 * 60000 - 1000); assert.equal(s.reloads.length, 0, '差 1 秒到點：還沒')
+  s.tick(1000); assert.equal(s.reloads.length, 1, '冷卻到點自動重載一次'); assert.equal(s.timers.m.size, 0)
+  s.tick(60 * 60000); assert.equal(s.reloads.length, 1, '只重載一次（再崩潰才會再走一輪）')
+  // 標記：誠實說明「已停止快速重試，約 N 分鐘後會再試一次」+ 立即重新載入鈕，沒有秒級倒數數字
+  const s2 = ebSetup(EB); for (let i = 0; i < 4; i++) { s2.crash(new Error('c' + i)); s2.b.componentWillUnmount(); s2.b.timer = null; s2.now.v += (i === 0 ? 6000 : i === 1 ? 16000 : 61000) }
+  s2.crash(new Error('c5'))
+  let html = renderToStaticMarkup(s2.b.render())
+  assert.match(html, /發生錯誤，已停止快速重試/); assert.match(html, /已停止快速重新載入/); assert.match(html, /約 11 分鐘後會自動再試一次/); assert.match(html, /立即重新載入/); assert.doesNotMatch(html, /res-crash-count/); assert.doesNotMatch(html, /請人工處理/)
+  s2.tick(5 * 60000); html = renderToStaticMarkup(s2.b.render()); assert.match(html, /約 6 分鐘後會自動再試一次/, '5 分鐘後剩 5 分 30 秒 → 進位 6')
+  s2.tick(4 * 60000); html = renderToStaticMarkup(s2.b.render()); assert.match(html, /約 2 分鐘後會自動再試一次/, '剩 90 秒 → 進位 2')
+  s2.tick(30000); html = renderToStaticMarkup(s2.b.render()); assert.match(html, /不到 1 分鐘後會自動再試一次/, '剩 60 秒 → 不到 1 分鐘')
+  setLocale('en')
+  try {
+    html = renderToStaticMarkup(s2.b.render())
+    assert.match(html, /Something went wrong\. Quick retries have stopped/); assert.match(html, /Trying again automatically in less than a minute/); assert.match(html, /Reload now/); assert.doesNotMatch(html, /[㐀-鿿]/)
+    assert.equal(translate('en', '約 {m} 分鐘後會自動再試一次', { m: 1 }), 'Trying again automatically in about 1 minute'); assert.equal(translate('en', '約 {m} 分鐘後會自動再試一次', { m: 9 }), 'Trying again automatically in about 9 minutes')
+  } finally { setLocale('zh') }
+})
+
+test('ErrorBoundary 熔斷冷卻：畫面只在「分鐘」變動時重畫（不每秒 setState）；「立即重新載入」立刻重載並停掉倒數；卸載清乾淨（StrictMode 安全）', async () => {
+  const EB = (await bundleJsx('ErrorBoundary.jsx')).default
+  const s = ebSetup(EB)
+  for (let i = 0; i < 4; i++) { s.crash(new Error('c' + i)); s.b.componentWillUnmount(); s.b.timer = null; s.now.v += (i === 0 ? 6000 : i === 1 ? 16000 : 61000) }
+  s.crash(new Error('c5'))
+  let sets = 0; const orig = s.b.setState; s.b.setState = (p) => { sets++; orig(p) }
+  for (let i = 0; i < 300; i++) s.tick(1000)                                   // 5 分鐘、每秒一次
+  assert.ok(sets <= 6, `5 分鐘只在跨過分鐘時重畫，實際 ${sets} 次`); assert.equal(s.reloads.length, 0)
+  s.b.reloadNow(); assert.equal(s.reloads.length, 1); assert.equal(s.timers.m.size, 0, '按鈕立即重載並停掉倒數')
+  // 卸載 → 沒有殘留計時器；再掛一次（StrictMode）也乾淨
+  const u = ebSetup(EB)
+  for (let i = 0; i < 4; i++) { u.crash(new Error('u' + i)); u.b.componentWillUnmount(); u.b.timer = null; u.now.v += (i === 0 ? 6000 : i === 1 ? 16000 : 61000) }
+  u.crash(new Error('u5')); assert.equal(u.timers.m.size, 1)
+  u.b.componentWillUnmount(); assert.equal(u.timers.m.size, 0); u.tick(60 * 60000); assert.equal(u.reloads.length, 0, '卸載後不會再重載')
+  // 重載後的新頁面：舊的致命紀錄已滑出 10 分鐘視窗 → 退避鏈重新從 5 秒開始
+  const r = ebSetup(EB, { storage: u.storage, now: u.now })
+  r.crash(new Error('after cooldown')); assert.equal(r.b.state.plan.stop, false); assert.equal(r.b.state.plan.delayMs, 5000)
 })
 
 test('ErrorBoundary：復原畫面標記——說明 + 倒數 + 立即重新載入鈕 + 可摺疊的錯誤摘要 + build id；英文語系', async () => {
@@ -1331,11 +1368,13 @@ test('ResilienceService：閒置狀態讀 activity / store.rec / 導覽 / 彈窗
     'lib/tour.js': `export const useTourStore = { getState: () => globalThis.__fake.tour }`,
     'services/tourCore.js': `export const tourRunner = { current: () => globalThis.__fake.runnerCur() }`,
     'tourCore.js': `export const tourRunner = { current: () => globalThis.__fake.runnerCur() }`,
+    'lib/remoteDispatch.js': `export const remoteActivity = globalThis.__fake.remote`,
+    'ui/OpsLight.jsx': `export default function OpsLight() { return null }`,
   }
   const calls = []
   globalThis.__fake = {   // stub 模組在載入時就會讀它：要先於 bundleJsx 的 import
     sets: [], store: { rec: { mode: 'idle' }, govOptionId: 'zengwen', params: { seaLevel: 0.3 }, gov: { fetchedAt: '2026-09-20T20:00' }, applyGov() { calls.push('applyGov') }, applyParams() { calls.push('applyParams') }, setGov() { calls.push('setGov') } },
-    activity: { last: 0 }, tour: { running: false }, runnerCur: () => null,
+    activity: { last: 0 }, tour: { running: false }, runnerCur: () => null, remote: { at: -1e9 },
   }
   const mod = await bundleJsx('services/ResilienceService.jsx', STUBS)
   const g = globalThis
@@ -1346,7 +1385,8 @@ test('ResilienceService：閒置狀態讀 activity / store.rec / 導覽 / 彈窗
     g.__fake.activity.last = now - 90000
     let st = mod.readIdleState()
     assert.ok(st.idleMs >= 90000 && st.idleMs < 95000, String(st.idleMs))
-    assert.deepEqual({ ...st, idleMs: 0 }, { idleMs: 0, recMode: 'idle', tourRunning: false, tourAuto: false, modalOpen: false, xrActive: false })
+    assert.equal(st.remoteIdleMs > 1e9, true, '從來沒有遙控器訊息 → 很久沒動')
+    assert.deepEqual({ ...st, idleMs: 0, remoteIdleMs: 0 }, { idleMs: 0, remoteIdleMs: 0, recMode: 'idle', tourRunning: false, tourAuto: false, modalOpen: false, xrActive: false })
     g.__fake.store.rec.mode = 'playing'; g.__fake.tour.running = true; g.__fake.runnerCur = () => ({ auto: true }); g.__fake.modal = true
     st = mod.readIdleState()
     assert.equal(st.recMode, 'playing'); assert.equal(st.tourRunning, true); assert.equal(st.tourAuto, true); assert.equal(st.modalOpen, true)
@@ -1426,8 +1466,10 @@ test('ResilienceService.readIdleState：導覽員操作（activity.guideAt）也
     'services/tourCore.js': `export const tourRunner = { current: () => globalThis.__fake.runnerCur() }`,
     'tourCore.js': `export const tourRunner = { current: () => globalThis.__fake.runnerCur() }`,
     'lib/xr.js': `export const getXrController = () => ({ isActive() { return globalThis.__fake.xr() } })`,
+    'lib/remoteDispatch.js': `export const remoteActivity = globalThis.__fake.remote`,
+    'ui/OpsLight.jsx': `export default function OpsLight() { return null }`,
   }
-  globalThis.__fake = { store: { rec: { mode: 'idle' }, gov: null }, activity: { last: 0, guideAt: -1e9 }, tour: { running: true }, runnerCur: () => ({ auto: true, paused: true }), xr: () => false }
+  globalThis.__fake = { store: { rec: { mode: 'idle' }, gov: null }, activity: { last: 0, guideAt: -1e9 }, tour: { running: true }, runnerCur: () => ({ auto: true, paused: true }), xr: () => false, remote: { at: -1e9 } }
   const mod = await bundleJsx('services/ResilienceService.jsx', STUBS)
   const g = globalThis
   const hadDoc = Object.getOwnPropertyDescriptor(g, 'document')
@@ -1460,6 +1502,504 @@ test('ResilienceService.readIdleState：導覽員操作（activity.guideAt）也
   } finally {
     if (hadDoc) Object.defineProperty(g, 'document', hadDoc); else delete g.document
     delete g.__fake
+  }
+})
+
+
+// ───────────────────────────── 熔斷後半開復原（冷卻重試）─────────────────────────────
+// 熔斷（10 分鐘內 5 次致命事件）後不再只是「請人工處理」：排一次冷卻重試（最後一次致命事件起算 10 分 30 秒），到點自動重載一次；
+// 再崩潰就再走一輪（每輪最多 5 次快速重試 + 1 次冷卻）。ErrorBoundary（畫面錯誤）與重載器（WebGL / 看門狗）走同一套。
+function haltedSetup(search = '') {
+  const s = setup(search)
+  for (let i = 0; i < 4; i++) { s.log.add({ kind: 'webgl', message: 'pre' + i, stack: '' }); s.env.advance(1000) }   // 已有 4 筆致命事件（相隔 1 秒 = 4 次獨立事故）
+  const r = s.reloader.crash('webgl', new Error('lost 5'))                                                             // 第 5 次 → 熔斷
+  return { ...s, r }
+}
+
+test('planAutoReload：熔斷（stop）附冷卻 cooldownMs = 最後一次致命事件起算 10 分 30 秒（不會更長）；沒熔斷時沒有這個欄位', () => {
+  const now = T0
+  assert.equal(R.HALF_OPEN_MS, R.BREAKER_WINDOW_MS + 30 * 1000); assert.equal(R.HALF_OPEN_GRACE_MS, 30000)
+  const five = [F(now - 500000), F(now - 400000), F(now - 300000), F(now - 200000), F(now)]
+  const p = R.planAutoReload(five, now)
+  assert.equal(p.stop, true); assert.equal(p.cooldownMs, R.HALF_OPEN_MS); assert.equal(p.delayMs, null)
+  assert.equal(R.planAutoReload(five, now + 60000).cooldownMs, R.HALF_OPEN_MS - 60000, '晚一分鐘才算：剩下的冷卻少一分鐘（都是從最後一筆起算）')
+  assert.equal(R.planAutoReload([...five.slice(0, 4), F(now + 3600000)], now).cooldownMs, R.HALF_OPEN_MS, '時鐘被往回調（最後一筆在未來）：不無限等')
+  assert.ok(!('cooldownMs' in R.planAutoReload([F(now)], now)), '沒熔斷：沒有冷卻')
+  assert.equal(R.reloadDelayFor('render', p), null, '熔斷的快速重載延遲仍是 null（冷卻是另一條路）')
+})
+
+test('minutesLeft / cooldownMinutes：分鐘級進位顯示，至少 1；壞輸入不丟例外', () => {
+  assert.equal(R.minutesLeft(R.HALF_OPEN_MS), 11); assert.equal(R.minutesLeft(600000), 10); assert.equal(R.minutesLeft(60001), 2); assert.equal(R.minutesLeft(60000), 1)
+  assert.equal(R.minutesLeft(1), 1); assert.equal(R.minutesLeft(0), 1); assert.equal(R.minutesLeft(-5), 1); assert.equal(R.minutesLeft(NaN), 1); assert.equal(R.minutesLeft(undefined), 1)
+  assert.equal(R.cooldownMinutes(T0 + 330000, T0), 6); assert.equal(R.cooldownMinutes(T0 - 1000, T0), 1); assert.equal(R.cooldownMinutes(undefined, T0), 1)
+})
+
+test('熔斷後半開復原：熔斷 → 冷卻前不重載 → 冷卻到點自動重載一次（資訊性 cooldown 紀錄）→ 重載後崩潰紀錄視窗重新計算', () => {
+  const s = haltedSetup('?kiosk=1')
+  assert.equal(s.r.ok, false); assert.equal(s.r.halted, true); assert.equal(s.r.cooldownMs, R.HALF_OPEN_MS)
+  const st = s.status.get()
+  assert.equal(st.halted, true); assert.equal(st.haltRetryAt, s.env.now() + R.HALF_OPEN_MS); assert.equal(s.reloader.cooling(), true); assert.equal(s.reloader.pending(), false, '冷卻計時器與「已排定的異常重載」分開')
+  assert.equal(s.env.reloads.length, 0)
+  s.env.advance(R.BREAKER_WINDOW_MS); assert.equal(s.env.reloads.length, 0, '10 分鐘：舊紀錄才剛滑出視窗，還在冷卻')
+  s.env.advance(R.HALF_OPEN_MS - R.BREAKER_WINDOW_MS - 1000); assert.equal(s.env.reloads.length, 0, '差 1 秒到點：還沒')
+  s.env.advance(1000); assert.equal(s.env.reloads.length, 1, '冷卻到點 → 自動重載一次')
+  assert.equal(s.status.get().reloading.reason, 'cooldown')
+  const last = s.log.list().at(-1); assert.equal(last.kind, 'reload'); assert.equal(last.msg, 'cooldown'); assert.equal(last.fatal, false)
+  // 重載當下：所有舊的致命紀錄都已超過 10 分鐘 → 視窗裡沒有任何舊紀錄
+  const plan = R.planAutoReload(s.log.list(), s.env.now()); assert.equal(plan.count10, 0); assert.equal(plan.stop, false)
+  s.env.advance(60 * 60000); assert.equal(s.env.reloads.length, 1, '只重載一次：再崩潰才會再走一輪')
+  // 新頁面（新的 boot / 狀態）：第一次崩潰又是「第 1 次」——WebGL / 看門狗直接重載，畫面錯誤 5 秒
+  const page2 = R.createReloader({ env: s.env, status: R.createStatusStore(R.initialStatus(s.env.now())), crashLog: R.createCrashLog({ storage: s.mem, now: s.env.now, boot: 'B2' }), cfg: s.cfg })
+  const r2 = page2.crash('webgl', new Error('again'))
+  assert.equal(r2.ok, true); assert.equal(r2.plan.count10, 1); assert.equal(r2.delayMs, 0); assert.equal(s.env.reloads.length, 2)
+  assert.equal(R.planAutoReload([{ t: s.env.now(), fatal: true }], s.env.now()).delayMs, 5000)
+})
+
+// 一個「永遠壞掉」的頁面：載入後 loadMs 就崩潰，一路模擬 hours 小時（每次重載換一個新頁面：新的環境 / 新的狀態，只有 localStorage 的崩潰紀錄延續）
+function simulateBrokenPage({ kind = 'webgl', hours = 3, loadMs = 1500 } = {}) {
+  const mem = memStorage(); const reloadsAt = []; const cfg = R.resolveConfig({ search: '', buildId: 'b1' })
+  let t = T0; const end = T0 + hours * 3600000; let boot = 0
+  while (t < end) {
+    const env = makeEnv({ start: t }); let reloaded = false
+    env.reload = () => { reloaded = true; reloadsAt.push(env.now()) }
+    const status = R.createStatusStore(R.initialStatus(env.now()))
+    const log = R.createCrashLog({ storage: mem, now: env.now, boot: 'B' + boot++ })
+    const reloader = R.createReloader({ env, status, crashLog: log, cfg })
+    env.advance(loadMs)
+    reloader.crash(kind, new Error('always broken'))
+    while (!reloaded && env.now() < end) env.advance(1000, 1000)
+    t = env.now()
+    if (!reloaded) break
+  }
+  return { reloadsAt }
+}
+// 任何 windowMs 長的滑動視窗裡最多幾次重載
+const maxInWindow = (times, windowMs) => times.reduce((m, at) => Math.max(m, times.filter((x) => x >= at && x < at + windowMs).length), 0)
+
+test('半開復原不會形成重載風暴：永遠壞掉的頁面（WebGL / 看門狗）3 小時，任何 12.5 分鐘視窗內最多 6 次重載，且會一輪一輪地自動再試', () => {
+  for (const kind of ['webgl', 'watchdog']) {
+    const { reloadsAt } = simulateBrokenPage({ kind })
+    assert.ok(reloadsAt.length >= 45, `${kind}：持續自動再試（不是熔斷後就永遠停住），實際 ${reloadsAt.length} 次`)
+    assert.ok(reloadsAt.length <= 90, `${kind}：3 小時重載次數 ${reloadsAt.length}`)
+    assert.ok(maxInWindow(reloadsAt, 12.5 * 60000) <= 6, `${kind}：12.5 分鐘視窗最多 ${maxInWindow(reloadsAt, 12.5 * 60000)} 次`)
+    const gaps = reloadsAt.slice(1).map((x, i) => x - reloadsAt[i])
+    assert.ok(gaps.filter((g) => g >= R.HALF_OPEN_MS).length >= 10, `${kind}：每輪都有一段 ≥ 10.5 分鐘的冷卻`)
+  }
+})
+
+test('半開復原（畫面錯誤路徑）：以 planAutoReload 逐輪模擬 3 小時——每個熔斷週期 4 次快速重試 + 1 次冷卻，12.5 分鐘視窗最多 6 次', () => {
+  const mem = memStorage(); let t = T0; const end = T0 + 3 * 3600000; const reloadsAt = []; const delays = []
+  for (let i = 0; t < end; i++) {
+    t += 1500                                                                    // 載入後 1.5 秒又崩潰
+    const log = R.createCrashLog({ storage: mem, now: () => t, boot: 'R' + i })
+    log.add({ kind: 'render', message: 'boom', stack: '' })
+    const plan = R.planAutoReload(log.list(), t)
+    const wait = plan.stop ? plan.cooldownMs : plan.delayMs
+    delays.push(wait)
+    t += wait; reloadsAt.push(t)
+  }
+  assert.deepEqual(delays.slice(0, 6), [5000, 15000, 60000, 60000, R.HALF_OPEN_MS, 5000], '5 → 15 → 60 → 60 → 熔斷（冷卻）→ 重載後退避鏈從 5 秒重新開始')
+  assert.ok(maxInWindow(reloadsAt, 12.5 * 60000) <= 6, `12.5 分鐘視窗最多 ${maxInWindow(reloadsAt, 12.5 * 60000)} 次`)
+  assert.ok(reloadsAt.length >= 45)
+})
+
+test('熔斷期間版本檢查繼續跑：偵測到新版且閒置 → 不必等冷卻直接重載（新版可能就是修好的部署）；忙碌時等閒置；整段只重載一次', async () => {
+  const a = haltedSetup(''); a.env.idle.idleMs = 120000; a.env.respond = () => jsonRes({ id: 'b2' })
+  const vc = R.createVersionChecker({ env: a.env, status: a.status, cfg: a.cfg, reloader: a.reloader, getIdle: a.getIdle })
+  await vc.check(); await flush()
+  assert.equal(a.env.reloads.length, 1, '熔斷中、閒置、有新版 → 直接重載'); assert.equal(a.log.list().at(-1).msg, 'version')
+  a.env.advance(R.HALF_OPEN_MS + 60000); assert.equal(a.env.reloads.length, 1, '冷卻到點不會再重載第二次'); vc.stop()
+  const b = haltedSetup(''); b.env.idle.idleMs = 5000; b.env.respond = () => jsonRes({ id: 'b2' })
+  const vb = R.createVersionChecker({ env: b.env, status: b.status, cfg: b.cfg, reloader: b.reloader, getIdle: b.getIdle })
+  await vb.check(); await flush()
+  assert.equal(b.env.reloads.length, 0); assert.equal(b.status.get().version.deferred, 'active'); assert.equal(b.status.get().halted, true)
+  b.env.idle.idleMs = 120000; b.env.advance(R.PENDING_RETRY_MS + 100); assert.equal(b.env.reloads.length, 1, '一閒置就重載')
+  b.env.advance(20 * 60000); assert.equal(b.env.reloads.length, 1); vb.stop()
+})
+
+test('startGuards：看門狗 / WebGL 路徑熔斷後的冷卻（ResilienceService 仍掛載）——冷卻到點重載一次；stop 清乾淨（StrictMode 重複啟動 / 停止）', () => {
+  const k = startWith('?kiosk=1')
+  for (let i = 0; i < 4; i++) { k.crashLog.add({ kind: 'webgl', message: 'pre' + i, stack: '' }); k.env.advance(1000) }
+  k.env.rafOn = false; k.env.advance(20000)                                       // 看門狗判定卡死 → 第 5 次致命事件 → 熔斷
+  assert.equal(k.status.get().halted, true); assert.equal(k.env.reloads.length, 0); assert.ok(k.status.get().haltRetryAt > k.env.now())
+  assert.equal(k.h.reloader.cooling(), true)
+  k.env.advance(R.HALF_OPEN_MS); assert.equal(k.env.reloads.length, 1, '冷卻到點'); assert.equal(k.crashLog.list().at(-1).msg, 'cooldown')
+  k.h.stop(); assert.deepEqual(k.env.counts(), { timers: 0, rafs: 0, doc: 0, canvas: 0 })
+  // StrictMode：熔斷後 stop（元件卸載）→ 冷卻計時器被取消，不會在卸載後重載；再啟動也乾淨
+  const env = makeEnv()
+  for (let i = 0; i < 3; i++) {
+    const x = startWith('?kiosk=1', { env })
+    for (let j = 0; j < 4; j++) { x.crashLog.add({ kind: 'webgl', message: 'p' + i + j, stack: '' }); env.advance(1000) }
+    const c = makeCanvas(); env.canvases.push(c); env.advance(2000); c.emit('webglcontextlost'); env.advance(4100)   // WebGL 沒復原 → 第 5 次 → 熔斷
+    assert.equal(x.status.get().halted, true, `第 ${i + 1} 輪`); assert.equal(x.h.reloader.cooling(), true)
+    x.h.stop(); x.h.stop(); env.canvases.length = 0
+    assert.equal(x.h.reloader.cooling(), false); assert.equal(x.status.get().haltRetryAt, 0, 'stop 之後不再宣稱會重試')
+    assert.deepEqual(env.counts(), { timers: 0, rafs: 0, doc: 0, canvas: 0 }, `第 ${i + 1} 輪`)
+  }
+  env.advance(2 * R.HALF_OPEN_MS); assert.equal(env.reloads.length, 0, '停止後不會再重載')
+})
+
+test('熔斷冷卻：熔斷期間又有新的致命事件 → 冷卻重新從那一筆起算；維運面板「清除崩潰紀錄」（halted 被解除）→ 冷卻到點不重載；cancel 取消冷卻', () => {
+  const a = haltedSetup('')
+  a.env.advance(5 * 60000)
+  const r = a.reloader.crash('webgl', new Error('lost again'))                    // 熔斷中又一次（例如 WebGL 又沒復原）
+  assert.equal(r.halted, true); assert.equal(a.status.get().haltRetryAt, a.env.now() + R.HALF_OPEN_MS)
+  a.env.advance(R.HALF_OPEN_MS - 1000); assert.equal(a.env.reloads.length, 0, '從第二次熔斷事件重新起算')
+  a.env.advance(1000); assert.equal(a.env.reloads.length, 1)
+  const b = haltedSetup('')
+  b.status.set({ halted: false, haltRetryAt: 0 })                                 // OpsSection 的「清除崩潰紀錄」
+  b.env.advance(2 * R.HALF_OPEN_MS); assert.equal(b.env.reloads.length, 0, '熔斷已被人工解除 → 不重載')
+  const c = haltedSetup('')
+  c.reloader.cancel(); assert.equal(c.reloader.cooling(), false); assert.equal(c.status.get().haltRetryAt, 0)
+  c.env.advance(2 * R.HALF_OPEN_MS); assert.equal(c.env.reloads.length, 0)
+})
+
+// ───────────────────────────── 遙控器算「有人在」 ─────────────────────────────
+test('evaluateIdle：手機遙控器最近 3 分鐘有操作訊息 → 忙（remote）；不是看連線數；展場也適用；3 分鐘後 / 沒有遙控器 → 閒置', () => {
+  const ok = { idleMs: 120000, remoteIdleMs: Infinity, recMode: 'idle', tourRunning: false, tourAuto: false, modalOpen: false }
+  assert.equal(R.REMOTE_PRESENCE_MS, 3 * 60 * 1000)
+  assert.deepEqual(R.evaluateIdle({ ...ok, remoteIdleMs: 0 }), { idle: false, reason: 'remote' }, '剛操作')
+  assert.deepEqual(R.evaluateIdle({ ...ok, remoteIdleMs: 179999 }), { idle: false, reason: 'remote' })
+  assert.deepEqual(R.evaluateIdle({ ...ok, remoteIdleMs: 180000 }), { idle: true, reason: '' }, '剛好 3 分鐘 → 回到閒置（嚴格小於才算在場）')
+  assert.deepEqual(R.evaluateIdle({ ...ok, remoteIdleMs: 20 * 60000 }), { idle: true, reason: '' }, '桌上一支沒關頁面的手機：很久沒訊息 → 不擋')
+  assert.deepEqual(R.evaluateIdle(ok), { idle: true, reason: '' }, '沒有遙控器')
+  for (const bad of [undefined, null, NaN, 'x']) assert.equal(R.evaluateIdle({ ...ok, remoteIdleMs: bad }).idle, true, `壞資料 ${String(bad)} 不會讓展場永遠忙`)
+  assert.equal(R.DEFAULT_IDLE_STATE.remoteIdleMs, Infinity); assert.equal(R.evaluateIdle(R.DEFAULT_IDLE_STATE).idle, true)
+  // 展場（kiosk）：真人在操作，不是常態的自動導覽 / 播放
+  assert.deepEqual(R.evaluateIdle({ ...ok, remoteIdleMs: 5000 }, { kiosk: true }), { idle: false, reason: 'remote' })
+  const auto = { ...ok, tourRunning: true, tourAuto: true, recMode: 'playing' }
+  assert.equal(R.evaluateIdle(auto, { kiosk: true }).idle, true, '展場自動導覽 + 播放、沒有遙控器 → 閒置（既有行為不變）')
+  assert.deepEqual(R.evaluateIdle({ ...auto, remoteIdleMs: 5000 }, { kiosk: true }), { idle: false, reason: 'remote' }, '導覽員拿手機在講解 → 延後重載')
+  // 順序：彈窗 / XR / 全螢幕 > 有人操作（本機）> 遙控器 > 錄製 / 導覽 / 播放
+  assert.equal(R.evaluateIdle({ ...ok, remoteIdleMs: 1, modalOpen: true }).reason, 'modal')
+  assert.equal(R.evaluateIdle({ ...ok, remoteIdleMs: 1, xrActive: true }).reason, 'xr')
+  assert.equal(R.evaluateIdle({ ...ok, remoteIdleMs: 1, fullscreen: true }).reason, 'fullscreen')
+  assert.equal(R.evaluateIdle({ ...ok, remoteIdleMs: 1, idleMs: 5000 }).reason, 'active', '本機也有人在動：回報較直接的「有人操作中」')
+  assert.equal(R.evaluateIdle({ ...ok, remoteIdleMs: 1, recMode: 'recording' }).reason, 'remote')
+  assert.equal(R.evaluateIdle({ ...ok, remoteIdleMs: 1, tourRunning: true }).reason, 'remote')
+  assert.equal(R.evaluateIdle({ ...ok, remoteIdleMs: 1, recMode: 'playing' }).reason, 'remote')
+  assert.equal(R.evaluateIdle({ ...ok, remoteIdleMs: 5000 }, { remotePresenceMs: 1000 }).idle, true, '門檻可調')
+})
+
+test('composeIdleState：idleMs = now − max(人為輸入, 導覽員操作)；remoteIdleMs = now − 遙控器最後一次操作訊息；讀不到時的取捨', () => {
+  const now = 1_000_000
+  const s = R.composeIdleState({ now, lastInputAt: now - 90000, guideAt: now - 5000, remoteAt: now - 20000, recMode: 'playing', tourRunning: true, tourAuto: true, modalOpen: true, xrActive: true })
+  assert.deepEqual(s, { idleMs: 5000, remoteIdleMs: 20000, recMode: 'playing', tourRunning: true, tourAuto: true, modalOpen: true, xrActive: true })
+  assert.equal(R.composeIdleState({ now, lastInputAt: now - 90000, guideAt: -1e9, remoteAt: -1e9 }).idleMs, 90000, '導覽員很久沒操作 → 看輸入時間')
+  assert.equal(R.composeIdleState({ now, lastInputAt: now - 90000, guideAt: undefined, remoteAt: undefined }).idleMs, 90000, '沒有 guideAt（舊 activity）')
+  assert.ok(R.composeIdleState({ now, lastInputAt: 0, remoteAt: -1e9 }).remoteIdleMs > 1e9, '從來沒有遙控器訊息（初值 -1e9）→ 很久')
+  assert.equal(R.composeIdleState({ now, lastInputAt: 0 }).remoteIdleMs, Infinity, '沒有這個訊號（讀不到）→ 中性（Infinity），不是「忙」')
+  assert.equal(R.composeIdleState({ now, lastInputAt: 0, remoteAt: now + 500 }).remoteIdleMs, 0, '時間戳在未來 → 0，不出現負數')
+  assert.equal(R.composeIdleState({ now, lastInputAt: NaN }).idleMs, 0, '讀不到本機輸入時間 → 保守：當作有人在（idleMs 0）')
+  assert.equal(R.composeIdleState({ now: NaN, lastInputAt: 5 }).idleMs, 0)
+  assert.deepEqual(R.composeIdleState({ now, lastInputAt: now - 1e6 }), { idleMs: 1e6, remoteIdleMs: Infinity, recMode: 'idle', tourRunning: false, tourAuto: false, modalOpen: false, xrActive: false }, '預設值')
+  assert.equal(R.composeIdleState().idleMs, 0)
+  // 接上 evaluateIdle
+  assert.deepEqual(R.evaluateIdle(R.composeIdleState({ now, lastInputAt: now - 999999, remoteAt: now - 30000 })), { idle: false, reason: 'remote' })
+  assert.deepEqual(R.evaluateIdle(R.composeIdleState({ now, lastInputAt: now - 999999, remoteAt: now - 200000 })), { idle: true, reason: '' })
+})
+
+test('版本檢查：遙控器使用中 → 延後重載（deferred: remote）；3 分鐘沒有操作訊息後（下一次 15 秒重試）才重載；展場也一樣', async () => {
+  for (const search of ['', '?kiosk=1']) {
+    const s = setup(search); s.env.idle.idleMs = 999999; s.env.idle.remoteIdleMs = 10000
+    s.env.respond = () => jsonRes({ id: 'b2' })
+    const vc = R.createVersionChecker({ env: s.env, status: s.status, cfg: s.cfg, reloader: s.reloader, getIdle: s.getIdle })
+    await vc.check(); await flush()
+    assert.equal(s.env.reloads.length, 0, search); assert.equal(s.status.get().version.deferred, 'remote', search)
+    s.env.advance(60000); assert.equal(s.env.reloads.length, 0)
+    s.env.idle.remoteIdleMs = 181000; s.env.advance(R.PENDING_RETRY_MS + 100)
+    assert.equal(s.env.reloads.length, 1, `${search} 遙控器安靜超過 3 分鐘 → 重載`)
+    vc.stop()
+  }
+})
+
+// ───────────────────────────── 展場角落指示燈：純邏輯 ─────────────────────────────
+test('recentEventCount：崩潰紀錄近 10 分鐘的事件數（不含資訊性的 reload）；以最後發生時間為準', () => {
+  const now = T0, min = 60000
+  const e = (kind, ago, over = {}) => ({ kind, t: now - ago, last: now - ago, ...over })
+  assert.equal(R.recentEventCount([e('error', 5 * min), e('render', 1000), e('rejection', 9 * min)], now), 3)
+  assert.equal(R.recentEventCount([e('error', 11 * min), e('reload', 1000), e('reload', 2000)], now), 0, '太舊 / reload 不算')
+  assert.equal(R.recentEventCount([e('error', 30 * min, { last: now - 2 * min })], now), 1, '重複錯誤合併後以 last 為準')
+  assert.equal(R.recentEventCount([e('error', 10 * min)], now), 1, '剛好 10 分鐘（含）')
+  assert.equal(R.recentEventCount([{ kind: 'error', t: now + 5000, last: now + 5000 }], now), 1, '時鐘被往回調（未來的時間戳）算剛剛')
+  assert.equal(R.recentEventCount(null, now), 0); assert.equal(R.recentEventCount([null, {}, { kind: 'error' }], now), 0)
+})
+
+test('deriveOpsLight：綠 / 琥珀 / 紅 / 灰 與原因排序（紅 > 琥珀；灰只在沒有更糟的事時）', () => {
+  const now = T0, min = 60000
+  const base = () => ({ ...R.initialStatus(now), started: true, config: R.resolveConfig({ search: '?kiosk=1', buildId: 'b1' }) })
+  const d = (over, entries = []) => R.deriveOpsLight({ status: { ...base(), ...over }, entries, now })
+  assert.deepEqual(d({}), { level: 'ok', items: [{ code: 'ok' }] }, '綠')
+  // 灰：防呆未啟用
+  assert.deepEqual(R.deriveOpsLight({ status: R.initialStatus(now), now }), { level: 'off', items: [{ code: 'off' }] }, '尚未啟動')
+  assert.deepEqual(d({ config: R.resolveConfig({ search: '', buildId: 'dev' }) }), { level: 'off', items: [{ code: 'off-dev' }] }, '開發版')
+  assert.equal(R.deriveOpsLight().level, 'off', '沒帶任何東西也不丟例外')
+  // 琥珀
+  assert.deepEqual(d({ version: { state: 'new', checkedAt: now, remoteId: 'b2', deferred: 'active' } }), { level: 'warn', items: [{ code: 'version-wait', id: 'b2', why: 'active' }] })
+  assert.deepEqual(d({ version: { state: 'new', checkedAt: now, remoteId: 'b2', deferred: 'remote' } }).items, [{ code: 'version-wait', id: 'b2', why: 'remote' }], '遙控器使用中延後重載')
+  assert.deepEqual(d({ version: { state: 'new', checkedAt: now, remoteId: 'b2', deferred: '' } }).items, [{ code: 'version-soon', id: 'b2' }])
+  const manual = { ...base(), config: R.resolveConfig({ search: '?kiosk=1&autoupdate=0', buildId: 'b1' }), version: { state: 'new', checkedAt: now, remoteId: 'b2', deferred: '' } }
+  assert.deepEqual(R.deriveOpsLight({ status: manual, now }).items, [{ code: 'version-manual', id: 'b2' }], '?autoupdate=0：只提醒有新版')
+  assert.deepEqual(d({ data: { state: 'pending', checkedAt: now, remoteFetchedAt: 'x', appliedAt: 0, deferred: 'tour' } }), { level: 'warn', items: [{ code: 'data-wait', why: 'tour' }] })
+  assert.deepEqual(d({}, [{ kind: 'error', t: now - 5 * min, last: now - 5 * min }]), { level: 'warn', items: [{ code: 'events', n: 1 }] })
+  assert.equal(d({}, [{ kind: 'error', t: now - 11 * min, last: now - 11 * min }, { kind: 'reload', t: now - 1000, last: now - 1000 }]).level, 'ok', '過期 / 資訊性事件不算')
+  assert.deepEqual(d({ version: { state: 'new', checkedAt: now, remoteId: 'b2', deferred: 'modal' }, data: { state: 'pending', checkedAt: now, remoteFetchedAt: '', appliedAt: 0, deferred: 'modal' } }, [{ kind: 'render', t: now, last: now }]).items.map((i) => i.code), ['version-wait', 'data-wait', 'events'], '排序：新版 > 資料 > 事件')
+  assert.equal(d({ gl: { state: 'restored', at: now } }).level, 'ok', 'WebGL 已恢復 → 綠')
+  // 紅
+  assert.deepEqual(d({ halted: true, haltRetryAt: now + 4.5 * min }), { level: 'bad', items: [{ code: 'halted', m: 5 }] }, '熔斷：附冷卻分鐘數')
+  assert.deepEqual(d({ halted: true }).items, [{ code: 'halted-manual' }], '熔斷但沒有排定冷卻（例如卸載後）')
+  assert.deepEqual(d({ reloading: { reason: 'webgl', at: now } }), { level: 'bad', items: [{ code: 'reloading', reason: 'webgl' }] }, '即將重載')
+  assert.deepEqual(d({ reloading: { reason: 'cooldown', at: now } }).items, [{ code: 'reloading', reason: 'cooldown' }])
+  assert.deepEqual(d({ watchdog: { on: true, supported: true, reason: 'kiosk', stalled: true } }), { level: 'bad', items: [{ code: 'stalled' }] }, '看門狗判定卡死')
+  for (const state of ['lost', 'reloading']) assert.deepEqual(d({ gl: { state, at: now } }), { level: 'bad', items: [{ code: 'gl-lost' }] }, `WebGL ${state}`)
+  const worst = d({ halted: true, haltRetryAt: now + min, gl: { state: 'lost', at: now }, version: { state: 'new', checkedAt: now, remoteId: 'b2', deferred: 'active' } }, [{ kind: 'error', t: now, last: now }])
+  assert.equal(worst.level, 'bad'); assert.deepEqual(worst.items.map((i) => i.code), ['halted', 'gl-lost', 'version-wait', 'events'], '紅在前、琥珀在後')
+  assert.equal(R.deriveOpsLight({ status: { ...base(), config: R.resolveConfig({ search: '', buildId: 'dev' }), halted: true }, now }).level, 'bad', '開發版遇到熔斷仍顯示紅（灰只在沒有更糟的事時）')
+  assert.equal(R.deriveOpsLight({ status: { ...base(), config: R.resolveConfig({ search: '', buildId: 'dev' }) }, entries: [{ kind: 'error', t: now, last: now }], now }).level, 'warn')
+})
+
+// localStorage 的假物件（persist.js 走全域 localStorage）
+function withFakeLS(fn, { throwing = false } = {}) {
+  const g = globalThis, had = Object.getOwnPropertyDescriptor(g, 'localStorage'), m = new Map()
+  const ls = throwing
+    ? { getItem() { throw new Error('denied') }, setItem() { throw new Error('denied') }, removeItem() { throw new Error('denied') } }
+    : { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k) }
+  Object.defineProperty(g, 'localStorage', { value: ls, configurable: true, writable: true })
+  try { return fn(m) } finally { if (had) Object.defineProperty(g, 'localStorage', had); else delete g.localStorage }
+}
+
+test('resolveOpLightPref：?oplight=1 / 0 只覆寫這一次 > 存下來的偏好 > 預設（展場顯示、一般不顯示）', () => {
+  const P = R.resolveOpLightPref
+  assert.deepEqual(P({ search: '', saved: null, kiosk: true }), { show: true, source: 'default' })
+  assert.deepEqual(P({ search: '', saved: null, kiosk: false }), { show: false, source: 'default' })
+  assert.deepEqual(P({}), { show: false, source: 'default' })
+  assert.deepEqual(P({ search: '', saved: 'off', kiosk: true }), { show: false, source: 'pref' }, '展場也可以用偏好關掉')
+  assert.deepEqual(P({ search: '', saved: 'on', kiosk: false }), { show: true, source: 'pref' })
+  assert.deepEqual(P({ search: '?oplight=1', saved: 'off', kiosk: false }), { show: true, source: 'flag' }, '網址覆寫偏好')
+  assert.deepEqual(P({ search: '?oplight', saved: null, kiosk: false }), { show: true, source: 'flag' }, '沒有值 = 開')
+  for (const off of ['0', 'false', 'off', 'no']) assert.deepEqual(P({ search: '?kiosk=1&oplight=' + off, saved: 'on', kiosk: true }), { show: false, source: 'flag' }, off)
+  assert.equal(P({ search: '?oplight=weird', saved: null, kiosk: false }).show, true)
+  assert.equal(P({ search: '?other=1', saved: 'garbage', kiosk: true }).source, 'default', '偏好壞掉 → 走預設')
+})
+
+test('setOpLightPref / readOpLightSaved：寫 LS.oplight（on / off）並遞增 oplightRev；?oplight 不寫偏好；隱私模式寫不進去也不丟例外', () => {
+  withFakeLS((m) => {
+    const st = R.createStatusStore(R.initialStatus())
+    assert.equal(R.readOpLightSaved(), null)
+    assert.equal(R.setOpLightPref('on', st), true); assert.equal(R.readOpLightSaved(), 'on'); assert.equal(m.get('ixd2026.oplight'), '"on"'); assert.equal(st.get().oplightRev, 1)
+    assert.equal(R.setOpLightPref('off', st), true); assert.equal(R.readOpLightSaved(), 'off'); assert.equal(st.get().oplightRev, 2)
+    assert.equal(R.setOpLightPref('maybe', st), false); assert.equal(R.setOpLightPref(undefined, st), false); assert.equal(st.get().oplightRev, 2, '壞值不寫入')
+    m.set('ixd2026.oplight', '"garbage"'); assert.equal(R.readOpLightSaved(), null)
+    m.delete('ixd2026.oplight'); R.resolveOpLightPref({ search: '?oplight=1', saved: R.readOpLightSaved(), kiosk: false }); assert.equal(m.has('ixd2026.oplight'), false, '網址覆寫不寫偏好')
+  })
+  withFakeLS(() => {
+    const st = R.createStatusStore(R.initialStatus())
+    assert.doesNotThrow(() => { assert.equal(R.readOpLightSaved(), null); R.setOpLightPref('on', st) })
+  }, { throwing: true })
+})
+
+// ───────────────────────────── 展場角落指示燈：元件（SSR 標記）─────────────────────────────
+test('OpsLight：預設展場顯示、一般不顯示；偏好 / ?oplight 覆寫；演出模式與 ?hud=0 仍顯示（不看 overlays.hud）；形狀 + 文字（不只靠顏色）', async () => {
+  const STUBS = { 'store/useStore.js': `export const useStore = (sel) => sel({})` }
+  const mod = await bundleJsx('ui/OpsLight.jsx', STUBS)
+  const g = globalThis
+  const hadLoc = Object.getOwnPropertyDescriptor(g, 'location'), hadDoc = Object.getOwnPropertyDescriptor(g, 'document')
+  const setLoc = (search) => Object.defineProperty(g, 'location', { value: { search, hash: '' }, configurable: true, writable: true })
+  const html = (props) => renderToStaticMarkup(React.createElement(mod.OpsLightBody, props))
+  const now = Date.now()
+  const on = (over = {}) => R.opsStatus.set({ ...R.initialStatus(now), started: true, config: R.resolveConfig({ search: '?kiosk=1', buildId: 'b1' }), ...over })
+  try {
+    withFakeLS((m) => {
+      on()
+      setLoc(''); assert.equal(html(), '', '一般模式預設不顯示')
+      setLoc('?kiosk=1'); assert.match(html(), /class="res-light-dot"/); assert.match(html(), /data-level="ok"/); assert.match(html(), /aria-label="維運指示燈：正常"/); assert.match(html(), /<i aria-hidden="true"><\/i>/)
+      setLoc('?kiosk=1&hud=0'); assert.match(html(), /res-light-dot/, '?hud=0 仍顯示（維運指示、不是資訊面板）')
+      m.set('ixd2026.oplight', '"off"'); setLoc('?kiosk=1'); assert.equal(html(), '', '偏好關掉')
+      setLoc('?kiosk=1&oplight=1'); assert.match(html(), /res-light-dot/, '?oplight=1 只覆寫這一次'); assert.equal(m.get('ixd2026.oplight'), '"off"', '不改偏好')
+      m.set('ixd2026.oplight', '"on"'); setLoc(''); assert.match(html(), /res-light-dot/, '偏好開 → 一般模式也顯示')
+      setLoc('?oplight=0&kiosk=1'); assert.equal(html(), '')
+      setLoc('?kiosk=1'); m.delete('ixd2026.oplight')
+      // 各狀態：data-level + 文字 label / title
+      on({ version: { state: 'new', checkedAt: now, remoteId: '5115d8abcdef', deferred: 'active' } })
+      let h = html(); assert.match(h, /data-level="warn"/); assert.match(h, /aria-label="維運指示燈：需注意 · 新版 5115d8… 等待閒置（有人操作中）"/); assert.match(h, /title="維運指示燈：需注意/)
+      on({ version: { state: 'new', checkedAt: now, remoteId: '5115d8abcdef', deferred: 'remote' } }); assert.match(html(), /新版 5115d8… 等待閒置（遙控器使用中）/)
+      on({ halted: true, haltRetryAt: now + 4.5 * 60000 }); h = html(); assert.match(h, /data-level="bad"/); assert.match(h, /維運指示燈：異常 · 異常過多：已停止快速重新載入，約 5 分鐘後會再試一次/)
+      on({ gl: { state: 'lost', at: now } }); assert.match(html(), /data-level="bad"[^>]*aria-label="維運指示燈：異常 · 顯示引擎暫時中斷/)
+      on({ config: R.resolveConfig({ search: '', buildId: 'dev' }) }); h = html(); assert.match(h, /data-level="off"/); assert.match(h, /維運指示燈：未啟用 · 防呆未啟用（開發版）/)
+      on({ version: { state: 'new', checkedAt: now, remoteId: 'x', deferred: 'active' }, data: { state: 'pending', checkedAt: now, remoteFetchedAt: '', appliedAt: 0, deferred: 'tour' } })
+      assert.match(html(), /維運指示燈：需注意 · 新版 x 等待閒置（有人操作中） · 新資料等待閒置（導覽中）/, '多件事並存：全部列在 label 裡')
+      // 展開（釘住）：一行狀態文字；有工具列的「裝置」鈕才有「開啟維運面板」連結
+      on({ version: { state: 'new', checkedAt: now, remoteId: '5115d8abcdef', deferred: 'active' } })
+      Object.defineProperty(g, 'document', { value: { querySelector: () => null }, configurable: true, writable: true })
+      h = html({ defaultPinned: true }); assert.match(h, /class="res-light-pop"/); assert.match(h, /res-light-text">新版 5115d8… 等待閒置（有人操作中）</); assert.doesNotMatch(h, /開啟維運面板/, '沒有工具列（演出模式）→ 不顯示連結'); assert.match(h, /aria-expanded="true"/)
+      Object.defineProperty(g, 'document', { value: { querySelector: (q) => (q === '[data-k="devices"]' ? { click() {} } : null) }, configurable: true, writable: true })
+      h = html({ defaultPinned: true }); assert.match(h, /<button type="button" class="res-light-link">開啟維運面板<\/button>/)
+      assert.match(html(), /aria-expanded="false"/); assert.doesNotMatch(html(), /res-light-pop/, '沒展開時不渲染文字')
+    })
+  } finally {
+    if (hadLoc) Object.defineProperty(g, 'location', hadLoc); else delete g.location
+    if (hadDoc) Object.defineProperty(g, 'document', hadDoc); else delete g.document
+    R.opsStatus.set({ ...R.initialStatus() })
+  }
+})
+
+test('OpsLight：各狀態的文字（中 / 英）——不含中文的英文、單複數、版本碼縮短；OpsLightView 的形狀標記與連結', async () => {
+  const STUBS = { 'store/useStore.js': `export const useStore = (sel) => sel({})` }
+  const { itemText, OpsLightView } = await bundleJsx('ui/OpsLight.jsx', STUBS)
+  const zh = (k, p) => translate('zh', k, p), en = (k, p) => translate('en', k, p)
+  const items = [
+    { code: 'ok' }, { code: 'off' }, { code: 'off-dev' }, { code: 'halted', m: 1 }, { code: 'halted', m: 9 }, { code: 'halted-manual' }, { code: 'reloading', reason: 'webgl' }, { code: 'reloading', reason: 'watchdog' }, { code: 'reloading', reason: 'version' },
+    { code: 'stalled' }, { code: 'gl-lost' }, { code: 'version-wait', id: '5115d8abcdef', why: 'remote' }, { code: 'version-wait', id: 'ab', why: 'unknown-reason' }, { code: 'version-soon', id: 'b2' }, { code: 'version-manual', id: 'b2' },
+    { code: 'data-wait', why: 'tour' }, { code: 'data-wait', why: '' }, { code: 'events', n: 1 }, { code: 'events', n: 4 },
+  ]
+  for (const it of items) {
+    const a = itemText(zh, it), b = itemText(en, it)
+    assert.ok(a && b, JSON.stringify(it)); assert.doesNotMatch(b, /[㐀-鿿]/, `英文含中文：${JSON.stringify(it)} → ${b}`); assert.doesNotMatch(a, /\{\w+\}/, `未替換的參數：${a}`); assert.doesNotMatch(b, /\{\w+\}/, `未替換的參數：${b}`)
+  }
+  assert.equal(itemText(zh, { code: 'version-wait', id: '5115d8abcdef', why: 'active' }), '新版 5115d8… 等待閒置（有人操作中）', '範例句')
+  assert.equal(itemText(en, { code: 'version-wait', id: '5115d8abcdef', why: 'remote' }), 'New version 5115d8… waiting for idle (a phone remote is in use)')
+  assert.equal(itemText(zh, { code: 'version-wait', id: 'ab', why: 'active' }), '新版 ab 等待閒置（有人操作中）', '短的版本碼不加省略號')
+  assert.equal(itemText(en, { code: 'halted', m: 1 }), 'Too many problems: quick automatic reloads stopped, trying again in about 1 minute')
+  assert.match(itemText(en, { code: 'halted', m: 9 }), /about 9 minutes$/)
+  assert.equal(itemText(en, { code: 'events', n: 1 }), '1 crash-log event in the last 10 min'); assert.equal(itemText(en, { code: 'events', n: 4 }), '4 crash-log events in the last 10 min')
+  assert.equal(itemText(zh, { code: 'reloading', reason: 'webgl' }), '偵測到異常（顯示引擎中斷），即將重新載入…'); assert.equal(itemText(zh, { code: 'reloading', reason: 'daily' }), '即將重新載入頁面')
+  assert.equal(itemText(zh, { code: 'nope' }), '')
+  // View：關閉時只有圓點；展開才有文字；連結由 canOpenOps 決定
+  const closed = renderToStaticMarkup(React.createElement(OpsLightView, { level: 'bad', line: 'L', label: 'LABEL', open: false, canOpenOps: true, popId: 'p', openOpsText: 'OPEN' }))
+  assert.match(closed, /^<div class="res-light" data-level="bad"><button type="button" class="res-light-dot" data-level="bad" aria-label="LABEL" aria-expanded="false" title="LABEL"><i aria-hidden="true"><\/i><\/button><\/div>$/)
+  const opened = renderToStaticMarkup(React.createElement(OpsLightView, { level: 'warn', line: 'L', label: 'LABEL', open: true, canOpenOps: true, popId: 'p', openOpsText: 'OPEN' }))
+  assert.match(opened, /aria-controls="p"/); assert.doesNotMatch(opened, /title=/, '展開時不再掛原生 title（避免重複的提示）'); assert.match(opened, /id="p" data-level="warn"><span class="res-light-text">L<\/span><button type="button" class="res-light-link">OPEN<\/button>/)
+  assert.doesNotMatch(renderToStaticMarkup(React.createElement(OpsLightView, { level: 'ok', line: 'L', label: 'X', open: true, canOpenOps: false, popId: 'p', openOpsText: 'OPEN' })), /res-light-link/)
+})
+
+test('OpsLight 的接線與輕量：ResilienceService 以 portal 掛到 body（不改 App.jsx）；ErrorBoundary / resilience.js（入口 chunk）不 import OpsLight / OpsSection / remoteDispatch；樣式不擋操作', () => {
+  const read = (p) => readFileSync(new URL(p, import.meta.url), 'utf8')
+  const light = read('../ui/OpsLight.jsx')
+  assert.match(light, /createPortal\(<OpsLightBody \/>, document\.body\)/); assert.match(light, /if \(typeof document === 'undefined' \|\| !document\.body\) return null/)
+  assert.match(read('../services/ResilienceService.jsx'), /import OpsLight from '\.\.\/ui\/OpsLight\.jsx'/)
+  assert.doesNotMatch(light.replace(/\/\/.*$/gm, ''), /overlays/, '維運指示燈（程式碼，不含註解）不看 overlays.hud：演出模式 / ?hud=0 仍顯示')
+  for (const f of ['../ErrorBoundary.jsx', '../lib/resilience.js']) {
+    const code = read(f)
+    assert.doesNotMatch(code, /^import .*(OpsLight|OpsSection|remoteDispatch|ResilienceService)/m, f)
+  }
+  const css = read('../styles/resilience.css')
+  assert.match(css, /\.res-light \{[^}]*position: fixed[^}]*z-index: 35[^}]*pointer-events: none/, '外框不收指標；z-index 低於彈窗（.modal-backdrop = 40）')
+  assert.match(css, /\.res-light \.res-light-dot \{[^}]*pointer-events: auto/); assert.match(css, /clip-path: polygon/, '紅 = 三角形（形狀不只靠顏色）'); assert.match(css, /border: 1px dashed/, '灰 = 虛線圓')
+  assert.match(read('../styles.css'), /\.modal-backdrop \{[^}]*z-index: 40/, '彈窗的 z-index（指示燈必須更低）')
+})
+
+test('GuardNotice：熔斷提示附冷卻分鐘數（半開）；沒有排定冷卻時仍是舊的「請人工處理」', async () => {
+  const { GuardNotice } = await bundleJsx('ErrorBoundary.jsx')
+  const html = () => renderToStaticMarkup(React.createElement(GuardNotice))
+  const base = R.initialStatus()
+  try {
+    R.opsStatus.set({ ...base, halted: true, haltRetryAt: Date.now() + 4.5 * 60000 })
+    assert.match(html(), /短時間內多次異常，已停止快速重新載入，約 5 分鐘後會再試一次。/); assert.match(html(), /res-notice warn/); assert.match(html(), /<button[^>]*>重新載入<\/button>/)
+    R.opsStatus.set({ haltRetryAt: Date.now() + 30000 }); assert.match(html(), /約 1 分鐘後會再試一次/, '不到 1 分鐘 → 至少顯示 1')
+    R.opsStatus.set({ haltRetryAt: 0 }); assert.match(html(), /已停止自動重新載入。請人工處理。/)
+    assert.equal(translate('en', '短時間內多次異常，已停止快速重新載入，約 {m} 分鐘後會再試一次。', { m: 5 }), 'Repeated problems in a short time: quick automatic reloads have stopped. Trying again in about 5 minutes.')
+  } finally { R.opsStatus.set({ ...base }) }
+})
+
+test('ResilienceService.readIdleState：手機遙控器「最近有操作訊息」算有人在（remote），3 分鐘後回到閒置；沒訊息（連線數不算）→ 閒置；介面壞掉時不丟例外', async () => {
+  const STUBS = {
+    'store/useStore.js': `const s = globalThis.__fake; export const useStore = { getState: () => s.store, setState: () => {} }`,
+    'store/activity.js': `export const activity = globalThis.__fake.activity`,
+    'lib/tour.js': `export const useTourStore = { getState: () => globalThis.__fake.tour }`,
+    'services/tourCore.js': `export const tourRunner = { current: () => globalThis.__fake.runnerCur() }`,
+    'tourCore.js': `export const tourRunner = { current: () => globalThis.__fake.runnerCur() }`,
+    'lib/xr.js': `export const getXrController = () => ({ isActive() { return false } })`,
+    'lib/remoteDispatch.js': `export const remoteActivity = globalThis.__fake.remote`,
+    'ui/OpsLight.jsx': `export default function OpsLight() { return null }`,
+  }
+  globalThis.__fake = { store: { rec: { mode: 'idle' }, gov: null }, activity: { last: 0, guideAt: -1e9 }, tour: { running: false }, runnerCur: () => null, remote: { at: -1e9 } }
+  const mod = await bundleJsx('services/ResilienceService.jsx', STUBS)
+  const g = globalThis
+  const hadDoc = Object.getOwnPropertyDescriptor(g, 'document')
+  try {
+    Object.defineProperty(g, 'document', { value: { querySelector: () => null }, configurable: true, writable: true })
+    const now = () => performance.now()
+    g.__fake.activity.last = now() - 999999
+    assert.deepEqual(R.evaluateIdle(mod.readIdleState()), { idle: true, reason: '' }, '桌上一支沒關的手機（沒有操作訊息）不擋重載')
+    g.__fake.remote.at = now() - 5000
+    let st = mod.readIdleState(); assert.ok(st.remoteIdleMs >= 5000 && st.remoteIdleMs < 8000, String(st.remoteIdleMs))
+    assert.deepEqual(R.evaluateIdle(st), { idle: false, reason: 'remote' }, '導覽員 / 玩家剛用手機操作')
+    g.__fake.remote.at = now() - 179000; assert.equal(R.evaluateIdle(mod.readIdleState()).reason, 'remote', '179 秒仍算')
+    g.__fake.remote.at = now() - 181000; assert.deepEqual(R.evaluateIdle(mod.readIdleState()), { idle: true, reason: '' }, '超過 3 分鐘沒有操作訊息 → 回到閒置')
+    // 展場：自動導覽 + 播放本來不算忙，但遙控器在操作就算
+    g.__fake.tour.running = true; g.__fake.runnerCur = () => ({ auto: true }); g.__fake.store.rec.mode = 'playing'
+    assert.equal(R.evaluateIdle(mod.readIdleState(), { kiosk: true }).idle, true)
+    g.__fake.remote.at = now() - 2000; assert.equal(R.evaluateIdle(mod.readIdleState(), { kiosk: true }).reason, 'remote')
+    // 介面壞掉：讀不到 → 沒有這個訊號（不是「永遠忙」）
+    Object.defineProperty(g.__fake.remote, 'at', { get() { throw new Error('remote api changed') }, configurable: true })
+    assert.doesNotThrow(() => mod.readIdleState()); assert.equal(mod.readIdleState().remoteIdleMs, Infinity)
+    g.__fake.remote = undefined
+    assert.doesNotThrow(() => mod.readIdleState()); assert.equal(mod.readIdleState().remoteIdleMs, Infinity, '沒有 remoteActivity 物件')
+  } finally {
+    if (hadDoc) Object.defineProperty(g, 'document', hadDoc); else delete g.document
+    delete g.__fake
+  }
+})
+
+test('OpsSection：遙控器使用中 / 熔斷冷卻 / 角落指示燈開關（偏好 vs 這次網址覆寫）', async () => {
+  const g = globalThis
+  g.__BUILD_ID__ = 'b-ops-test2'
+  const FRESH = 'ops2=' + Math.random().toString(36).slice(2)
+  const STUBS = { 'store/useStore.js': `export const useStore = (sel) => sel(globalThis.__fakeStore)` }
+  const RF = await import('./resilience.js?' + FRESH)
+  const OpsSection = (await bundleJsx('ui/devices/OpsSection.jsx', STUBS, { fresh: FRESH })).default
+  g.__fakeStore = { gov: { fetchedAt: '2026-09-20T20:00' } }
+  const hadLoc = Object.getOwnPropertyDescriptor(g, 'location')
+  const setLoc = (search) => Object.defineProperty(g, 'location', { value: { search, hash: '', reload() {} }, configurable: true, writable: true })
+  const html = () => renderToStaticMarkup(React.createElement(OpsSection))
+  const toggle = (h) => { const m = h.match(/<label class="ops-toggle"><input type="checkbox"( checked="")?/); return m ? !!m[1] : null }
+  try {
+    withFakeLS(() => {
+      RF.opsStatus.set({ ...RF.initialStatus(), bootAt: T0 })
+      setLoc('')
+      let h = html()
+      assert.match(h, /遙控器在場/); assert.match(h, /手機遙控器 3 分鐘內有操作，就算有人在/); assert.match(h, /熔斷後復原/); assert.match(h, /待命（10 分鐘內累積 5 次異常就停止快速重試，10 分 30 秒後自動再試一次）/)
+      assert.match(h, /在畫面右下角顯示維運指示燈/); assert.equal(toggle(h), false, '一般模式預設關')
+      assert.match(h, /綠色圓點＝正常、琥珀色空心圓＝有事在等待、紅色三角＝異常、灰色虛線圓＝防呆未啟用/); assert.doesNotMatch(h, /這一次網址帶了 \?oplight/)
+      setLoc('?kiosk=1'); assert.equal(toggle(html()), true, '展場預設開')
+      RF.setOpLightPref('off', RF.opsStatus); assert.equal(toggle(html()), false, '存了偏好 → 以偏好為準'); assert.equal(RF.readOpLightSaved(), 'off')
+      setLoc('?kiosk=1&oplight=1'); h = html(); assert.equal(toggle(h), false, '開關顯示的是偏好（不是這一次的網址覆寫）'); assert.match(h, /這一次網址帶了 \?oplight，畫面以網址為準（不會改這個偏好）/)
+      RF.setOpLightPref('on', RF.opsStatus); setLoc(''); assert.equal(toggle(html()), true)
+      // 遙控器使用中
+      RF.opsStatus.set({ version: { state: 'new', checkedAt: T0, remoteId: 'NEW-ID', deferred: 'remote' }, data: { state: 'pending', checkedAt: T0, remoteFetchedAt: '2026-09-21T00:00', appliedAt: 0, deferred: 'remote' } })
+      h = html(); assert.match(h, /等閒置再重新載入（遙控器使用中）/); assert.match(h, /等閒置再套用（遙控器使用中）/)
+      // 熔斷冷卻
+      RF.opsStatus.set({ halted: true, haltRetryAt: Date.now() + 4.5 * 60000 })
+      h = html(); assert.match(h, /已停止快速重新載入，約 5 分鐘後會再試一次/); assert.match(h, /冷卻中：約 5 分鐘後會自動重新載入一次/); assert.doesNotMatch(h, /待命（/)
+      RF.opsStatus.set({ halted: true, haltRetryAt: 0 }); assert.match(html(), /已停止自動重新載入/, '沒有排定冷卻 → 舊的文字')
+      RF.opsStatus.set({ halted: false, haltRetryAt: 0 })
+      assert.equal(translate('en', '遙控器使用中'), 'a phone remote is in use'); assert.equal(translate('en', '熔斷冷卻後重試'), 'retry after breaker cooldown')
+    })
+  } finally {
+    if (hadLoc) Object.defineProperty(g, 'location', hadLoc); else delete g.location
+    delete g.__fakeStore; delete g.__BUILD_ID__
+  }
+})
+
+test('熔斷冷卻路徑在瀏覽器的 this 規則下可用（預設 setTimeout / clearTimeout / reload；回歸：Illegal invocation）；stop 取消真實的冷卻計時器', async () => {
+  const g = installStrictGlobals()
+  let h = null
+  try {
+    const fresh = await import('./resilience.js?strict3=' + Math.random().toString(36).slice(2))
+    let off = 0
+    const crashLog = fresh.createCrashLog({ storage: memStorage(), now: () => Date.now() - off, boot: 'S' })
+    for (let i = 0; i < 4; i++) { off = (4 - i) * 1000; crashLog.add({ kind: 'webgl', message: 'pre' + i, stack: '' }) }   // 4 筆過去 1~4 秒前的致命事件
+    off = 0
+    const status = fresh.createStatusStore(fresh.initialStatus())
+    h = fresh.startGuards({ buildId: 'b-1', status, crashLog, env: {} })
+    const r = h.reloader.crash('watchdog', new Error('stall'))                       // 第 5 次 → 熔斷 → 預設的 setTimeout 排冷卻
+    assert.equal(r.halted, true); assert.equal(status.get().halted, true); assert.equal(h.reloader.cooling(), true); assert.equal(g.loc.reloads, 0)
+    assert.ok(status.get().haltRetryAt > Date.now() + 10 * 60000)
+    h.stop(); h = null                                                               // 預設的 clearTimeout（若沒取消，Node 會被 10 分鐘的計時器卡住不能結束）
+    assert.equal(g.loc.reloads, 0)
+  } finally {
+    if (h) h.stop()
+    g.restore()
   }
 })
 

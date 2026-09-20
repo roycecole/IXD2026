@@ -3,6 +3,8 @@
 // 空窗年、揚塵誠實說明、空氣品質站（模型資料、非政府觀測；範圍與「越高…」以 automationFor 的真實對應為準）、
 // 執行器（用假 store 測：換站、還原、各種中斷、循環）、導覽員控制（goto / next / prev / pause / resume、start 的 at / hold、暫停中的計時與序列凍結、暫停中被輸入中止）、
 // 字幕旁白（假 narrator，方法都檢查 this）、偏好（setAutoIdle / setSpeak 互不洗掉）與鏡像（含 paused）。
+// 導覽腳本與新功能接線（檔案最後一節）：buildTour 的 plan（順序 / 缺站略過 / 備註 / 沒有 plan 時逐字相同）、備註（captionNote / captionSpeech / 旁白）、
+// 空氣品質站的「模型 vs 環境部測站觀測」（注入假的 airCompare）、揚塵站的模型風速（注入假的 seriesFromDust）、「念出字幕」開關的 iOS 解鎖（假 narrator）。
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -12,11 +14,12 @@ import { getMirror } from './mirror.js'
 import { LS, loadLS } from './persist.js'
 import { automationFor, seriesFromAir } from './series.js'
 import { speechText } from './narration.js'
+import { airCompareVerdict } from './airCompare.js'
 import { TOUR_STOP_IDS } from './tourLink.js'
-import { makeNarrator, withStorage } from './tourTestEnv.mjs'
+import { makeNarrator, makeUnlockNarrator, withStorage } from './tourTestEnv.mjs'
 import {
   buildTour, captionText, speedFor, tourTotalMs, createTourRunner, useTourStore, resolveAutoIdle, resolveSpeak, isAudienceSearch, resolveStopIndex,
-  setAutoIdle, setSpeak, supportsNarration,
+  setAutoIdle, setSpeak, supportsNarration, captionNote, captionSpeech, setSpeakFromGesture,
   MIN_SPEED, MAX_SPEED, TOUR_MS, PAUSE_SPEED, NARRATION_MAX_WAIT_MS, SPEAK_DEFAULT, AUTO_PAUSE_MAX_MS,
 } from './tour.js'
 
@@ -301,6 +304,7 @@ test('月亮：表內有今日 → 帶今日月出 / 月沒；不含今日 → �
 // =============================================================================================
 function harness({ gov = mkGov(), snapOption = 'zengwen', rec = {}, auto = false, remote = false, narrator = null, extra = {} } = {}) {
   const calls = []
+  const specs = []                                                        // 導覽自己播放的序列（playSeries 收到的 spec）
   const flags = { remote }                                                // 可在測試中途改（收到第一個 mirror 訊息時觀眾視窗才被標成 remote）
   const clock = { t: 100000 }
   const act = { last: 50000 }
@@ -324,6 +328,8 @@ function harness({ gov = mkGov(), snapOption = 'zengwen', rec = {}, auto = false
     setRecSpeed: (v) => { S.rec = { ...S.rec, speed: v }; calls.push(['setRecSpeed', v]) },
     stopPlayback: () => { S.rec = { ...S.rec, mode: 'idle' }; calls.push(['stopPlayback']) },
     playGovSeries: () => play('tide'), playDust: () => play('dust'), playAir: () => play('air'), playMoon: () => play('moon'), playSurvey: (k) => play(k),
+    govOption: () => getOpt(S.govOptionId) || null,
+    playSeries: (spec, o) => { specs.push(spec); calls.push(['playSeries', spec.extra && spec.extra.metric, o && o.id]); play(spec.kind === 'air' ? 'air' : 'series:' + spec.kind) },   // 只有「導覽自己算好的序列」（揚塵站的模型風速、空氣品質站的模型序列）才走這條
     pushLog: (dir, text) => S.log.push(text),
     persistParams: () => calls.push(['persistParams']),
   })
@@ -336,7 +342,7 @@ function harness({ gov = mkGov(), snapOption = 'zengwen', rec = {}, auto = false
   })
   const step = (ms, dt = 100) => { for (let x = 0; x < ms; x += dt) { clock.t += dt; runner.tick(clock.t) } }
   const run = (o = {}) => runner.start({ auto, ...o })
-  return { S, calls, clock, act, emitted, runner, step, run, flags, touches: () => touches, afterPlays: () => afterPlays, getOpt }
+  return { S, calls, specs, clock, act, emitted, runner, step, run, flags, touches: () => touches, afterPlays: () => afterPlays, getOpt }
 }
 
 test('執行器：開始 → 套用第一站海況、字幕資料寫進 store、寫 OUT 日誌；導覽前狀態被記下', () => {
@@ -676,7 +682,7 @@ test('導覽員 goto：跳到指定站（index 或站 id）——先停上一站
   h.calls.length = 0
   const touches0 = h.touches()
   assert.equal(h.runner.goto(4), true)                                            // 空氣品質（series）
-  assert.deepEqual(h.calls.map((c) => c[0] + (c[1] != null ? ':' + c[1] : '')), ['setGovOption:air-yunlin', 'setRecSpeed:' + st[4].speed, 'play:air'])
+  assert.deepEqual(h.calls.map((c) => c[0] + (c[1] != null ? ':' + c[1] : '')), ['setGovOption:air-yunlin', 'setRecSpeed:' + st[4].speed, 'playSeries', 'play:air'])   // 空氣品質站直接播「站上帶著的模型序列」（見 PLAY.air）
   assert.equal(h.S.govOptionId, 'air-yunlin'); assert.equal(h.S.rec.mode, 'playing')
   const e = lastRunning(h)
   assert.equal(e.index, 4); assert.equal(e.total, 8); assert.equal(e.caption.key, 'air'); assert.equal(e.stopMs, TOUR_MS.air); assert.equal(e.seq, 2); assert.equal(e.paused, false)
@@ -1311,4 +1317,404 @@ test('setAutoIdle / setSpeak：localStorage 不可用（隱私模式丟例外）
 test('站順序常數：buildTour 的順序 = tourLink 白名單；getLocale 在測試結束時回到 zh', () => {
   assert.deepEqual(stops8().map((s) => s.id), TOUR_STOP_IDS)
   assert.equal(getLocale(), 'zh')
+})
+
+// =============================================================================================
+// 導覽腳本（buildTour 的 opts.plan）：只導覽腳本列出的站、依腳本順序、缺資料的站略過、備註放進 caption.p.note；沒有 plan 時逐字相同
+// =============================================================================================
+const idsOf = (stops) => stops.map((s) => s.id)
+const byId = (stops) => Object.fromEntries(stops.map((s) => [s.id, s]))
+
+test('腳本：只包含腳本列出的站、依腳本順序；每站欄位（optionId / kind / 倍速 / 停留時間）與預設導覽的同一站完全相同（沿用 TOUR_MS）', () => {
+  const gov = mkGov()
+  const all = byId(buildTour(gov, { now: NOW }))
+  const stops = buildTour(gov, { now: NOW, plan: { stops: ['fish', 'air', 'reservoir'] } })
+  assert.deepEqual(idsOf(stops), ['fish', 'air', 'reservoir'])
+  for (const s of stops) { assert.deepEqual(s, all[s.id], s.id); assert.equal(s.durationMs, TOUR_MS[s.id]) }
+  assert.equal(tourTotalMs(stops), TOUR_MS.fish + TOUR_MS.air + TOUR_MS.reservoir)
+  assert.deepEqual(idsOf(buildTour(gov, { now: NOW, plan: { stops: ['air', 'fish'] } })), ['air', 'fish'], '例如只講空氣品質與魚：?tour=air,fish')
+  assert.deepEqual(idsOf(buildTour(gov, { now: NOW, plan: { stops: [...TOUR_STOP_IDS].reverse() } })), [...TOUR_STOP_IDS].reverse(), '八站全選、反向也行')
+  assert.deepEqual(buildTour(gov, { now: NOW, plan: { stops: TOUR_STOP_IDS } }), buildTour(gov, { now: NOW }), '全選 + 預設順序 = 預設導覽')
+  const half = buildTour(gov, { now: NOW, scale: 0.5, plan: { stops: ['tide', 'moon'] } })
+  assert.deepEqual(half.map((s) => s.durationMs), [TOUR_MS.tide / 2, TOUR_MS.moon / 2], 'scale 照樣生效')
+})
+
+test('腳本：備註放進 stop.caption.p.note（原文）；沒有備註的站不帶 note key；字幕資料仍是純 JSON；不影響同一份資料另外建的預設導覽（不共用 / 不修改字幕物件）', () => {
+  const gov = mkGov()
+  const plan = { name: '空氣與魚', stops: [{ id: 'air', note: '這是模型，不是觀測' }, { id: 'fish' }, { id: 'tide', note: 'note in English' }] }
+  const stops = buildTour(gov, { now: NOW, plan })
+  assert.equal(stops[0].caption.p.note, '這是模型，不是觀測'); assert.ok(!('note' in stops[1].caption.p)); assert.equal(stops[2].caption.p.note, 'note in English')
+  assert.deepEqual({ ...stops[0].caption.p, note: undefined }, { ...byId(buildTour(gov, { now: NOW })).air.caption.p, note: undefined }, '其餘字幕資料不變')
+  for (const s of stops) assert.deepEqual(JSON.parse(JSON.stringify(s.caption)), s.caption)
+  assert.ok(buildTour(gov, { now: NOW }).every((s) => !('note' in s.caption.p)), '之後建的預設導覽沒有 note（沒有共用物件被改）')
+  assert.deepEqual(buildTour(gov, { now: NOW, plan }), stops, '同樣輸入 → 同樣輸出（確定性）')
+  // 備註在 buildTour 內會被再清洗一次（不信任呼叫端）
+  const dirty = buildTour(gov, { now: NOW, plan: { stops: [{ id: 'air', note: '  a\nb  ' + 'x'.repeat(200) }] } })
+  assert.equal(dirty[0].caption.p.note.length, 120); assert.ok(dirty[0].caption.p.note.startsWith('a b'))
+})
+
+test('腳本：缺資料的站略過（不報錯）；AR 實景略過的月亮 / 星座即使腳本列了也略過；腳本裡的站全都缺資料 → 空陣列', () => {
+  const g = mkGov(); delete g.moon; g.options = g.options.filter((o) => o.kind !== 'moon'); delete g.dust; g.options = g.options.filter((o) => o.kind !== 'dust')
+  assert.deepEqual(idsOf(buildTour(g, { now: NOW, plan: { stops: ['moon', 'air', 'dust', 'fish'] } })), ['air', 'fish'])
+  assert.deepEqual(buildTour(g, { now: NOW, plan: { stops: ['moon', 'dust'] } }), [])
+  assert.deepEqual(idsOf(buildTour(mkGov(), { now: NOW, skip: ['moon', 'stations'], plan: { stops: ['stations', 'moon', 'air'] } })), ['air'])
+  assert.deepEqual(buildTour(null, { now: NOW, plan: { stops: ['air'] } }), []); assert.deepEqual(buildTour({}, { now: NOW, plan: { stops: ['air'] } }), [])
+  const real2 = buildTour(real, { now: NOW, plan: { stops: ['air', 'fish', 'tide'] } })
+  assert.deepEqual(idsOf(real2), ['air', 'fish', 'tide'].filter((id) => idsOf(buildTour(real, { now: NOW })).includes(id)), '真實 ocean.json：依腳本順序、只包含有資料的站')
+})
+
+test('沒有腳本時行為與以前逐字相同：plan 為 null / undefined / 空 / 全是未知站 / 壞型別 → 與不傳 plan 的結果 deepEqual', () => {
+  for (const gov of [mkGov(), real]) {
+    const base = buildTour(gov, { now: NOW })
+    for (const plan of [undefined, null, {}, { stops: [] }, { stops: ['nope', 'constructor'] }, 'air', 5, [], ['x'], true]) assert.deepEqual(buildTour(gov, { now: NOW, plan }), base, JSON.stringify(plan))
+    assert.deepEqual(JSON.parse(JSON.stringify(base)), base, '字幕資料不含 undefined / 函式')
+  }
+})
+
+// =============================================================================================
+// 備註：captionNote / captionSpeech
+// =============================================================================================
+test('captionNote：導覽員備註原文（不翻譯、語系切換不變）；沒有 / 非字串 / 壞的 caption → \'\'；再清洗一次（控制字元、長度）', () => {
+  assert.equal(captionNote({ key: 'air', p: { note: '這是模型' } }), '這是模型')
+  assert.equal(inLocale('en', () => captionNote({ key: 'air', p: { note: '這是模型' } })), '這是模型', '備註不翻譯')
+  for (const bad of [null, undefined, {}, { key: 'air' }, { key: 'air', p: null }, { key: 'air', p: {} }, { key: 'air', p: { note: 5 } }, { key: 'air', p: { note: { x: 1 } } }, 'x', 5, []]) assert.equal(captionNote(bad), '', JSON.stringify(bad))
+  assert.equal(captionNote({ key: 'air', p: { note: '  a\n\tb  ' } }), 'a b')
+  assert.equal(captionNote({ key: 'air', p: { note: 'x'.repeat(500) } }).length, 120)
+  assert.equal(captionNote({ key: 'air', p: { note: '<b>bold</b>' } }), '<b>bold</b>', '原樣（顯示端當純文字）')
+})
+
+test('captionText 與備註無關（title / body 不含備註）；沒有備註 → captionSpeech 與 captionText 完全相同（旁白逐字不變）', () => {
+  const stops = buildTour(mkGov(), { now: NOW })
+  for (const s of stops) { assert.deepEqual(captionSpeech(s.caption, 'zh'), captionText(s.caption)); assert.deepEqual(inLocale('en', () => captionSpeech(s.caption, 'en')), inLocale('en', () => captionText(s.caption))) }
+  const noted = buildTour(mkGov(), { now: NOW, plan: { stops: [{ id: 'air', note: '這是備註' }] } })[0]
+  assert.deepEqual(captionText(noted.caption), captionText(byId(stops).air.caption), '字幕文字不含備註（備註由 TourCaption 另外顯示）')
+})
+
+test('captionSpeech：備註接在說明後面一起念——說明結尾沒有句末標點時補（zh「。」/ en「. 」）、已有就不重複；說明是空的只念備註；標題不變', () => {
+  const noted = buildTour(mkGov(), { now: NOW, plan: { stops: [{ id: 'air', note: '這是備註' }] } })[0]
+  const t0 = captionText(noted.caption)
+  const zh = captionSpeech(noted.caption, 'zh')
+  assert.equal(zh.title, t0.title); assert.equal(zh.body, t0.body + '。這是備註')
+  const en = inLocale('en', () => { const b = captionText(noted.caption); return { b, sp: captionSpeech(noted.caption, 'en') } })
+  assert.equal(en.sp.body, en.b.body + '. 這是備註'); assert.equal(inLocale('en', () => captionSpeech(noted.caption)).body, en.sp.body, '預設語系 = 目前語系')
+  assert.equal(captionSpeech({ key: 'reservoir', p: { name: '翡翠水庫', level: 77, sea: 0.77, note: 'n' } }, 'zh').body.endsWith('。n'), true)
+  const ended = { key: 'nope', p: { note: '備註' } }                                    // 不認得的 key → 說明是空的
+  assert.deepEqual(captionSpeech(ended, 'zh'), { title: '', body: '備註' })
+  const withPunct = captionSpeech({ key: 'dust', p: { mode: 'static', metric: 'none', n: 0, note: 'x' } }, 'zh')
+  assert.ok(!withPunct.body.includes('。。'), '不重複句號')
+  assert.match(speechText(zh, 'zh'), /這是備註$/, '交給 speechText 後備註在最後')
+})
+
+test('旁白：導覽腳本的備註接在說明後面一起念；沒有備註的站與以前逐字相同；語系切換重念時連接詞跟著語系', () => withSpeak(() => {
+  const nar = makeNarrator()
+  const plan = { stops: [{ id: 'air', note: '請注意這是模型' }, { id: 'fish' }] }
+  const h = harness({ narrator: nar })
+  assert.equal(h.run({ opts: { plan } }), true)
+  const st = buildTour(mkGov(), { now: NOW, plan })
+  assert.deepEqual(nar.spoken(), [speechText(captionSpeech(st[0].caption, 'zh'), 'zh')])
+  assert.match(nar.spoken()[0], /模型資料.*非政府觀測.*。請注意這是模型$/)
+  h.runner.next()
+  assert.equal(nar.spoken()[1], zhText(st[1]), '沒有備註的站與以前逐字相同')
+  h.runner.prev()
+  setLocale('en')
+  const last = nar.spoken()[nar.spoken().length - 1]
+  assert.equal(last, speechText(captionSpeech(st[0].caption, 'en'), 'en')); assert.match(last, /not government observations\)?.*\. 請注意這是模型$/)
+}))
+
+// =============================================================================================
+// 執行器 + 腳本
+// =============================================================================================
+test('執行器：opts.plan → 站表只有腳本的站；stopList / total / 字幕 key 依腳本；播完一輪（手動）結束並還原；備註隨字幕資料 emit', () => {
+  const h = harness()
+  const plan = { stops: [{ id: 'fish', note: '曾文溪' }, 'air'] }
+  assert.equal(h.run({ opts: { plan } }), true)
+  const e0 = lastRunning(h)
+  assert.equal(e0.total, 2); assert.equal(e0.caption.key, 'fish'); assert.equal(e0.caption.p.note, '曾文溪')
+  assert.deepEqual(h.emitted.find((e) => e.stopList).stopList.map((x) => x.id), ['fish', 'air'])
+  assert.deepEqual(h.emitted.find((e) => e.stopList).stopList.map((x) => x.caption.p.note), ['曾文溪', undefined], 'stopList 帶字幕資料（遙控頁 / 字幕從這裡取備註）')
+  h.step(TOUR_MS.fish + TOUR_MS.air + 500)
+  assert.equal(h.runner.isRunning(), false); assert.equal(h.S.govOptionId, 'zengwen', '還原導覽前的海況')
+  assert.deepEqual(h.calls.filter((c) => c[0] === 'play').map((c) => c[1]), ['fish', 'air'])
+})
+
+test('執行器：導覽員 ?tourstop= 以「腳本內的站」為準——站 id 在腳本裡 → 那一站；不在腳本裡 / 序號超出腳本 → 第 0 站（不報錯）', () => {
+  const plan = { stops: ['air', 'fish', 'tide'] }
+  const stops = buildTour(mkGov(), { now: NOW, plan })
+  assert.equal(resolveStopIndex(stops, 'fish', 0), 1); assert.equal(resolveStopIndex(stops, 'tide', 0), 2)
+  assert.equal(resolveStopIndex(stops, 'birds', 0), 0, '不在腳本裡'); assert.equal(resolveStopIndex(stops, 3, 0), 0, '序號超出腳本的站數'); assert.equal(resolveStopIndex(stops, 1, 0), 1)
+  const h = harness()
+  h.run({ opts: { plan }, at: 'fish' })
+  assert.equal(h.runner.current().stop.id, 'fish'); assert.equal(h.runner.current().index, 1); assert.equal(h.runner.current().total, 3)
+  h.runner.stop('user')
+  const h2 = harness(); h2.run({ opts: { plan }, at: 'birds' }); assert.equal(h2.runner.current().stop.id, 'air')
+})
+
+test('執行器：自動（閒置）導覽循環回第 0 站時重建站表，仍用同一份腳本（opts 沿用）；手動導覽最後一站 next = 結束', () => {
+  const plan = { stops: [{ id: 'tide', note: 'A' }, 'air'] }
+  const h = harness({ auto: true })
+  h.run({ opts: { plan } })
+  h.step(TOUR_MS.tide + TOUR_MS.air + 500)
+  assert.equal(h.runner.isRunning(), true); assert.equal(h.runner.current().index, 0); assert.equal(h.runner.current().total, 2)
+  assert.equal(lastRunning(h).caption.p.note, 'A', '循環回來仍是腳本的站與備註')
+  assert.deepEqual(h.emitted.filter((e) => e.stopList).pop().stopList.map((x) => x.id), ['tide', 'air'])
+  h.runner.stop('user')
+})
+
+test('腳本的站只有一站也能導覽（手動一輪結束、自動循環）', () => {
+  const h = harness()
+  h.run({ opts: { plan: { stops: ['stations'] } } })
+  assert.equal(lastRunning(h).total, 1); assert.equal(h.runner.next(), true); assert.equal(h.runner.isRunning(), false, '手動導覽最後一站 next = done')
+})
+
+// =============================================================================================
+// 空氣品質站：模型 vs 環境部測站觀測（airCompare 由測試注入；沒有觀測時輸出與以前逐字相同）
+// =============================================================================================
+const cmpOf = (over = {}) => () => ({ n: 20, bias: 8.24, mae: 9.11, station: { name: '麥寮', county: '雲林縣' }, hours: [], model: [], obs: [], obsFetchedAt: '2026-09-20T00:00:00Z', ...over })
+const airWith = (compare, g = mkGov()) => buildTour(g, { now: NOW, airCompare: compare }).find((s) => s.id === 'air')
+const baseAir = () => airWith(() => null)
+
+test('模型 vs 觀測：有觀測（airCompare 非 null）→ p.cmp = { bias, mae, n, station }（兩位小數，與 airCompare 相同）；字幕多一句誠實的比較（模型平均高估，顯示一位小數）；其餘字幕資料與原本相同', () => {
+  const a = airWith(cmpOf())
+  assert.deepEqual(a.caption.p.cmp, { bias: 8.24, mae: 9.11, n: 20, station: '麥寮' })
+  const { cmp, ...rest } = a.caption.p
+  assert.deepEqual(rest, baseAir().caption.p, '除了 cmp，其餘字幕資料不變')
+  JSON.parse(JSON.stringify(a.caption))
+  const base = cap(baseAir(), 'zh'), zh = cap(a, 'zh'), en = cap(a, 'en'), baseEn = cap(baseAir(), 'en')
+  assert.equal(zh.title, base.title); assert.equal(zh.body, base.body + '。與環境部麥寮站觀測相比，模型平均高估 8.2 μg/m³')
+  assert.equal(en.title, baseEn.title); assert.equal(en.body, baseEn.body + '. Versus MOENV’s Mailiao station observations, the model overestimates by 8.2 μg/m³ on average')
+  assert.ok(a.kind === 'series' && a.series === 'air' && a.optionId === 'air-yunlin', '其餘站欄位不變')
+})
+
+test('模型 vs 觀測：模型低估 → 「低估」（顯示正數）；|偏差| < 1 且逐時誤差不大 → 「大致吻合」；|偏差| < 1 但逐時誤差大 → 「平均差僅…但逐時落差明顯」（不說大致吻合）；結論與 airCompareVerdict 同一份說法', () => {
+  const low = cap(airWith(cmpOf({ bias: -3.26, mae: 4 })), 'zh')
+  assert.match(low.body, /與環境部麥寮站觀測相比，模型平均低估 3\.3 μg\/m³$/); assert.doesNotMatch(low.body, /高估|-3/)
+  assert.match(cap(airWith(cmpOf({ bias: -3.26, mae: 4 })), 'en').body, /underestimates by 3\.3 μg\/m³ on average$/)
+  const ok = airWith(cmpOf({ bias: 0.4, mae: 4.24 }))
+  assert.match(cap(ok, 'zh').body, /與環境部麥寮站觀測相比，模型平均大致吻合（逐時平均誤差 4\.2 μg\/m³）$/)
+  assert.match(cap(ok, 'en').body, /Versus MOENV’s Mailiao station observations, the model roughly matches on average \(mean hourly error 4\.2 μg\/m³\)$/)
+  const mixed = airWith(cmpOf({ bias: 0.4, mae: 12.5 }))
+  assert.match(cap(mixed, 'zh').body, /與環境部麥寮站觀測相比，模型平均差僅 0\.4 μg\/m³，但逐時落差明顯（平均絕對誤差 12\.5 μg\/m³）$/); assert.doesNotMatch(cap(mixed, 'zh').body, /大致吻合/)
+  assert.match(cap(mixed, 'en').body, /the mean gap is only 0\.4 μg\/m³, but hour-by-hour gaps are large \(mean absolute error 12\.5 μg\/m³\)$/); assert.doesNotMatch(cap(mixed, 'en').body, /roughly matches/)
+  for (const [bias, mae, verdict] of [[8.24, 9, 'over'], [-3, 2, 'under'], [0.99, 5, 'match'], [-0.99, 5.01, 'mixed'], [1, 0.5, 'over'], [-1, 0.5, 'under'], [0, 0, 'match']]) {
+    const body = cap(airWith(cmpOf({ bias, mae })), 'zh').body
+    assert.equal(airCompareVerdict({ bias, mae }), verdict, `${bias}/${mae}`)
+    assert.match(body, { over: /高估/, under: /低估/, match: /大致吻合/, mixed: /但逐時落差明顯/ }[verdict], `${bias}/${mae}`)
+  }
+  assert.match(cap(airWith(cmpOf({ bias: 8, mae: 9 })), 'zh').body, /高估 8\.0 μg\/m³$/, '一位小數（8.0 不寫成 8）')
+})
+
+test('模型 vs 觀測：測站名去掉結尾的「站」（避免「麥寮站站」）；沒有測站名 → 「環境部測站」；不認得的測站名英文維持原文（專有名詞）', () => {
+  assert.match(cap(airWith(cmpOf({ station: { name: '麥寮站' } })), 'zh').body, /環境部麥寮站觀測/); assert.doesNotMatch(cap(airWith(cmpOf({ station: { name: '麥寮站' } })), 'zh').body, /站站/)
+  for (const station of [undefined, null, {}, { name: 5 }, { name: '' }]) {
+    const a = airWith(cmpOf({ station }))
+    assert.equal(a.caption.p.cmp.station, ''); assert.match(cap(a, 'zh').body, /與環境部測站觀測相比，模型平均高估/); assert.match(cap(a, 'en').body, /Versus MOENV station observations/)
+  }
+  assert.match(cap(airWith(cmpOf({ station: { name: '斗六' } })), 'en').body, /MOENV’s 斗六 station/)
+})
+
+test('模型 vs 觀測：誠實——字幕仍標明「模型資料」「非政府觀測」與來源；比較句的主詞是「模型」、觀測歸環境部測站；中英文都不含 undefined / NaN / 沒填的 {placeholder}；en 不含中文（測站名為 麥寮 時）', () => {
+  const a = airWith(cmpOf())
+  for (const loc of ['zh', 'en']) {
+    const c = cap(a, loc), all = c.title + '|' + c.body
+    assert.doesNotMatch(all, BAD); assert.doesNotMatch(all, /\{\w+\}/)
+    assert.match(c.body, loc === 'zh' ? /Open-Meteo \/ CAMS 模型，非政府觀測/ : /Open-Meteo \/ CAMS model, not government observations/)
+    assert.doesNotMatch(c.body, /\bofficial\b|官方/i)
+    if (loc === 'en') assert.doesNotMatch(all, HAN)
+  }
+  assert.doesNotMatch(cap(a, 'zh').body, /政府(公布|測站)/, '不說成政府資料 / 官方；觀測只歸「環境部測站」')
+  const zh = cap(a, 'zh').body
+  assert.ok(zh.length > 62 && zh.length <= 115, `字幕比平常長，TourCaption 用 data-long 放寬到 3 行（${zh.length} 字）`)
+  assert.ok(cap(a, 'en').body.length <= 240)
+})
+
+test('模型 vs 觀測：沒有觀測可比（airCompare 回 null / undefined / 丟例外 / 數值壞掉 / n 為 0）→ 完整的 stop 與只有模型時逐位元相同（字幕與旁白都不變）；預設的 airCompare（沒有 gov.air.obs）也是', () => {
+  const base = JSON.stringify(baseAir())
+  const bads = [() => null, () => undefined, () => { throw new Error('boom') }, () => ({ bias: NaN, mae: 1, n: 5 }), () => ({ bias: 1, mae: NaN, n: 5 }), () => ({ bias: 1, mae: 1, n: 0 }), () => ({ bias: '8', mae: 1, n: 5 }), () => 'x', () => 5, () => ({})]
+  for (const c of bads) { let a; assert.doesNotThrow(() => { a = airWith(c) }); assert.equal(JSON.stringify(a), base); assert.ok(!('cmp' in a.caption.p)) }
+  assert.equal(JSON.stringify(buildTour(mkGov(), { now: NOW }).find((s) => s.id === 'air')), base, '預設 airCompare + mkGov（沒有 obs）')
+  assert.deepEqual(baseAir().caption.p, { name: '空氣品質 · 雲林', lo: 12, hi: 47, n: 24, flat: false })
+  assert.equal(cap(baseAir(), 'zh').body, 'PM2.5 12–47 μg/m³（Open-Meteo / CAMS 模型，非政府觀測）：越高，海水越混濁、垃圾越多')
+  const cmpCalls = []
+  airWith((air) => { cmpCalls.push(air); return null })
+  assert.equal(cmpCalls.length, 1); assert.ok(cmpCalls[0] && Array.isArray(cmpCalls[0].history), '以 gov.air 呼叫（一次）')
+})
+
+test('模型 vs 觀測：flat 句型（範圍收斂成單一數字）也能接比較句；沒有 gov.air 的站仍被略過（不呼叫 airCompare）', () => {
+  const g = mkGov(); g.air.history = g.air.history.map((h) => ({ ...h, pm25: 30.2 }))
+  const a = airWith(cmpOf({ bias: 2, mae: 3 }), g)
+  assert.match(cap(a, 'zh').body, /PM2\.5 約 30 μg\/m³.*變化很小。與環境部麥寮站觀測相比，模型平均高估 2\.0 μg\/m³$/)
+  let called = 0
+  const g2 = mkGov(); delete g2.air
+  assert.equal(buildTour(g2, { now: NOW, airCompare: () => { called++; return null } }).some((s) => s.id === 'air'), false); assert.equal(called, 0)
+})
+
+test('模型 vs 觀測：導覽字幕的比較句進得了旁白（zh / en 都念出「模型」與「環境部 / MOENV」）', () => withSpeak(() => {
+  const nar = makeNarrator()
+  const h = harness({ narrator: nar, extra: { build: (g, o) => buildTour(g, { now: NOW, airCompare: cmpOf(), ...o }) } })
+  h.run(); h.runner.goto('air')
+  const spoken = nar.spoken()[nar.spoken().length - 1]
+  assert.match(spoken, /與環境部麥寮站觀測相比，模型平均高估 8\.2 微克每立方公尺/)
+}))
+
+// =============================================================================================
+// 揚塵站：水利署風速凍結、改看 Open-Meteo 模型風速（series.js 的 extra.metric === 'wind-model'；seriesFromDust 由測試注入）
+// =============================================================================================
+const windModelSpec = (lo = 2.1, hi = 6.3) => ({
+  kind: 'dust', name: '揚塵（雲林縣）', label: '風速（模型）', unit: 'm/s', date: 'a → b', step: 0.7, target: 'current', extra: { metric: 'wind-model' },
+  points: [{ t: 'a', v: lo }, { t: 'b', v: (lo + hi) / 2 }, { t: 'c', v: hi }], stats: { min: lo, max: hi, mean: (lo + hi) / 2 },
+})
+const dustWith = (fake, g = mkGov()) => buildTour(g, { now: NOW, seriesFromDust: fake }).find((s) => s.id === 'dust')
+
+test('揚塵：以 (gov.dust, undefined, gov.air) 呼叫 seriesFromDust（第三個參數是 gov.air）；回傳 wind-model 序列 → 字幕 p.metric = \'wind-model\'、範圍取自序列、仍是 series 站並帶著這份序列', () => {
+  const calls = []
+  const g = mkGov()
+  const stop = dustWith((...args) => { calls.push(args); return windModelSpec() }, g)
+  assert.equal(calls.length, 1); assert.equal(calls[0][0], g.dust); assert.equal(calls[0][1], undefined); assert.equal(calls[0][2], g.air)
+  assert.equal(stop.kind, 'series'); assert.equal(stop.series, 'dust'); assert.equal(stop.spec.extra.metric, 'wind-model'); assert.equal(stop.optionId, 'dust-yunlin')
+  assert.deepEqual(stop.caption.p, { name: '揚塵 · 雲林縣', mode: 'play', metric: 'wind-model', lo: 2.1, hi: 6.3, frozen: false })
+  assert.equal(stop.seqSec, 2.1, '3 點 × 0.7 秒'); assert.ok(stop.speed >= MIN_SPEED && stop.speed <= MAX_SPEED)
+  JSON.parse(JSON.stringify(stop.caption))
+})
+
+test('揚塵：模型風速字幕誠實（中英文）——水利署感測器回報凍結、改看 Open-Meteo 模型風速 X–Y m/s、風越大洋流越急、模型資料非政府觀測；範圍收斂 → 「約 X m/s」；en 不含中文', () => {
+  const stop = dustWith(() => windModelSpec())
+  const zh = cap(stop, 'zh'), en = cap(stop, 'en')
+  assert.equal(zh.body, '水利署感測器回報凍結，改看 Open-Meteo 模型風速 2.1–6.3 m/s：風越大，洋流越急（模型資料，非政府觀測）')
+  assert.equal(en.body, 'The WRA sensor reports frozen readings, so Open-Meteo modeled wind speed 2.1–6.3 m/s is used: stronger wind, faster current (model data, not government observations)')
+  assert.match(zh.title, /揚塵/); assert.match(en.title, /Dust/)
+  for (const c of [zh, en]) { assert.doesNotMatch(c.title + c.body, BAD); assert.doesNotMatch(c.title + c.body, /\{\w+\}/) }
+  assert.doesNotMatch(en.title + en.body, HAN); assert.doesNotMatch(en.body, /\bofficial\b|observed by/i)
+  const flat = dustWith(() => windModelSpec(3.4, 3.4))
+  assert.equal(flat.caption.p.frozen, true)
+  assert.equal(cap(flat, 'zh').body, '水利署感測器回報凍結，改看 Open-Meteo 模型風速約 3.4 m/s：這段時間變化很小（模型資料，非政府觀測）')
+  assert.match(cap(flat, 'en').body, /modeled wind speed of about 3\.4 m\/s.*not government observations/)
+  assert.ok(zh.body.length <= 62, `zh ${zh.body.length}`)
+})
+
+test('揚塵：模型風速的原因——水利署「沒有有效風速」（reason: invalid）→ 字幕改說「沒有有效的風速」而不是「凍結」；沒給 reason / frozen → 凍結（中英文都誠實）', () => {
+  const inv = dustWith(() => ({ ...windModelSpec(), extra: { metric: 'wind-model', reason: 'invalid' } }))
+  assert.equal(inv.caption.p.reason, 'invalid')
+  assert.equal(cap(inv, 'zh').body, '水利署感測器沒有有效的風速，改看 Open-Meteo 模型風速 2.1–6.3 m/s：風越大，洋流越急（模型資料，非政府觀測）')
+  assert.equal(cap(inv, 'en').body, 'The WRA sensor has no valid wind reading, so Open-Meteo modeled wind speed 2.1–6.3 m/s is used: stronger wind, faster current (model data, not government observations)')
+  assert.match(cap(dustWith(() => ({ ...windModelSpec(4, 4), extra: { metric: 'wind-model', reason: 'invalid' } })), 'zh').body, /沒有有效的風速，改看 Open-Meteo 模型風速約 4 m\/s：這段時間變化很小/)
+  const fr = dustWith(() => ({ ...windModelSpec(), extra: { metric: 'wind-model', reason: 'frozen' } }))
+  assert.ok(!('reason' in fr.caption.p), 'frozen 是預設，不帶 reason'); assert.match(cap(fr, 'zh').body, /感測器回報凍結/)
+  for (const loc of ['zh', 'en']) { const c = cap(inv, loc); assert.doesNotMatch(c.body, BAD); assert.doesNotMatch(c.body, /\{\w+\}/) }
+  assert.doesNotMatch(cap(inv, 'en').title + cap(inv, 'en').body, HAN)
+})
+
+test('揚塵（不注入，真的 series.js，契約 C5）：水利署風速凍結 / 沒有有效風速、而 gov.air.history 有逐時模型風速 → 導覽站用模型風速（wind-model）；沒有模型風速時行為與以前完全相同', () => {
+  const g = mkGov()
+  g.air.history = g.air.history.map((h, i) => ({ ...h, wind: Math.round((2 + i * 0.2) * 10) / 10 }))                                  // 2.0 … 6.6 m/s
+  g.dust.history = ['a', 'b', 'c'].map((k, i) => ({ t: `2026-09-20T0${i}:00:00+08:00`, pm10: null, wind: 3, temp: 30, rh: 70 }))       // 凍結：風速全是 3
+  const stop = buildTour(g, { now: NOW }).find((s) => s.id === 'dust')
+  assert.equal(stop.kind, 'series'); assert.equal(stop.spec.extra.metric, 'wind-model'); assert.equal(stop.spec.extra.reason, 'frozen')
+  assert.equal(stop.caption.p.metric, 'wind-model'); assert.equal(stop.caption.p.lo, 2); assert.equal(stop.caption.p.hi, 6.6); assert.ok(!('reason' in stop.caption.p))
+  assert.match(cap(stop, 'zh').body, /^水利署感測器回報凍結，改看 Open-Meteo 模型風速 2–6\.6 m\/s：風越大，洋流越急（模型資料，非政府觀測）$/)
+  assert.match(cap(stop, 'en').body, /modeled wind speed 2–6\.6 m\/s/)
+  g.dust.history = g.dust.history.map((h) => ({ ...h, wind: null }))                                                                     // 完全沒有有效風速
+  const inv = buildTour(g, { now: NOW }).find((s) => s.id === 'dust')
+  assert.equal(inv.caption.p.reason, 'invalid'); assert.match(cap(inv, 'zh').body, /沒有有效的風速/)
+  const g2 = mkGov(); g2.dust.history = g.dust.history.map((h) => ({ ...h, wind: 3 }))                                                   // 凍結，但 air 沒有風速 → 與以前相同（風速序列，不是模型）
+  const old = buildTour(g2, { now: NOW }).find((s) => s.id === 'dust')
+  assert.equal(old.caption.p.metric, 'wind'); assert.equal(old.spec, undefined, '只有模型風速站才帶 spec')
+  const hm = harness({ gov: g })
+  hm.run(); hm.runner.goto('dust')
+  assert.ok(hm.calls.some((c) => c[0] === 'playSeries' && c[1] === 'wind-model'), '執行器直接播放導覽算好的模型風速序列')
+})
+
+test('揚塵：既有的分支不變——PM10 序列 → \'pm10\'、風速序列 → \'wind\'、沒有序列 → 靜態站；wind-model 之外的 metric 一律照舊（注入的 seriesFromDust 只是換掉來源）', () => {
+  const mk = (metric) => ({ ...windModelSpec(), extra: { metric } })
+  assert.equal(dustWith(() => mk('pm10')).caption.p.metric, 'pm10')
+  assert.equal(dustWith(() => mk('wind')).caption.p.metric, 'wind')
+  assert.equal(dustWith(() => ({ ...windModelSpec(), extra: {} })).caption.p.metric, 'wind', '沒有 metric → 舊行為（風速）')
+  const stat = dustWith(() => null)
+  assert.equal(stat.kind, 'apply'); assert.equal(stat.caption.p.mode, 'static')
+  assert.deepEqual(buildTour(mkGov(), { now: NOW }).find((s) => s.id === 'dust').caption.p, dustWith(undefined).caption.p, '不注入 = 預設的 seriesFromDust')
+})
+
+test('執行器：揚塵站用了模型風速 → 直接播放這一站算好的序列（store.playSeries(spec, 目前海況選項)），字幕說的與球播的是同一份；一般揚塵站仍走 playDust', () => {
+  const build = (g, o) => buildTour(g, { now: NOW, seriesFromDust: () => windModelSpec(), ...o })
+  const h = harness({ extra: { build } })
+  h.run(); h.runner.goto('dust')
+  const ps = h.calls.filter((c) => c[0] === 'playSeries')
+  assert.deepEqual(ps, [['playSeries', 'wind-model', 'dust-yunlin']], '以該站的海況選項播放')
+  assert.ok(!h.calls.some((c) => c[0] === 'play' && c[1] === 'dust'), '沒有走 store.playDust（那個可能不知道 gov.air）')
+  assert.equal(h.S.rec.mode, 'playing'); assert.equal(h.calls.filter((c) => c[0] === 'play').pop()[2], buildTour(mkGov(), { now: NOW, seriesFromDust: () => windModelSpec() }).find((s) => s.id === 'dust').speed, '倍速已設好')
+  assert.equal(lastRunning(h).caption.p.metric, 'wind-model')
+  const h2 = harness(); h2.run(); h2.runner.goto('dust')
+  assert.deepEqual(h2.calls.filter((c) => c[0] === 'play').pop().slice(0, 2), ['play', 'dust']); assert.ok(!h2.calls.some((c) => c[0] === 'playSeries'))
+})
+
+test('執行器：store 沒有 playSeries / govOption（舊介面）時，模型風速站退回 playDust，不丟例外', () => {
+  const calls = []
+  const build = (g, o) => buildTour(g, { now: NOW, seriesFromDust: () => windModelSpec(), ...o })
+  const store = { getState: () => ({ gov: mkGov(), govOptionId: 'zengwen', params: { ...PARAMS }, rec: { mode: 'idle', speed: 1 }, setGovOption() {}, applyParams() {}, setRecSpeed() {}, stopPlayback() {}, pushLog() {}, playDust: () => calls.push('playDust') }) }
+  const r = createTourRunner({ store, now: () => 0, getActivity: () => 0, touch() {}, build, emit() {}, isRemote: () => false })
+  assert.doesNotThrow(() => { r.start({ auto: false, at: 'dust' }) })
+  assert.deepEqual(calls, ['playDust']); r.stop('user')
+})
+
+// =============================================================================================
+// 「念出字幕」開關：在使用者手勢內同步解鎖 iOS 的語音（契約 C6）
+// =============================================================================================
+test('setSpeakFromGesture(true)：先同步呼叫 narrator.unlock()（在偏好更新之前、任何 await 之前），再寫偏好；unlock 以方法呼叫（this 正確）', () => {
+  const nar = makeUnlockNarrator()
+  const order = []
+  const off = useTourStore.subscribe((s, prev) => { if (s.speak !== prev.speak) order.push('speak=' + s.speak) })
+  const origUnlock = nar.unlock
+  nar.unlock = function (...a) { order.push('unlock(' + useTourStore.getState().speak + ')'); return origUnlock.apply(this, a) }
+  try {
+    useTourStore.setState({ speak: false })
+    setSpeakFromGesture(true, nar)
+    assert.deepEqual(order, ['unlock(false)', 'speak=true'], 'unlock 在偏好變成 true 之前、同一個同步呼叫內就發生了')
+    assert.equal(nar.events.filter((e) => e[0] === 'unlock').length, 1); assert.equal(useTourStore.getState().speak, true)
+  } finally { off(); useTourStore.setState({ speak: false }) }
+})
+
+test('setSpeakFromGesture：關閉不解鎖；unlock 同步丟例外 / Promise 被 reject / 回傳非 Promise → 偏好照樣更新、不丟例外、沒有 unhandled rejection', async () => {
+  const off = makeUnlockNarrator()
+  useTourStore.setState({ speak: true })
+  setSpeakFromGesture(false, off)
+  assert.equal(off.events.length, 0, '關閉不需要解鎖'); assert.equal(useTourStore.getState().speak, false)
+  for (const unlockMode of ['throw', 'reject', 'sync', 'ok']) {
+    const n = makeUnlockNarrator({ unlockMode })
+    useTourStore.setState({ speak: false })
+    assert.doesNotThrow(() => setSpeakFromGesture(true, n), unlockMode)
+    assert.equal(useTourStore.getState().speak, true, unlockMode); assert.equal(n.events.length, 1, unlockMode)
+  }
+  await new Promise((r) => setTimeout(r, 5))                                        // 讓 reject 的 Promise 有機會冒成 unhandledRejection（測試程序會因此失敗）
+  const noUnlock = { unlock: undefined }
+  useTourStore.setState({ speak: false })
+  assert.doesNotThrow(() => setSpeakFromGesture(true, noUnlock), 'narrator 沒有 unlock（舊介面）'); assert.equal(useTourStore.getState().speak, true)
+  useTourStore.setState({ speak: false })
+})
+
+test('setSpeakFromGesture 預設用共用的 narrator（契約 C6：unlock / isUnlocked / unlockOnFirstGesture 三個方法都在）；偏好寫進 LS.tour.speak', async () => {
+  const { narrator } = await import('./narration.js')
+  for (const m of ['unlock', 'isUnlocked', 'unlockOnFirstGesture']) assert.equal(typeof narrator[m], 'function', m)
+  withStorage((data) => {
+    let unlockCalls = 0
+    const orig = narrator.unlock
+    narrator.unlock = function (...a) { unlockCalls++; return orig.apply(this, a) }   // 共用實例上的方法（以方法呼叫；還原後不留痕跡）
+    try {
+      useTourStore.setState({ speak: false })
+      setSpeakFromGesture(true)
+      assert.equal(unlockCalls, 1); assert.equal(loadLS(LS.tour, {}).speak, true)
+    } finally { narrator.unlock = orig; useTourStore.setState({ speak: false }) }
+  })
+})
+
+// 回歸：有環境部觀測、且資料卡的「驅動海況的資料」選了觀測時，導覽的空氣品質站曾播觀測序列，但字幕與標題說的是模型資料 → 字幕與球不一致
+test('空氣品質站：有環境部觀測（且驅動海況選觀測）時，導覽仍播「字幕描述的模型序列」——與資料卡的驅動切換脫鉤，字幕範圍與播放序列是同一份', () => {
+  const gov = mkGov()
+  gov.air = { ...gov.air, obs: { station: { name: '麥寮', county: '雲林縣' }, fetchedAt: '2026-09-20T01:00:00Z', history: gov.air.history.map((x) => ({ t: x.t, pm25: Math.round((x.pm25 || 0) * 0.8 * 10) / 10, pm10: x.pm10, aqi: 40, wind: 1 })) } }
+  gov.airDrive = 'obs'
+  const h = harness({ gov }); h.run(); h.step(500)
+  assert.equal(h.runner.goto('air'), true)
+  const sp = h.specs[h.specs.length - 1]
+  assert.ok(sp, '空氣品質站有以 playSeries 播放帶著的序列')
+  assert.equal(sp.kind, 'air'); assert.match(sp.name, /模型/); assert.doesNotMatch(sp.name, /環境部觀測/)
+  const e = lastRunning(h)
+  assert.equal(e.caption.key, 'air'); assert.equal(e.caption.p.lo, Math.round(sp.stats.min)); assert.equal(e.caption.p.hi, Math.round(sp.stats.max))
 })

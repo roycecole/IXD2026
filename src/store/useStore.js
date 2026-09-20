@@ -399,9 +399,9 @@ export const useStore = create((set, get) => ({
   },
   playGovSeries: () => { const o = get().govOption(); const spec = seriesFromOption(o); if (spec) get().playSeries(spec, o) },
   playSurvey: (kind) => { const o = get().govOption(); const spec = seriesFromSurvey(o, kind); if (spec) get().playSeries(spec, o) },
-  playDust: () => { const g = get().gov; const o = get().govOption(); const spec = seriesFromDust(g && g.dust, T('揚塵')); if (spec) get().playSeries(spec, o) },
+  playDust: () => { const g = get().gov; const o = get().govOption(); const spec = seriesFromDust(g && g.dust, T('揚塵'), g && g.air); if (spec) get().playSeries(spec, o) },   // 第三個參數：水利署風速凍結時用 air.history 的逐時模型風速補洞（spec.extra.metric 'wind-model'）
   playMoon: () => { const g = get().gov; const o = get().govOption(); const spec = seriesFromMoon(g && g.moon); if (spec) get().playSeries(spec, o) },
-  playAir: () => { const g = get().gov; const o = get().govOption(); const spec = seriesFromAir(g && g.air, T('空氣品質')); if (spec) get().playSeries(spec, o) },   // Open-Meteo / CAMS 模型資料（逐時 PM2.5）
+  playAir: () => { const g = get().gov; const o = get().govOption(); const spec = seriesFromAir(g && g.air, T('空氣品質'), { source: (g && g.airDrive) || 'auto' }); if (spec) get().playSeries(spec, o) },   // 逐時 PM2.5：gov.airDrive（'model' | 'obs'，資料卡的「驅動海況的資料」切換）；沒選過 = 'auto'（有環境部觀測就用觀測，否則 Open-Meteo / CAMS 模型資料）
 
   // ---- 場景切換 / Marker 快照（nanoKONTROL2 Track ◀▶ / Marker 鍵）----
   sceneIdx: 0,

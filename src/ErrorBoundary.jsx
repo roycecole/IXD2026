@@ -1,7 +1,9 @@
 // 最外層錯誤邊界（展場防呆）：render 出錯 → 復原畫面 + 倒數自動重新載入，不需要工程師到場。
 //   · 復原畫面不依賴會出錯的東西：只用 React + 語系 t()（包一層 try/catch）+ resilience.css；語系用 import { t }（class 元件不能用 hook）。
 //   · 崩潰寫進 localStorage 環狀紀錄（最近 20 筆：時間 / 訊息 / stack 前 300 字 / build id / 網址旗標），同一個錯誤（StrictMode 雙呼叫）合併成一筆。
-//   · 自動重載退避：第 1 次 5 秒；1 分鐘內第 2 次 15 秒、第 3 次 60 秒；10 分鐘內累積 5 次 → 停止自動重載，改顯示「請人工處理」與手動按鈕（避免無限重載風暴）。
+//   · 自動重載退避：第 1 次 5 秒；1 分鐘內第 2 次 15 秒、第 3 次 60 秒；10 分鐘內累積 5 次 → 停止「快速」重載（避免無限重載風暴）。
+//     熔斷是「半開」的：停止後排一次冷卻重試（最後一次致命事件起算 10 分 30 秒，讓舊紀錄滑出視窗；重載後退避鏈重新從 5 秒開始），畫面誠實顯示
+//     「已停止快速重試，約 N 分鐘後會再試一次」（分鐘級倒數，只在分鐘變動時重畫），仍保留「立即重新載入」；再崩潰就再走一輪（每輪最多 5 次快速重試 + 1 次冷卻重試）。
 //   · window 'error' / 'unhandledrejection' 只記錄、不重載（見 lib/resilience.js 的 installErrorCapture）。
 //   · 觀眾視窗（?audience=1）不渲染 Services，所以由這裡啟動它需要的防呆（WebGL 遺失 / 看門狗 / 版本檢查 / 資料更新）；主畫面由 services/ResilienceService.jsx 啟動。
 //     觀眾視窗的環境來自 audienceEnv()：全螢幕（投影機）中不因新版而重載（重載會退出全螢幕，要有人到投影機前點一下）；資料就地更新，換資料的方法由 AudienceApp 註冊（入口 chunk 不能 import store）。
@@ -11,13 +13,15 @@ import React, { useEffect, useState, useSyncExternalStore } from 'react'
 import { t as translateNow, T, useT } from './i18n/index.js'
 import {
   BUILD_ID, opsStatus, getCrashLog, planAutoReload, errorInfo, installErrorCapture, resolveConfig, startGuards, flagSummary, audienceEnv,
+  HALF_OPEN_MS, minutesLeft, cooldownMinutes,
 } from './lib/resilience.js'
 import './styles/resilience.css'
 
 // 語系（i18n）本身若出問題，復原畫面仍要能顯示：退回中文原文 + 插值
 const t = (zh, params) => { try { return translateNow(zh, params) } catch (e) { return String(zh).replace(/\{(\w+)\}/g, (m, k) => (params && k in params ? String(params[k]) : m)) } }
 
-const TICK_MS = 500
+const TICK_MS = 500          // 倒數（秒級）的檢查間隔
+const COOL_TICK_MS = 1000    // 熔斷冷卻（分鐘級）的檢查間隔：只為了到點準時重載；畫面只在「分鐘」變動時才重畫
 
 export default class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -75,12 +79,14 @@ export default class ErrorBoundary extends React.Component {
     } catch (e) {
       plan = { stop: false, delayMs: 5000, count1: 1, count10: 1 }   // 連記錄都失敗（儲存壞了）：仍然用最保守的第 1 次退避
     }
-    this.setState({ plan, deadline: plan.stop ? 0 : d.now() + plan.delayMs, left: plan.stop ? 0 : plan.delayMs })
+    // 熔斷（plan.stop）也有倒數：冷卻到點自動重載一次（半開）；否則是退避倒數
+    const wait = plan.stop ? (Number.isFinite(plan.cooldownMs) ? plan.cooldownMs : HALF_OPEN_MS) : plan.delayMs
+    this.setState({ plan, deadline: d.now() + wait, left: wait })
   }
 
   componentDidUpdate() {
     const { error, plan } = this.state
-    if (error && plan && !plan.stop && this.timer === null) this.startCountdown()
+    if (error && plan && this.timer === null) this.startCountdown()
   }
 
   componentWillUnmount() {
@@ -91,11 +97,13 @@ export default class ErrorBoundary extends React.Component {
 
   startCountdown() {
     const d = this.deps()
+    const cooling = !!(this.state.plan && this.state.plan.stop)
     this.timer = d.setInterval(() => {
       const left = Math.max(0, this.state.deadline - d.now())
       if (left <= 0) { this.stopTimer(); this.reloadNow(); return }
+      if (cooling && minutesLeft(left) === minutesLeft(this.state.left)) return   // 分鐘級：分鐘沒變就不重畫
       this.setState({ left })
-    }, TICK_MS)
+    }, cooling ? COOL_TICK_MS : TICK_MS)
   }
 
   stopTimer() {
@@ -115,15 +123,21 @@ export default class ErrorBoundary extends React.Component {
     const info = errorInfo(error)
     const halted = !!(plan && plan.stop)
     const secs = Math.max(1, Math.ceil(left / 1000))
+    const mins = minutesLeft(left)
     return (
       <div className="res-crash" role="alert">
         <div className="res-crash-card">
-          <h1 className="res-crash-title">{halted ? t('發生錯誤，請人工處理') : t('發生錯誤，{s} 秒後自動重新載入', { s: secs })}</h1>
+          <h1 className="res-crash-title">{halted ? t('發生錯誤，已停止快速重試') : t('發生錯誤，{s} 秒後自動重新載入', { s: secs })}</h1>
           {halted
-            ? <p className="res-crash-msg">{t('短時間內反覆發生錯誤，已停止自動重新載入。請按下面的按鈕重新載入，或關閉分頁後重新開啟。')}</p>
+            ? (
+              <>
+                <p className="res-crash-msg">{t('短時間內反覆發生錯誤，已停止快速重新載入。你可以按下面的按鈕立即重新載入，或關閉分頁後重新開啟。')}</p>
+                <p className="res-crash-cool">{left > 60000 ? t('約 {m} 分鐘後會自動再試一次', { m: mins }) : t('不到 1 分鐘後會自動再試一次')}</p>
+              </>
+            )
             : <p className="res-crash-count" aria-hidden="true">{secs}</p>}
           <div className="res-crash-actions">
-            <button type="button" className="res-btn" onClick={this.reloadNow}>{halted ? t('重新載入') : t('立即重新載入')}</button>
+            <button type="button" className="res-btn" onClick={this.reloadNow}>{t('立即重新載入')}</button>
           </div>
           <details className="res-crash-details">
             <summary>{t('錯誤摘要')}</summary>
@@ -148,6 +162,7 @@ export function GuardNotice() {
   const t = useT()
   const st = useSyncExternalStore(opsStatus.subscribe, opsStatus.get, opsStatus.get)
   const [hiddenAt, setHiddenAt] = useState(0)
+  const [, setTick] = useState(0)
   const gl = st.gl
   useEffect(() => {
     if (gl.state !== 'restored') return undefined
@@ -155,9 +170,17 @@ export function GuardNotice() {
     return () => clearTimeout(id)
   }, [gl.state, gl.at])
 
+  // 熔斷冷卻倒數是分鐘級：提示顯示期間每 15 秒重畫一次就夠
+  const cooling = !!(st.halted && st.haltRetryAt)
+  useEffect(() => {
+    if (!cooling) return undefined
+    const id = setInterval(() => setTick((n) => n + 1), 15000)
+    return () => clearInterval(id)
+  }, [cooling])
+
   let msg = ''
   let warn = false
-  if (st.halted) { msg = t('短時間內多次異常，已停止自動重新載入。請人工處理。'); warn = true }
+  if (st.halted) { msg = cooling ? t('短時間內多次異常，已停止快速重新載入，約 {m} 分鐘後會再試一次。', { m: cooldownMinutes(st.haltRetryAt, Date.now()) }) : t('短時間內多次異常，已停止自動重新載入。請人工處理。'); warn = true }
   else if (st.reloading && Object.prototype.hasOwnProperty.call(REASON_LABEL, st.reloading.reason)) { msg = t('偵測到異常（{why}），即將重新載入…', { why: t(REASON_LABEL[st.reloading.reason]) }); warn = true }
   else if (gl.state === 'lost') { msg = t('顯示引擎暫時中斷，嘗試恢復中…'); warn = true }
   else if (gl.state === 'restored' && hiddenAt !== gl.at) msg = t('顯示引擎已恢復')

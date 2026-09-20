@@ -4,6 +4,7 @@
 //                             回傳的 stop.index 是「0 起算」（= URL 的 n − 1），可直接給 runner.start({ at })；非法值一律 null。
 //   buildTourLink({ href, stopId, hold, locale }) → 字串（只保留 origin + 路徑；只帶 tourstop（以站 id）、選帶 tourhold、lang（英文時））
 //   hasTourLink(search)     → boolean（給新手導覽判斷「這是導覽員的連結，不要再蓋一層新手導覽」）
+//   linkBase(href)          → 'origin + 路徑'（不合法 → ''）；lib/tourPlan.js 的 buildPlanLink（帶導覽腳本的連結）與 buildTourLink 共用
 //   copyText(text, env)     → Promise<boolean>（Clipboard API → 退回隱藏 textarea + execCommand('copy')）
 // 為什麼用「站 id」而不是序號：資料不齊或 AR 實景時導覽會略過某些站，序號會位移，站 id 不會。
 import { flagOn } from './urlFlags.js'
@@ -34,13 +35,21 @@ export const hasTourLink = (search) => parseTourLink(search) !== null
 export function buildTourLink({ href, stopId, hold = false, locale = 'zh' } = {}) {
   const id = typeof stopId === 'string' ? stopId.trim().toLowerCase() : ''
   if (!TOUR_STOP_IDS.includes(id)) return ''
-  let u
-  try { u = new URL(String(href)) } catch (e) { return '' }
-  const origin = u.origin && u.origin !== 'null' ? u.origin : `${u.protocol}//${u.host}`
+  const base = linkBase(href)
+  if (!base) return ''
   const q = [`tourstop=${id}`]
   if (hold) q.push('tourhold=1')
   if (locale === 'en') q.push('lang=en')
-  return `${origin}${u.pathname}?${q.join('&')}`
+  return `${base}?${q.join('&')}`
+}
+
+// 連結的「origin + 路徑」（不含任何查詢參數與 hash、帳密）；href 不是合法網址 → ''。
+// buildTourLink 與 lib/tourPlan.js 的 buildPlanLink（帶腳本的連結）共用，兩邊的網址骨架一致。
+export function linkBase(href) {
+  let u
+  try { u = new URL(String(href)) } catch (e) { return '' }
+  const origin = u.origin && u.origin !== 'null' ? u.origin : `${u.protocol}//${u.host}`
+  return `${origin}${u.pathname}`
 }
 
 // ---------------------------------------------------------------------------------------------

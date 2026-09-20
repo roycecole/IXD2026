@@ -32,8 +32,12 @@ const noop = () => {}
 //   enabled：使用者的意圖（開關）；phase：'off' | 'loading' | 'running' | 'error'
 //   error：{ code, detail }；camera：null | 'own'（自己的相機）| 'shared'（重用 AR 實景的相機）
 //   state：'idle'|'open_palm'|'pinch'|'other'；calm：平靜中
-const OFF = { enabled: false, phase: 'off', error: null, camera: null, delegate: null, state: 'idle', calm: false }
-export const useHandsStore = create(() => ({ ...OFF }))
+//   wave：最近一次「揮手換站」的動作（'next' | 'prev'，顯示約 2 秒後由 GestureService 清成 null）
+//   waveNav：「揮手換站」開關（預設開；不在 OFF 裡——關閉 / 重新啟用相機手勢不會重設它。只在手勢已啟用且資料導覽進行中才有作用）
+const OFF = { enabled: false, phase: 'off', error: null, camera: null, delegate: null, state: 'idle', calm: false, wave: null }
+export const useHandsStore = create(() => ({ ...OFF, waveNav: true }))
+
+export function setWaveNav(on) { useHandsStore.setState({ waveNav: !!on, wave: null }) }
 
 export function setGestureEnabled(on) {
   if (!on) { useHandsStore.setState({ ...OFF }); return true }
@@ -70,6 +74,10 @@ export function errorKey(code) { return ERROR_KEYS[code] || ERROR_KEYS.camera }
 
 const STATE_KEYS = { open_palm: T('張手'), pinch: T('捏合') }
 export function stateLabel(t, state) { const k = STATE_KEYS[state]; return k ? t(k) : '—' }
+
+// 揮手動作的名稱（跟導覽的「下一站 / 上一站」同一組詞）
+const WAVE_KEYS = { next: T('下一站'), prev: T('上一站') }
+export function waveLabel(t, action) { const k = WAVE_KEYS[action]; return k ? t(k) : '—' }
 
 // ---- 錯誤分類 ----
 function cameraErrorCode(e) {

@@ -1,11 +1,13 @@
-// 展場防呆（錯誤復原畫面 / 提示 / 「裝置」面板的「維運」一節 / 資料更新日誌）。
-// 用語：sphere 不出現；「重新載入」= reload；「崩潰紀錄」= crash log；「看門狗」= watchdog；「閒置」= idle。
+// 展場防呆（錯誤復原畫面 / 提示 / 「裝置」面板的「維運」一節 / 角落維運指示燈 / 資料更新日誌）。
+// 用語：sphere 不出現；「重新載入」= reload；「崩潰紀錄」= crash log；「看門狗」= watchdog；「閒置」= idle；「熔斷」= breaker（快速重試停止後冷卻再試一次 = half-open retry）；「維運指示燈」= ops light。
 export default {
   // ---- 錯誤復原畫面（ErrorBoundary）----
-  '發生錯誤，請人工處理': 'Something went wrong. Please restart manually',
+  '發生錯誤，已停止快速重試': 'Something went wrong. Quick retries have stopped',
   '發生錯誤，{s} 秒後自動重新載入': 'Something went wrong. Reloading in {s} s',
-  '短時間內反覆發生錯誤，已停止自動重新載入。請按下面的按鈕重新載入，或關閉分頁後重新開啟。':
-    'The error keeps happening, so automatic reloading has stopped. Press the button below to reload, or close the tab and open it again.',
+  '短時間內反覆發生錯誤，已停止快速重新載入。你可以按下面的按鈕立即重新載入，或關閉分頁後重新開啟。':
+    'The error keeps happening, so quick automatic reloads have stopped. Press the button below to reload now, or close the tab and open it again.',
+  '約 {m} 分鐘後會自動再試一次': ({ m }) => `Trying again automatically in about ${m} ${m === 1 ? 'minute' : 'minutes'}`,
+  '不到 1 分鐘後會自動再試一次': 'Trying again automatically in less than a minute',
   '重新載入': 'Reload',
   '立即重新載入': 'Reload now',
   '錯誤摘要': 'Error details',
@@ -17,6 +19,7 @@ export default {
   '顯示引擎暫時中斷，嘗試恢復中…': 'Graphics engine interrupted, trying to recover…',
   '顯示引擎已恢復': 'Graphics engine recovered',
   '短時間內多次異常，已停止自動重新載入。請人工處理。': 'Repeated problems in a short time: automatic reloading has stopped. Please reload manually.',
+  '短時間內多次異常，已停止快速重新載入，約 {m} 分鐘後會再試一次。': ({ m }) => `Repeated problems in a short time: quick automatic reloads have stopped. Trying again in about ${m} ${m === 1 ? 'minute' : 'minutes'}.`,
 
   // ---- OUT 日誌 ----
   '資料已更新 · {time}': 'Data updated · {time}',
@@ -33,6 +36,17 @@ export default {
   '崩潰紀錄': 'Crash log',
   '共 {n} 筆 · 近 10 分鐘重新載入 {m} 次': ({ n, m }) => `${n} ${n === 1 ? 'entry' : 'entries'} · ${m} ${m === 1 ? 'reload' : 'reloads'} in the last 10 min`,
   '已停止自動重新載入': 'automatic reload stopped',
+  '已停止快速重新載入，約 {m} 分鐘後會再試一次': ({ m }) => `quick automatic reloads stopped; trying again in about ${m} ${m === 1 ? 'minute' : 'minutes'}`,
+  '熔斷後復原': 'Breaker recovery',
+  '冷卻中：約 {m} 分鐘後會自動重新載入一次': ({ m }) => `Cooling down: one automatic reload in about ${m} ${m === 1 ? 'minute' : 'minutes'}`,
+  '待命（10 分鐘內累積 5 次異常就停止快速重試，10 分 30 秒後自動再試一次）':
+    'Standing by (after 5 failures within 10 min, quick retries stop and one automatic retry follows 10 min 30 s later)',
+  '遙控器在場': 'Phone remote presence',
+  '手機遙控器 {m} 分鐘內有操作，就算有人在（延後重新載入與資料更新）': ({ m }) => `A phone remote used within ${m} ${m === 1 ? 'minute' : 'minutes'} counts as someone being present (reloads and data updates wait)`,
+  '在畫面右下角顯示維運指示燈': 'Show the ops light in the bottom-right corner',
+  '綠色圓點＝正常、琥珀色空心圓＝有事在等待、紅色三角＝異常、灰色虛線圓＝防呆未啟用。展場模式（?kiosk）預設顯示。':
+    'Green dot = fine, amber ring = something is waiting, red triangle = problem, grey dashed circle = safeguards off. Shown by default in kiosk mode (?kiosk).',
+  '這一次網址帶了 ?oplight，畫面以網址為準（不會改這個偏好）。': 'This time the URL has ?oplight, so the URL decides what is shown (this preference is not changed).',
   '目前啟用的防呆': 'Active safeguards',
   '渲染看門狗': 'Render watchdog',
   'WebGL 復原': 'WebGL recovery',
@@ -67,6 +81,7 @@ export default {
   '已更新到 {at}': 'Updated to {at}',
   '有視窗開著': 'a dialog is open',
   '有人操作中': 'someone is using it',
+  '遙控器使用中': 'a phone remote is in use',
   '錄製中': 'recording',
   '導覽中': 'tour running',
   '播放中': 'playing',
@@ -74,6 +89,7 @@ export default {
   '觀眾視窗全螢幕中': 'the audience window is fullscreen',
   '新版本': 'new version',
   '每日重載': 'daily reload',
+  '熔斷冷卻後重試': 'retry after breaker cooldown',
   '畫面錯誤': 'Render error',
   '顯示引擎失效': 'Graphics context lost',
   '畫面卡死': 'Rendering stalled',
@@ -86,4 +102,24 @@ export default {
   '立即檢查更新': 'Check for updates now',
   '清除崩潰紀錄': 'Clear crash log',
   '紀錄只存在這台裝置，不會傳送任何資料。': 'The log stays on this device; nothing is sent anywhere.',
+
+  // ---- 展場角落維運指示燈（ui/OpsLight.jsx）----
+  '維運指示燈：正常': 'Ops light: OK',
+  '維運指示燈：需注意': 'Ops light: attention',
+  '維運指示燈：異常': 'Ops light: problem',
+  '維運指示燈：未啟用': 'Ops light: off',
+  '一切正常': 'All good',
+  '防呆未啟用': 'Safeguards not active',
+  '防呆未啟用（開發版）': 'Safeguards not active (dev build)',
+  '異常過多：已停止快速重新載入，約 {m} 分鐘後會再試一次': ({ m }) => `Too many problems: quick automatic reloads stopped, trying again in about ${m} ${m === 1 ? 'minute' : 'minutes'}`,
+  '已停止自動重新載入，請人工處理': 'Automatic reload stopped. Please reload manually',
+  '即將重新載入頁面': 'Reloading the page shortly',
+  '偵測到畫面停止更新（看門狗）': 'Rendering stalled (watchdog)',
+  '新版 {id} 等待閒置（{why}）': 'New version {id} waiting for idle ({why})',
+  '新版 {id} 即將重新載入': 'New version {id}: reloading shortly',
+  '有新版 {id}（已關閉自動重新載入）': 'New version {id} available (automatic reload is off)',
+  '新資料等待閒置（{why}）': 'New data waiting for idle ({why})',
+  '新資料即將更新': 'New data about to be applied',
+  '近 10 分鐘崩潰紀錄有 {n} 筆事件': ({ n }) => `${n} crash-log ${n === 1 ? 'event' : 'events'} in the last 10 min`,
+  '開啟維運面板': 'Open Ops panel',
 }

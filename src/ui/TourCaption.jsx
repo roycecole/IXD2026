@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store/useStore.js'
-import { useTourStore, captionText } from '../lib/tour.js'
+import { useTourStore, captionText, captionNote } from '../lib/tour.js'
 import { tourRunner } from '../services/tourCore.js'
 import TourNav from './TourNav.jsx'
-import { useT } from '../i18n/index.js'
+import { useT, useLocale } from '../i18n/index.js'
 import '../styles/tour.css'
 import '../styles/tourpresenter.css'
+import '../styles/tourplan.css'
 
 // 資料導覽字幕：畫布下方置中的大字幕（標題一行 + 說明最多兩行）、淡入淡出、一排進度點（第 n / N 站）、導覽員控制列。
 // 屬於「畫布上的資訊面板」：受 overlays.hud 控制（關閉時不顯示，導覽仍照跑）。
@@ -14,11 +15,17 @@ import '../styles/tourpresenter.css'
 // 主視窗：進度點是真的 <button>（點了跳到該站；視覺上仍是小點，觸控熱區 ≥ 44px 靠按鈕本身的高度，見 tourpresenter.css），下方是 TourNav。
 // 容器整塊 pointer-events: none（不擋 3D 畫布的拖曳），只有按鈕收事件；朗讀用的 live region 只包標題 / 說明（按鈕與「已暫停」小標不在裡面：狀態變化不會把整段字幕重讀一次，
 // 暫停 / 繼續由 TourNav 內那個一直存在的 live region 簡短播報）。
+// 空氣品質站字幕若帶了「模型 vs 環境部測站觀測」（caption.p.cmp），字幕下方附一行小字出處與授權（政府資料開放授權條款－第1版）。
+// 導覽腳本的備註（caption.p.note，導覽員輸入的原文、不翻譯）顯示在說明下方：較小字、另一種顏色、最多兩行（超出省略）；主視窗與觀眾視窗（經 mirror）都看得到。
+// 說明比平常長（例如空氣品質站多了「模型 vs 觀測」一句）時 data-long 讓說明放寬到 3 行，誠實的比較句才不會被省略號吃掉。
 // 淡入用 setTimeout（不是 rAF）：內嵌 / 背景面板的 rAF 會被節流。
 const stopDbl = (e) => e.stopPropagation()   // .canvas-wrap 的雙擊 = 切換演出模式：連點進度點不該把演出模式切掉
 
+const LONG_BODY = { zh: 62, en: 120 }   // 超過這個字數（既有各站字幕的上限）→ 說明放寬到 3 行
+
 export default function TourCaption() {
   const t = useT()
+  const locale = useLocale()
   const hud = useStore((s) => s.overlays.hud)
   const running = useTourStore((s) => s.running)
   const caption = useTourStore((s) => s.caption)
@@ -54,6 +61,8 @@ export default function TourCaption() {
   }, [running, hud, caption, index, total, stopMs, seq])
 
   const txt = view ? captionText(view.caption) : null
+  const note = view ? captionNote(view.caption) : ''
+  const cmpSrc = !!(view && view.caption && view.caption.key === 'air' && view.caption.p && view.caption.p.cmp)   // 字幕用了環境部測站觀測 → 附出處與授權
   const interactive = !remote                // 主視窗：進度點可點 + 導覽員控制列；觀眾視窗：純顯示
   const dotClass = (i) => 'tour-dot' + (i < view.index ? ' done' : i === view.index ? ' cur' : '')
   const dotFill = (i) => i === view.index && <b key={view.seq} style={{ animationDuration: view.stopMs + 'ms' }} />
@@ -65,7 +74,9 @@ export default function TourCaption() {
           {paused && <span className="tour-paused">{t('已暫停')}</span>}
           <div className="tour-cap-text" role="status" aria-live="polite" aria-label={t('資料導覽字幕')}>
             <div className="tour-cap-title">{txt.title}</div>
-            <div className="tour-cap-body">{txt.body}</div>
+            <div className="tour-cap-body" data-long={txt.body.length > (locale === 'en' ? LONG_BODY.en : LONG_BODY.zh) ? 'true' : undefined}>{txt.body}</div>
+            {cmpSrc && <div className="tour-cap-src">{t('資料來源：環境部測站觀測（政府資料開放授權條款－第1版）')}</div>}
+            {note && <div className="tour-cap-note">{note}</div>}
             <span className="tour-sr">{t('第 {n} / {total} 站', { n: view.index + 1, total: view.total })}</span>
           </div>
           {interactive ? (

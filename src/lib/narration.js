@@ -9,7 +9,17 @@
 //   cancel() / speaking()       speaking() 追蹤「自己」的狀態（從 speak() 被接受到結束），不依賴 synth.speaking（某些瀏覽器不準）
 //   onChange(cb) → off          speaking 狀態改變時 cb(boolean)；只在「真的變化」時通知（下一句蓋掉上一句不會閃一次 false）
 //   pickVoice(lang)             依 lang 挑聲音（可能是 null）；voices 一開始可能是空的，會監聽 voiceschanged 並快取
-//   dispose()                   cancel + 移除 voiceschanged 監聽 + 清所有訂閱。之後仍可再用（會重新掛監聽）——StrictMode 雙掛載 / 熱更新安全
+//   dispose()                   cancel + 移除 voiceschanged 監聽 + 清所有訂閱 + 拆掉一次性手勢監聽。之後仍可再用（會重新掛監聽）——StrictMode 雙掛載 / 熱更新安全
+//   unlock(text?)               → Promise<'done' | 'error' | 'unsupported'>（永遠 resolve）：iOS Safari 只允許「使用者手勢的呼叫堆疊內」第一次 speak()。
+//                               這裡「同步」呼叫 synth.speak（不先 cancel、不經 CANCEL_DELAY_MS 延遲——延遲會讓 speak 落在手勢視窗之外）念一句很短的確認語
+//                               （預設「旁白已開啟」/ "Narration on"，依語系）；onstart / onend 任一觸發 → isUnlocked() 為 true、resolve 'done'。
+//                               被擋（onerror 'not-allowed' 等）→ 'error'；沒有 speechSynthesis → 'unsupported'。speak() 被接受後才被別句 cancel（interrupted / canceled）也算解鎖
+//                               （WebKit 是在「手勢內呼叫 speak()」的當下就解除限制，不是等發聲）。旁白正在念且已解鎖時直接回 'done'（不把確認語排在字幕後面）。
+//   isUnlocked()                → boolean：這個頁面是否已成功念過一次（任何一句 speak / unlock 的 onstart / onend 都算）
+//   unlockOnFirstGesture(win?)  → off()：註冊一次性 capture 監聽（pointerdown / keydown / touchend），第一次「真的算使用者啟用」的手勢時同步「無聲」解鎖（音量 0 的空白 utterance），
+//                               成功後拆掉所有監聽。觸控的 pointerdown 不算啟用手勢（等 touchend）、單獨的修飾鍵 / Esc 不算——若第一下被擋（'error'）會重新掛監聽，最多再試 MAX_GESTURE_TRIES 次
+//                               （第二次起改用音量 0 的單字 SILENT_WORD：引擎不接受空白 utterance 時的退路）。
+//                               重複呼叫安全（同一個 window 只掛一組，以參照計數；每個 off() 只算一次）；沒有 speechSynthesis 或已解鎖 → 直接回 no-op。win 省略時在「呼叫當下」才讀全域 window。
 //
 // 瀏覽器怪癖（Node 測不到，所以這裡的寫法都刻意防著）：
 //   · 原生方法一律「以方法呼叫」（synth.speak(u)、synth.cancel()、synth.addEventListener(…)），絕不存進變數或物件屬性再呼叫，
@@ -95,6 +105,21 @@ export function pickVoiceFrom(voices, lang) {
 // ---------------------------------------------------------------------------------------------
 // 標記給 i18n 掃描器：以下中文是「朗讀用的詞」（不是畫面上的 UI 文字）。英文詞在上方 SPOKEN_UNITS 的 en / en1，字典見 src/i18n/en/narration.js（測試會核對兩邊一致）。
 const T = (zh) => zh
+
+// iOS 解鎖：確認語（英文版內建於此；字典見 src/i18n/en/guidecmd.js，測試會核對兩邊一致）、無聲解鎖用的空白、監聽的事件與重試上限
+export const UNLOCK_TEXT = { zh: T('旁白已開啟'), en: 'Narration on' }
+export const SILENT_TEXT = ' '       // 無聲解鎖第一次嘗試：音量 0 的空白 utterance
+export const SILENT_WORD = 'a'       // 引擎不接受空白 utterance 而被擋（error）時，之後的嘗試改用音量 0 的單字
+export const GESTURE_UNLOCK_EVENTS = ['pointerdown', 'keydown', 'touchend']
+export const MAX_GESTURE_TRIES = 3
+const NON_ACTIVATING_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta', 'AltGraph', 'CapsLock', 'NumLock', 'ScrollLock', 'Fn', 'FnLock', 'Escape', 'Dead', 'Unidentified'])
+// 這個手勢事件算不算「使用者啟用」：瀏覽器規格只有 mouse 的 pointerdown、觸控的 pointerup / touchend、非修飾鍵的 keydown 會解除限制（iOS Safari 尤其嚴格）
+function isActivatingEvent(ev) {
+  const type = ev && ev.type
+  if (type === 'pointerdown') return !ev.pointerType || ev.pointerType === 'mouse'
+  if (type === 'keydown') return !NON_ACTIVATING_KEYS.has(ev.key)
+  return true   // touchend（以及其他呼叫端自訂的事件）
+}
 
 // 單位：src 是正規表示式來源；zh 一種說法；en1 / en 是英文單數 / 複數（1 → 單數，其餘複數；沒有數字時用複數）
 // 順序有意義：長的、有斜線的在前（m³/s 先於 m³，cm/s 先於 cm）。
@@ -246,6 +271,9 @@ export function createNarrator(deps = {}) {
   const subs = new Set()
   let watch = null            // { synth, handler, mode:'listener'|'prop', prev }
   let voices = []             // voices 快取
+  let unlocked = false        // 這個頁面是否已成功念過一次（iOS 解鎖旗標；頁面層級的事實，dispose 不重設）
+  const primers = new Set()   // 進行中的「解鎖用 utterance」記錄（同時持有 utterance，避免被 GC）。與 cur 各自獨立：解鎖不會蓋掉正在念的字幕
+  let gesture = null          // 一次性手勢監聽 { win, refs, tries, on, fn }（同一時間只掛一組）
 
   const setSpeaking = (v) => {
     if (v === flag) return
@@ -288,7 +316,7 @@ export function createNarrator(deps = {}) {
     rec.done = true
     unsched(rec.delayId); unsched(rec.safetyId)
     rec.delayId = rec.safetyId = null
-    if (rec.utt) { try { rec.utt.onend = null; rec.utt.onerror = null } catch (e) { /* ignore */ } }
+    if (rec.utt) { try { rec.utt.onstart = null; rec.utt.onend = null; rec.utt.onerror = null } catch (e) { /* ignore */ } }
     try { rec.resolve(result) } catch (e) { /* ignore */ }
   }
   function finish(rec, result) {
@@ -308,7 +336,8 @@ export function createNarrator(deps = {}) {
       utt.volume = rec.volume
       const v = pickVoice(rec.lang)
       if (v) utt.voice = v
-      utt.onend = () => finish(rec, 'done')
+      utt.onstart = () => markUnlocked()
+      utt.onend = () => { markUnlocked(); finish(rec, 'done') }
       utt.onerror = (ev) => {
         const code = String((ev && (ev.error || ev.name)) || '').toLowerCase()
         finish(rec, code === 'interrupted' || code === 'canceled' || code === 'cancelled' ? 'cancelled' : 'error')   // 'not-allowed' 等一律 'error'
@@ -346,6 +375,119 @@ export function createNarrator(deps = {}) {
     })
   }
 
+  // ---------------------------------------------------------------------------------------------
+  // iOS 解鎖
+  // ---------------------------------------------------------------------------------------------
+  function markUnlocked() {
+    if (unlocked) return
+    unlocked = true
+    if (gesture) gestureDone(gesture)   // 已經解鎖（不論是哪一條路）：不必再等手勢
+  }
+
+  // 「解鎖用」的一句：同步交給引擎（呼叫端必須在使用者手勢的呼叫堆疊內）。不 cancel、不延遲、不動 cur / speaking 狀態。
+  //   volume 0 + 空白 = 無聲解鎖；否則念確認語。→ Promise<'done' | 'error' | 'unsupported'>
+  function primer(text, volume, audible) {
+    return new Promise((resolve) => {
+      const e = env()
+      if (!e) { resolve('unsupported'); return }
+      const lang = locale() === 'en' ? 'en-US' : 'zh-TW'
+      const rec = { utt: null, safetyId: null, done: false, end: null }
+      rec.end = (result) => {
+        if (rec.done) return
+        rec.done = true
+        unsched(rec.safetyId); rec.safetyId = null
+        primers.delete(rec)
+        if (rec.utt) { try { rec.utt.onstart = null; rec.utt.onend = null; rec.utt.onerror = null } catch (err) { /* ignore */ } }
+        if (result === 'done') markUnlocked()
+        try { resolve(result) } catch (err) { /* ignore */ }
+      }
+      try {
+        const utt = new e.Utt(text)
+        utt.lang = lang
+        utt.rate = 1
+        utt.pitch = 1
+        utt.volume = volume
+        if (audible) { const v = pickVoice(lang); if (v) utt.voice = v }
+        utt.onstart = () => rec.end('done')
+        utt.onend = () => rec.end('done')
+        utt.onerror = (ev) => {
+          const code = String((ev && (ev.error || ev.name)) || '').toLowerCase()
+          // interrupted / canceled：speak() 已在手勢內被引擎接受，只是後來被別句蓋掉（例如緊接著的 speak() 會先 cancel）→ 解鎖仍然成立；not-allowed 等 = 被擋
+          rec.end(code === 'interrupted' || code === 'canceled' || code === 'cancelled' ? 'done' : 'error')
+        }
+        rec.utt = utt
+        primers.add(rec)
+        rec.safetyId = sched(() => {   // 引擎安靜地沒反應（iOS 被擋時可能沒有任何事件）：逾時放棄；只在沒有別句進行中時才 cancel，免得打斷字幕
+          if (rec.done) return
+          if (!cur) { try { e.synth.cancel() } catch (err) { /* ignore */ } }
+          rec.end('error')
+        }, estimateSpeechMs(text, lang, 1))
+        try { if (e.synth.paused && typeof e.synth.resume === 'function') e.synth.resume() } catch (err) { /* ignore */ }
+        e.synth.speak(utt)   // 同步：這一行必須還在使用者手勢的呼叫堆疊裡
+      } catch (err) {
+        rec.end('error')
+      }
+    })
+  }
+
+  function unlock(text) {
+    if (flag && unlocked) return Promise.resolve('done')   // 旁白正在念、而且已經出過聲：引擎顯然接受出聲，不必再念確認語（也免得它排在字幕後面）
+    const raw = typeof text === 'string' ? text.replace(/\s+/g, ' ').trim() : ''
+    return primer(raw || (locale() === 'en' ? UNLOCK_TEXT.en : UNLOCK_TEXT.zh), 1, true)
+  }
+
+  function gestureListen(g) {
+    if (g.on) return
+    const fn = (ev) => onGesture(g, ev)
+    const added = []
+    try {
+      for (const type of GESTURE_UNLOCK_EVENTS) { g.win.addEventListener(type, fn, { capture: true, passive: true }); added.push(type) }
+      g.fn = fn; g.on = true
+    } catch (err) {
+      for (const type of added) { try { g.win.removeEventListener(type, fn, true) } catch (err2) { /* ignore */ } }   // 掛到一半失敗：全部撤掉，不留半套
+      g.on = false
+    }
+  }
+  function gestureUnlisten(g) {
+    if (!g.on) return
+    g.on = false
+    const fn = g.fn
+    g.fn = null
+    for (const type of GESTURE_UNLOCK_EVENTS) { try { g.win.removeEventListener(type, fn, true) } catch (err) { /* ignore */ } }
+  }
+  function gestureDone(g) {
+    gestureUnlisten(g)
+    if (gesture === g) gesture = null
+  }
+  function onGesture(g, ev) {
+    if (gesture !== g || !g.on || !isActivatingEvent(ev)) return
+    gestureUnlisten(g)                   // 一次性：先拆監聽再做事
+    g.tries++
+    primer(g.tries > 1 ? SILENT_WORD : SILENT_TEXT, 0, false).then((res) => {
+      if (gesture !== g) return          // 期間已解鎖 / 被 off() / dispose 拆掉
+      if (res === 'done' || res === 'unsupported') { gestureDone(g); return }
+      if (g.tries < MAX_GESTURE_TRIES && g.refs > 0) gestureListen(g)   // 被擋（第一下可能不是瀏覽器認可的啟用手勢）→ 下一次手勢再試
+      else gestureDone(g)
+    })
+  }
+
+  function unlockOnFirstGesture(win) {
+    let w = null
+    try { w = win || (typeof window !== 'undefined' ? window : null) } catch (err) { w = null }
+    if (!w || typeof w.addEventListener !== 'function' || unlocked || !env()) return () => {}
+    if (gesture && gesture.win !== w) gestureDone(gesture)   // 換了 window（實務上不會發生）：舊的拆掉
+    if (!gesture) { gesture = { win: w, refs: 0, tries: 0, on: false, fn: null }; gestureListen(gesture) }
+    const g = gesture
+    if (!g.on && g.tries === 0) { gesture = null; return () => {} }   // 監聽掛不上（例如假 window 丟例外）：當作不支援
+    g.refs++
+    let offed = false
+    return () => {
+      if (offed) return
+      offed = true
+      if (--g.refs <= 0 && gesture === g) gestureDone(g)
+    }
+  }
+
   function cancel() {
     if (cur) finish(cur, 'cancelled')
     const synth = readSynth()
@@ -354,6 +496,8 @@ export function createNarrator(deps = {}) {
 
   function dispose() {
     cancel()
+    for (const rec of Array.from(primers)) rec.end('error')   // 解鎖用的 utterance：計時器與 handler 一併清掉
+    if (gesture) gestureDone(gesture)
     stopWatch()
     voices = []
     subs.clear()
@@ -371,13 +515,10 @@ export function createNarrator(deps = {}) {
     },
     pickVoice,
     dispose,
-    // 【iOS Safari 解鎖——介面契約，由旁白模組的實作者填入】
-    //   unlock(text?)                 → Promise<'done'|'error'|'unsupported'>：在「使用者手勢」內念一句很短的確認語（預設「旁白已開啟」/ "Narration on"），讓 iOS 之後的 speak() 被允許；成功後 isUnlocked() 為 true
-    //   isUnlocked()                  → boolean（這個頁面是否已成功念過一次）
-    //   unlockOnFirstGesture(win?)    → off()：註冊一次性的 capture pointerdown / keydown 監聽，第一次使用者手勢時無聲解鎖（念空白 / 極小音量，不出聲）；用於 ?speak=1 沒人碰過頁面的情況
-    unlock: () => Promise.resolve('unsupported'),
-    isUnlocked: () => false,
-    unlockOnFirstGesture: () => () => {},
+    // iOS Safari 解鎖（見檔頭說明）
+    unlock,
+    isUnlocked: () => unlocked,
+    unlockOnFirstGesture,
   }
 }
 

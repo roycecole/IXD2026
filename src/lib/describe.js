@@ -2,9 +2,10 @@
 // 資料看板（畫布上）與 OUT 監看（底部日誌）共用，讓使用者看得到「這個畫面是哪筆資料、映射成什麼」。
 import { birdSeasonal, flockCount } from './birds.js'
 import { ageFromLunar, moonAge, moonAltAz, moonPhaseName } from './moon.js'
-import { t, getLocale } from '../i18n/index.js'
+import { t, T, getLocale } from '../i18n/index.js'
 import { nameText, weatherText, lunarDayText, tideRangeText } from '../i18n/data.js'
-import { seriesFromSurvey, gapRangeText } from './series.js'
+import { seriesFromSurvey, seriesFromDust, gapRangeText, resolveAirSource, airMapping } from './series.js'
+import { airCompare, airCompareParts, hourMs } from './airCompare.js'
 
 const num = (v, d = 1) => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v * 10 ** d) / 10 ** d : null)
 const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -40,6 +41,51 @@ export function airPmText(a) {
   return parts.join(' · ')
 }
 
+// 環境部測站觀測（air.obs，政府觀測資料）：最新一筆「有 PM2.5」的小時；沒有 obs / 沒有有效 PM2.5 → null。history 依時間遞增，由後往前找
+export function airObsSummary(air) {
+  const obs = air && air.obs && typeof air.obs === 'object' ? air.obs : null
+  const hist = obs && Array.isArray(obs.history) ? obs.history : []
+  const st = obs && obs.station && typeof obs.station === 'object' ? obs.station : {}
+  for (let i = hist.length - 1; i >= 0; i--) {
+    const x = hist[i], pm25 = num(x && x.pm25)
+    if (pm25 != null && hourMs(x && x.t) !== null) return { station: typeof st.name === 'string' ? st.name : '', county: typeof st.county === 'string' ? st.county : '', t: x.t || '', pm25, pm10: num(x.pm10), aqi: num(x.aqi, 0), wind: num(x.wind), n: hist.length }
+  }
+  return null
+}
+// 「環境部麥寮站」（英文 'MOENV Mailiao station'）；沒有站名 → 「環境部測站」
+export function airObsWhereText(station) {
+  const name = station ? nameText(station) : ''
+  return name ? t('環境部{station}站', { station: name }) : t('環境部空品測站')
+}
+// 「PM2.5 25 · PM10 40 μg/m³ · AQI 62」：環境部的 AQI（不是 US AQI）
+export function airObsPmText(a) {
+  if (!a) return ''
+  const parts = [airPmText({ pm25: a.pm25, pm10: a.pm10, aqi: null })]
+  if (a.aqi != null) parts.push(`AQI ${a.aqi}`)
+  return parts.join(' · ')
+}
+// 「模型 vs 觀測」的一句話結論（airCompare 的結果 → 文字）。誠實：高估 / 低估 / 「大致吻合」（|平均差| < 1 μg/m³ 且逐時誤差不大）/ 平均差小但逐時落差明顯。
+//   short = true：不含「與環境部○○站觀測相比」的開頭（資料看板一列放不下）。沒有比較 → ''
+export function airCompareText(cmp, { short = false } = {}) {
+  const p = airCompareParts(cmp)
+  if (!p) return ''
+  const P = { where: airObsWhereText(p.station), bias: p.verdict === 'over' || p.verdict === 'under' ? p.absBias : p.bias, mae: p.mae, n: p.n }
+  const K = {
+    over: [T('與{where}觀測相比，模型平均高估 {bias} μg/m³（平均絕對誤差 {mae}，共 {n} 小時）'), T('模型平均高估 {bias} μg/m³（平均絕對誤差 {mae}，共 {n} 小時）')],
+    under: [T('與{where}觀測相比，模型平均低估 {bias} μg/m³（平均絕對誤差 {mae}，共 {n} 小時）'), T('模型平均低估 {bias} μg/m³（平均絕對誤差 {mae}，共 {n} 小時）')],
+    match: [T('與{where}觀測相比，模型與觀測大致吻合（平均差 {bias} μg/m³，平均絕對誤差 {mae}，共 {n} 小時）'), T('模型與觀測大致吻合（平均差 {bias} μg/m³，平均絕對誤差 {mae}，共 {n} 小時）')],
+    mixed: [T('與{where}觀測相比，模型平均差僅 {bias} μg/m³，但逐小時落差明顯（平均絕對誤差 {mae}，共 {n} 小時）'), T('模型平均差僅 {bias} μg/m³，但逐小時落差明顯（平均絕對誤差 {mae}，共 {n} 小時）')],
+  }
+  return t(K[p.verdict][short ? 1 : 0], P)
+}
+// 揚塵：水利署風速凍結 / 無效、改用 air.history 的逐時模型風速時的說明資料 { reason, v, t }；不是這種情況 → null
+export function dustModelWind(gov) {
+  const spec = gov && gov.dust ? seriesFromDust(gov.dust, undefined, gov.air) : null
+  if (!spec || !spec.extra || spec.extra.metric !== 'wind-model') return null
+  const last = spec.points[spec.points.length - 1]
+  return { reason: spec.extra.reason, v: last.v, t: last.t }
+}
+
 const fmtSpan = (d) => (d && d.yearly && d.yearly.length ? `${d.yearly[0].y}–${d.yearly[d.yearly.length - 1].y}` : '')
 // 調查年表中間的空窗年（沒有調查的年份區間，與年表時間軸 / 導覽字幕同一份：series.js 的 extra.gaps）：'2007–2013' / '2007–2013、2016'；沒有空窗 → ''
 function surveyGapText(opt, kind) {
@@ -56,7 +102,7 @@ export function surveyMonthText(basin, month0, season) {
   return season.interpolated ? t('{basin} {m} 月 {v} 種（內插）', P) : t('{basin} {m} 月 {v} 種', P)
 }
 
-// 目前海況的資料列。ctx：{ month, params, now(Date) }。回傳 [{ k: 標籤, v: 文字 }]
+// 目前海況的資料列。ctx：{ month, params, now(Date), airDrive（'model' | 'obs'：空氣品質正在播放的序列用的來源；沒給 → 看 gov.airDrive，再沒有 → auto） }。回傳 [{ k: 標籤, v: 文字 }]
 export function describeBoard(gov, opt, ctx = {}) {
   if (!gov || !opt) return []
   const rows = []
@@ -89,6 +135,8 @@ export function describeBoard(gov, opt, ctx = {}) {
       rows.push({ k: t('映射'), v: d.pm10 != null
         ? t('PM10 ↑ → 海水清澈 {clarity} · 垃圾 {trash} · 洋流 {current}', P)
         : t('PM10 感測器回報無效值 → 以預設 40 μg/m³ 示意（清澈 {clarity} · 垃圾 {trash}）· 風速 → 洋流 {current}', P) })
+      const mw = dustModelWind(gov)   // 水利署風速凍結 / 無效 → 歷史播放改用逐時模型風速：誠實標示這是模型資料
+      if (mw) rows.push({ k: t('風速'), v: t(mw.reason === 'frozen' ? T('風速為模型資料（Open-Meteo），水利署感測器凍結 · 最新 {v} m/s（{at}）') : T('風速為模型資料（Open-Meteo），水利署感測器無有效風速 · 最新 {v} m/s（{at}）'), { v: mw.v, at: String(mw.t) }) })
     } else rows.push({ k: t('揚塵'), v: t('尚無資料') })
   } else if (opt.kind === 'air') {
     const a = airSummary(gov.air)
@@ -96,7 +144,17 @@ export function describeBoard(gov, opt, ctx = {}) {
       ? { k: t('空氣品質'), v: `${airWhereText(a)} · ${airPmText(a)}${a.t ? ' · ' + String(a.t).slice(5, 16).replace('T', ' ') : ''}` }
       : { k: t('空氣品質'), v: t('尚無資料') })
     rows.push({ k: t('來源'), v: t('Open-Meteo（CAMS 全球大氣模型）· 模型資料，非政府觀測值') })
-    if (a) rows.push({ k: t('映射'), v: t('PM2.5 ↑ → 海水清澈 {clarity} · 垃圾 {trash} · 輝光 {glow}', { clarity: f2(p.clarity), trash: f2(p.trashCount), glow: f2(p.glow) }) })
+    // 有環境部測站觀測（air.obs）：驅動海況的是觀測時，映射用觀測的最新 PM2.5 算（與資料卡播放同一組係數）；並列一列觀測、一列落差、一列「驅動海況」的資料來源標示
+    const obsA = airObsSummary(gov.air)
+    const drive = obsA ? resolveAirSource(gov.air, ctx.airDrive || gov.airDrive || 'auto') : 'model'   // ctx.airDrive：正在播放的序列實際用的來源（資料看板傳入；導覽播模型序列時，看板不能說「驅動 = 觀測」）
+    const mp = drive === 'obs' ? (() => { const m = airMapping(obsA.pm25); return { clarity: m.clarity, trashCount: m.trashCount, glow: m.glow } })() : p
+    if (a) rows.push({ k: t('映射'), v: t('PM2.5 ↑ → 海水清澈 {clarity} · 垃圾 {trash} · 輝光 {glow}', { clarity: f2(mp.clarity), trash: f2(mp.trashCount), glow: f2(mp.glow) }) })
+    if (obsA) {
+      rows.push({ k: t('觀測'), v: `${airObsWhereText(obsA.station)} · ${airObsPmText(obsA)}${obsA.t ? ' · ' + String(obsA.t).slice(5, 16).replace('T', ' ') : ''}` })
+      const cmp = airCompare(gov.air)
+      if (cmp) rows.push({ k: t('落差'), v: airCompareText(cmp, { short: true }) })
+      rows.push({ k: t('驅動'), v: drive === 'obs' ? t('環境部觀測 · 政府資料開放授權條款－第1版') : t('模型資料，非政府觀測') })
+    }
   } else if (opt.kind === 'moon') {
     const m = gov.moon
     if (m && Array.isArray(m.days) && m.days.length) {

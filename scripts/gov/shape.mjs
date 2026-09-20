@@ -79,6 +79,10 @@ export const AIR_MAPPING = '空氣品質（雲林，Open-Meteo／CAMS 模型資�
 // source 末尾的揭露句：空氣品質不是政府資料，不能落在「（政府資料 OGDL v1）」授權說明之前被讀成政府源
 export const AIR_SOURCE_DISCLOSURE = '；另含 Open-Meteo 空氣品質（CAMS 全球大氣模型資料，非政府觀測值；CC BY 4.0；Weather data by Open-Meteo.com）'
 
+// 有環境部測站觀測（air.obs）時才補上的說明（source / mapping 各一句）：政府觀測與模型資料並列，但分開標示、不混用
+export const OBS_SOURCE_DISCLOSURE = '；空氣品質另含環境部空氣品質監測網測站觀測（政府資料開放授權條款－第1版），與上述模型資料分開標示'
+export const OBS_MAPPING = '空氣品質（雲林）可改用環境部測站觀測驅動：PM2.5→清澈度／垃圾／色相／輝光（觀測與模型並列比較）'
+
 // birdsNote：保留既有文字，於固定標記後接上新段落（重跑時先切掉舊段落再接，冪等）
 export const BIRDS_NOTE_MARKER = '【逐年與魚類】'
 export const BIRDS_NOTE_APPENDIX =

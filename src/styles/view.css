@@ -1,0 +1,19 @@
+/* 「裝置」面板的取景一節（ui/devices/ViewSection.jsx）：兩個單選項，手機上直排、每個至少 44px 高，不溢出 */
+.view-sec .view-opts { display: flex; flex-wrap: wrap; gap: 6px; flex: 1 0 100%; min-width: 0; }
+.view-sec .view-opt {
+  flex: 1 1 180px; min-width: 0; min-height: 44px; padding: 8px 12px;
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; line-height: 1.4; color: var(--muted);
+  background: var(--panel2); border: 1px solid var(--line2); border-radius: 8px; cursor: pointer;
+}
+.view-sec .view-opt span { min-width: 0; overflow-wrap: anywhere; }
+.view-sec .view-opt input[type='radio'] { flex: none; width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
+.view-sec .view-opt.on { color: var(--accent); border-color: var(--accent); background: #0f2a22; }
+/* 鍵盤焦點：整個選項框有外框（滑鼠點擊不會出現）；不支援 :has 的瀏覽器退回全站的 :focus-visible（radio 自己的外框） */
+.view-sec .view-opt:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+@supports selector(:has(*)) { .view-sec .view-opt input:focus-visible { outline: none; } }
+.view-sec .view-current { color: var(--text); }
+.view-sec .view-current.warn { color: #e6c07a; }
+@media (max-width: 480px) {
+  .view-sec .view-opt { flex-basis: 100%; }
+}
