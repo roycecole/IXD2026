@@ -5,7 +5,7 @@
 // .jsx 用 esbuild 打成一個暫存 .mjs 再載入（i18n 與 resilience.js 保持外部模組，讓測試與被測元件共用同一份實例；store 等以 stub 取代）。
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, resolve, join } from 'node:path'
 import { build } from 'esbuild'
@@ -538,6 +538,26 @@ test('evaluateIdle：展場（或閒置自動啟動的導覽）本來就是沒�
   assert.equal(R.evaluateIdle({ ...ok, tourRunning: false }, { kiosk: true }).idle, false, '展場但是使用者自己的播放（沒有導覽）→ 忙')
 })
 
+test('evaluateIdle：WebXR 工作階段（手機的 AR 桌面）中 → 忙（xr），展場也不放行——XR 一定是使用者主動開的，重載會直接結束它', () => {
+  const ok = { idleMs: 61000, recMode: 'idle', tourRunning: false, tourAuto: false, modalOpen: false }
+  assert.deepEqual(R.evaluateIdle({ ...ok, xrActive: true }), { idle: false, reason: 'xr' })
+  assert.deepEqual(R.evaluateIdle({ ...ok, xrActive: true, idleMs: Infinity }), { idle: false, reason: 'xr' }, '看 AR 沒有任何輸入也一樣')
+  assert.deepEqual(R.evaluateIdle({ ...ok, xrActive: true, tourRunning: true, tourAuto: true, recMode: 'playing' }, { kiosk: true }), { idle: false, reason: 'xr' }, '展場 / 自動導覽也不放行')
+  assert.deepEqual(R.evaluateIdle({ ...ok, xrActive: true, modalOpen: true }), { idle: false, reason: 'modal' }, '彈窗優先')
+  assert.equal(R.evaluateIdle({ ...ok, xrActive: false }).idle, true); assert.equal(R.evaluateIdle(ok).idle, true, '沒有 xrActive 欄位 = 沒在 XR（舊呼叫端不受影響）')
+  assert.equal(R.DEFAULT_IDLE_STATE.xrActive, false)
+})
+
+test('evaluateIdle：fullscreen（觀眾視窗的 DOM 全螢幕）→ 延後重載（fullscreen）；順序在 XR 之後、有人操作之前；沒帶這個欄位的環境不受影響', () => {
+  const ok = { idleMs: Infinity, recMode: 'idle', tourRunning: false, tourAuto: false, modalOpen: false }
+  assert.deepEqual(R.evaluateIdle({ ...ok, fullscreen: true }), { idle: false, reason: 'fullscreen' })
+  assert.deepEqual(R.evaluateIdle({ ...ok, fullscreen: true }, { kiosk: true }), { idle: false, reason: 'fullscreen' })
+  assert.deepEqual(R.evaluateIdle({ ...ok, fullscreen: true, xrActive: true }), { idle: false, reason: 'xr' })
+  assert.deepEqual(R.evaluateIdle({ ...ok, fullscreen: true, idleMs: 1 }), { idle: false, reason: 'fullscreen' })
+  assert.equal(R.evaluateIdle({ ...ok, fullscreen: false }).idle, true); assert.equal(R.evaluateIdle(ok).idle, true)
+  assert.equal(R.DEFAULT_IDLE_STATE.fullscreen, false)
+})
+
 // ───────────────────────────── 重載器 ─────────────────────────────
 test('重載器：第一次 WebGL / 看門狗異常立刻重載並記錄；反覆發生套退避；10 分鐘 5 次熔斷（不再重載、halted）', () => {
   const s = setup('?kiosk=1')
@@ -640,6 +660,20 @@ test('版本檢查：忙碌的種類——錄製 / 播放 / 導覽都延後；�
     const vc = R.createVersionChecker({ env: s.env, status: s.status, cfg: s.cfg, reloader: s.reloader, getIdle: s.getIdle })
     await vc.check(); await flush()
     assert.equal(s.env.reloads.length === 1, expectReload, `${search} ${JSON.stringify(idle)}`)
+    vc.stop()
+  }
+})
+
+test('版本檢查：XR 工作階段中不重載（deferred: xr），XR 結束後下一次重試（15 秒）才重載；展場（kiosk）也一樣', async () => {
+  for (const search of ['', '?kiosk=1']) {
+    const s = setup(search); Object.assign(s.env.idle, { idleMs: 999999, xrActive: true })
+    s.env.respond = () => jsonRes({ id: 'b2' })
+    const vc = R.createVersionChecker({ env: s.env, status: s.status, cfg: s.cfg, reloader: s.reloader, getIdle: s.getIdle })
+    await vc.check(); await flush()
+    assert.equal(s.env.reloads.length, 0, search); assert.equal(s.status.get().version.state, 'new'); assert.equal(s.status.get().version.deferred, 'xr', search)
+    s.env.advance(5 * 60000); assert.equal(s.env.reloads.length, 0, 'XR 一直開著：一直等（每 15 秒看一次）')
+    s.env.idle.xrActive = false; s.env.advance(R.PENDING_RETRY_MS + 100)
+    assert.equal(s.env.reloads.length, 1, `${search} XR 結束後重載`)
     vc.stop()
   }
 })
@@ -897,9 +931,11 @@ test('startGuards：WebGL 遺失 4 秒沒恢復 → 重載並記錄；有恢復 
   assert.equal(b.env.reloads.length, 0); b.h.stop()
 })
 
-test('startGuards：觀眾視窗 → 沒有資料更新（它跟著主視窗），永遠閒置所以有新版就重載；遙控頁 / 診斷頁什麼都不做', async () => {
+test('startGuards：觀眾視窗 → 有提供 applyData 才有資料更新（audienceEnv 提供；沒有就 off）；沒有全螢幕時永遠閒置所以有新版就重載；遙控頁 / 診斷頁什麼都不做', async () => {
   const a = startWith('?audience=1')
-  assert.equal(a.env.counts().timers, 3, 'gl 掃描 + 版本輪詢 + 看門狗檢查（投影機整天開著）；沒有資料輪詢'); assert.equal(a.status.get().data.state, 'off'); assert.equal(a.status.get().watchdog.on, true); a.h.stop()
+  assert.equal(a.env.counts().timers, 4, 'gl 掃描 + 版本輪詢 + 看門狗檢查（投影機整天開著）+ 資料輪詢（就地換資料，見下面的觀眾視窗資料更新測試）'); assert.equal(a.status.get().watchdog.on, true); a.h.stop()
+  const nd = startWith('?audience=1', { withData: false })
+  assert.equal(nd.env.counts().timers, 3, '沒有 applyData：沒有資料輪詢'); assert.equal(nd.status.get().data.state, 'off'); nd.h.stop()
   const env = makeEnv(); env.search = '?audience=1'
   env.idleState = () => R.DEFAULT_IDLE_STATE   // 觀眾視窗沒有人為輸入：預設環境的閒置狀態永遠是閒置
   env.respond = (u) => jsonRes(u.endsWith('version.json') ? { id: 'NEW' } : {})
@@ -909,6 +945,119 @@ test('startGuards：觀眾視窗 → 沒有資料更新（它跟著主視窗）�
   for (const [search, hash] of [['', '#remote=abc'], ['?diagnostics=1', '']]) {
     const x = startWith(search, { hash }); assert.deepEqual(x.env.counts(), { timers: 0, rafs: 0, doc: 0, canvas: 0 }, search + hash); x.h.stop()
   }
+})
+
+// ---- 觀眾視窗：全螢幕中不因新版重載；資料就地更新（建置 id 只反映程式碼，純資料的部署不會讓它重載）----
+function audienceStart({ fullscreen = false, remoteId = 'NEW', local = '2026-09-20T09:00', hooks = true, oceanAtStr = '2026-09-20T20:00' } = {}) {
+  const env = makeEnv(); env.search = '?audience=1'
+  // 會檢查 this 的假 document：fullscreenElement 是 getter（原生的 Document.prototype 存取子在 this 不對時會丟 Illegal invocation）
+  const doc = { _el: fullscreen ? {} : null, get fullscreenElement() { if (this !== doc) throw new TypeError('Illegal invocation'); return doc._el } }
+  const applied = []
+  const off = hooks ? R.registerDataHooks({ getLocalFetchedAt: () => local, apply: (d) => applied.push(d) }) : () => {}
+  const fetched = []
+  env.respond = (url) => { fetched.push(url); return url.endsWith('version.json') ? jsonRes({ id: remoteId }) : jsonRes(oceanAt(oceanAtStr)) }
+  const status = R.createStatusStore(R.initialStatus(env.now()))
+  const crashLog = R.createCrashLog({ storage: memStorage(), now: env.now, boot: 'B' })
+  const h = R.startGuards({ env: { ...env, ...R.audienceEnv({ doc }) }, status, crashLog, buildId: 'b1' })
+  return { env, h, doc, status, applied, fetched, off, enter: () => { doc._el = {} }, exit: () => { doc._el = null } }
+}
+
+test('resolveConfig：觀眾視窗的資料更新一律 30 分鐘、不限頁面可見（投影機整天開著；網址不帶 ?kiosk）；主畫面不變', () => {
+  assert.deepEqual(R.resolveConfig({ search: '?audience=1', buildId: 'b1' }).data, { everyMs: 30 * 60 * 1000, visibleOnly: false })
+  assert.deepEqual(R.resolveConfig({ search: '', buildId: 'b1' }).data, { everyMs: 3 * 60 * 60 * 1000, visibleOnly: true })
+  assert.deepEqual(R.resolveConfig({ search: '?kiosk=1', buildId: 'b1' }).data, { everyMs: 30 * 60 * 1000, visibleOnly: false })
+})
+
+test('audienceEnv：idleState 永遠閒置，但 DOM 全螢幕（含 webkit 前綴）中帶 fullscreen: true；沒有 document / 讀取出錯 → 不是全螢幕；讀屬性會檢查 this', () => {
+  const doc = { fullscreenElement: null }
+  const ae = R.audienceEnv({ doc })
+  assert.deepEqual(ae.idleState(), { ...R.DEFAULT_IDLE_STATE, fullscreen: false }); assert.equal(R.evaluateIdle(ae.idleState()).idle, true)
+  doc.fullscreenElement = {}; assert.equal(ae.idleState().fullscreen, true); assert.deepEqual(R.evaluateIdle(ae.idleState()), { idle: false, reason: 'fullscreen' })
+  assert.equal(R.isFullscreen({ webkitFullscreenElement: {} }), true, 'Safari')
+  assert.equal(R.isFullscreen(null), false); assert.equal(R.isFullscreen({}), false)
+  assert.equal(R.isFullscreen({ get fullscreenElement() { throw new Error('x') } }), false)
+  const g = globalThis, had = Object.getOwnPropertyDescriptor(g, 'document')
+  Object.defineProperty(g, 'document', { value: { fullscreenElement: {} }, configurable: true, writable: true })
+  try { assert.equal(R.audienceEnv().idleState().fullscreen, true, '沒指定 doc → 呼叫當下才讀全域 document') } finally { if (had) Object.defineProperty(g, 'document', had); else delete g.document }
+  assert.equal(R.audienceEnv().idleState().fullscreen, false, 'Node 沒有 document')
+})
+
+test('registerDataHooks：註冊 → audienceEnv 的 applyData / getLocalFetchedAt 轉給它；沒註冊 → applyData 丟錯（由資料更新器記成 error）、getLocalFetchedAt 為 null；StrictMode（註冊 / 解除 / 再註冊）不殘留', () => {
+  const ae = R.audienceEnv({ doc: {} })
+  assert.equal(ae.getLocalFetchedAt(), null); assert.throws(() => ae.applyData({}), /not registered/)
+  const seen = []
+  const off1 = R.registerDataHooks({ getLocalFetchedAt: () => 'L1', apply: (d) => seen.push(['a1', d]) })
+  assert.equal(ae.getLocalFetchedAt(), 'L1'); ae.applyData(1); assert.deepEqual(seen, [['a1', 1]])
+  off1(); assert.equal(ae.getLocalFetchedAt(), null); assert.throws(() => ae.applyData({}), /not registered/)
+  const offA = R.registerDataHooks({ getLocalFetchedAt: () => 'A', apply: () => seen.push('A') })
+  const offB = R.registerDataHooks({ getLocalFetchedAt: () => 'B', apply: () => seen.push('B') })
+  offA(); assert.equal(ae.getLocalFetchedAt(), 'B', '舊的註冊被解除，不會清掉新的')
+  offB(); assert.equal(ae.getLocalFetchedAt(), null)
+  assert.doesNotThrow(() => ae.onDataApplied({}))
+})
+
+test('觀眾視窗（全螢幕中）：有新版 → 不重載、維運狀態記 deferred: fullscreen；退出全螢幕後 15 秒內重載（版本不會被永遠擋住）', async () => {
+  const a = audienceStart({ fullscreen: true })
+  await a.h.checkNow(); await flush()
+  assert.equal(a.env.reloads.length, 0); assert.equal(a.status.get().version.state, 'new'); assert.equal(a.status.get().version.deferred, 'fullscreen')
+  a.env.advance(3 * 60000); assert.equal(a.env.reloads.length, 0, '全螢幕一直開著就一直等')
+  a.exit(); a.env.advance(R.PENDING_RETRY_MS + 100)
+  assert.equal(a.env.reloads.length, 1, '退出全螢幕（例如 Esc）後重載')
+  a.h.stop(); a.off()
+  const b = audienceStart({ fullscreen: false })                                   // 不在全螢幕（例如還沒點過）：與以前相同，一偵測到就重載
+  await b.h.checkNow(); await flush()
+  assert.equal(b.env.reloads.length, 1); b.h.stop(); b.off()
+})
+
+test('觀眾視窗：崩潰類重載（WebGL 遺失 / 看門狗）不受全螢幕延後影響——卡死的畫面一定要重載', () => {
+  const a = audienceStart({ fullscreen: true })
+  const c = makeCanvas(); a.env.canvases.push(c); a.env.advance(2000)
+  c.emit('webglcontextlost'); a.env.advance(4100)
+  assert.equal(a.env.reloads.length, 1, 'WebGL 沒復原 → 重載'); a.h.stop(); a.off()
+  const w = audienceStart({ fullscreen: true }); w.env.advance(2000); w.env.rafOn = false; w.env.advance(20000)
+  assert.equal(w.env.reloads.length, 1, '看門狗 → 重載'); w.h.stop(); w.off()
+})
+
+test('觀眾視窗資料更新：有註冊換資料的方法 → 定時（30 分鐘）重抓 ocean.json，較新就地套用（全螢幕中也套用、不重載）；版本相同時整天不重載', async () => {
+  const a = audienceStart({ fullscreen: true, remoteId: 'b1' })                    // 版本相同（純資料的部署：build id 不變）
+  assert.equal(a.env.counts().timers, 4, 'gl 掃描 + 版本輪詢 + 看門狗檢查 + 資料輪詢')
+  a.env.advance(30 * 60000); await flush()
+  assert.ok(a.fetched.includes('/data/ocean.json'), '30 分鐘內抓過資料')
+  assert.equal(a.applied.length, 1); assert.equal(a.applied[0].fetchedAt, '2026-09-20T20:00')
+  assert.equal(a.status.get().data.state, 'applied'); assert.equal(a.env.reloads.length, 0, '資料更新不重載（投影機不掉出全螢幕）')
+  a.h.stop(); a.off(); assert.deepEqual(a.env.counts(), { timers: 0, rafs: 0, doc: 0, canvas: 0 })
+  // 沒有比較新 → 不套用
+  const b = audienceStart({ fullscreen: true, remoteId: 'b1', local: '2026-09-20T20:00' })
+  await b.h.checkNow(); await flush(); assert.equal(b.applied.length, 0); assert.equal(b.status.get().data.state, 'same'); b.h.stop(); b.off()
+})
+
+test('觀眾視窗資料更新：還沒有人註冊換資料的方法（AudienceApp 尚未掛載）→ 記成 error、不丟例外、不重載；註冊後下次檢查就套用', async () => {
+  const a = audienceStart({ hooks: false, remoteId: 'b1' })
+  await assert.doesNotReject(a.h.checkNow()); await flush()
+  assert.equal(a.status.get().data.state, 'error'); assert.equal(a.env.reloads.length, 0)
+  const applied = []
+  const off = R.registerDataHooks({ getLocalFetchedAt: () => '2026-09-20T09:00', apply: (d) => applied.push(d) })
+  await a.h.checkNow(); await flush()
+  assert.equal(applied.length, 1); assert.equal(a.status.get().data.state, 'applied')
+  off(); a.h.stop()
+})
+
+test('主畫面的資料更新不受「全螢幕」影響（fullscreen 只用在重載）；ErrorBoundary / AudienceApp / ResilienceService 的接線（原始碼層級）', () => {
+  const s = setup(''); s.env.idle.idleMs = 120000; s.env.idle.fullscreen = true
+  const applied = []; s.env.getLocalFetchedAt = () => '2026-09-20T09:00'; s.env.applyData = (d) => applied.push(d)
+  s.env.respond = (u) => jsonRes(u.endsWith('version.json') ? { id: 'b1' } : oceanAt('2026-09-20T20:00'))
+  const h = R.startGuards({ env: { ...s.env }, status: s.status, crashLog: s.log, buildId: 'b1' })
+  return h.checkNow().then(async () => {
+    await flush(); assert.equal(applied.length, 1, '資料照樣套用')
+    h.stop()
+    const read = (p) => readFileSync(new URL(p, import.meta.url), 'utf8')
+    assert.match(read('../ErrorBoundary.jsx'), /startGuards\(\{ config: cfg, env: audienceEnv\(\) \}\)/)
+    assert.match(read('../AudienceApp.jsx'), /registerDataHooks\(\{/); assert.match(read('../AudienceApp.jsx'), /getLocalFetchedAt/)
+    const svc = read('../services/ResilienceService.jsx')
+    assert.match(svc, /Math\.max\(activity\.last, Number\.isFinite\(activity\.guideAt\) \? activity\.guideAt : -Infinity\)/); assert.match(svc, /getXrController\(\)\.isActive\(\)/)
+    const ops = read('../ui/devices/OpsSection.jsx')
+    assert.match(ops, /xr: T\('AR 桌面使用中'\)/); assert.match(ops, /fullscreen: T\('觀眾視窗全螢幕中'\)/)
+  })
 })
 
 test('startGuards：dev 建置不做版本檢查；?reload=HH 才有每日重載；沒有 fetch 的環境功能偵測後略過', () => {
@@ -1197,7 +1346,7 @@ test('ResilienceService：閒置狀態讀 activity / store.rec / 導覽 / 彈窗
     g.__fake.activity.last = now - 90000
     let st = mod.readIdleState()
     assert.ok(st.idleMs >= 90000 && st.idleMs < 95000, String(st.idleMs))
-    assert.deepEqual({ ...st, idleMs: 0 }, { idleMs: 0, recMode: 'idle', tourRunning: false, tourAuto: false, modalOpen: false })
+    assert.deepEqual({ ...st, idleMs: 0 }, { idleMs: 0, recMode: 'idle', tourRunning: false, tourAuto: false, modalOpen: false, xrActive: false })
     g.__fake.store.rec.mode = 'playing'; g.__fake.tour.running = true; g.__fake.runnerCur = () => ({ auto: true }); g.__fake.modal = true
     st = mod.readIdleState()
     assert.equal(st.recMode, 'playing'); assert.equal(st.tourRunning, true); assert.equal(st.tourAuto, true); assert.equal(st.modalOpen, true)
@@ -1244,6 +1393,10 @@ test('OpsSection：顯示 build id / 載入時間 / 資料時間 / 檢查結果 
     h = html()
     assert.match(h, /啟用（展場模式 \?kiosk）/); assert.match(h, /有新版（NEW-ID）/); assert.match(h, /等閒置再重新載入（有人操作中）/); assert.match(h, /有新資料（2026-09-21T00:00）/); assert.match(h, /等閒置再套用（導覽中）/)
     assert.match(h, /每天 03:00（閒置時）/); assert.match(h, /已停止自動重新載入/); assert.match(h, /無人操作 60 秒後套用/); assert.match(h, /每 30 分鐘/)
+    for (const [why, label] of [['xr', 'AR 桌面使用中'], ['fullscreen', '觀眾視窗全螢幕中']]) {
+      RF.opsStatus.set({ version: { state: 'new', checkedAt: T0, remoteId: 'NEW-ID', deferred: why } })
+      assert.match(html(), new RegExp(`等閒置再重新載入（${label}）`), why)
+    }
     RF.opsStatus.set({ version: { state: 'same', checkedAt: T0, remoteId: 'b-ops-test', deferred: '' }, data: { state: 'applied', checkedAt: T0, remoteFetchedAt: '2026-09-21T00:00', appliedAt: T0, deferred: '' } })
     h = html(); assert.match(h, /已是最新/); assert.match(h, /已更新到 2026-09-21T00:00/)
     RF.opsStatus.set({ version: { state: 'error', checkedAt: T0, remoteId: '', deferred: '' } })
@@ -1262,6 +1415,51 @@ test('OpsSection：顯示 build id / 載入時間 / 資料時間 / 檢查結果 
     if (hadLoc) Object.defineProperty(g, 'location', hadLoc); else delete g.location
     if (hadLS) Object.defineProperty(g, 'localStorage', hadLS); else delete g.localStorage
     delete g.__fakeStore; delete g.__BUILD_ID__
+  }
+})
+
+test('ResilienceService.readIdleState：導覽員操作（activity.guideAt）也算有人在場，60 秒後回到閒置（不會永遠擋住重載）；XR 工作階段 → xrActive；介面壞掉時不丟例外', async () => {
+  const STUBS = {
+    'store/useStore.js': `const s = globalThis.__fake; export const useStore = { getState: () => s.store, setState: () => {} }`,
+    'store/activity.js': `export const activity = globalThis.__fake.activity`,
+    'lib/tour.js': `export const useTourStore = { getState: () => globalThis.__fake.tour }`,
+    'services/tourCore.js': `export const tourRunner = { current: () => globalThis.__fake.runnerCur() }`,
+    'tourCore.js': `export const tourRunner = { current: () => globalThis.__fake.runnerCur() }`,
+    'lib/xr.js': `export const getXrController = () => ({ isActive() { return globalThis.__fake.xr() } })`,
+  }
+  globalThis.__fake = { store: { rec: { mode: 'idle' }, gov: null }, activity: { last: 0, guideAt: -1e9 }, tour: { running: true }, runnerCur: () => ({ auto: true, paused: true }), xr: () => false }
+  const mod = await bundleJsx('services/ResilienceService.jsx', STUBS)
+  const g = globalThis
+  const hadDoc = Object.getOwnPropertyDescriptor(g, 'document')
+  try {
+    Object.defineProperty(g, 'document', { value: { querySelector: () => null }, configurable: true, writable: true })
+    const now = performance.now()
+    // 情境（RES-2）：閒置導覽（auto）在 90 秒前起、導覽員按 P 暫停後講解——導覽員操作不呼叫 touch()，activity.last 停在 90 秒前
+    g.__fake.activity.last = now - 90000
+    let st = mod.readIdleState()
+    assert.ok(st.idleMs >= 90000, '導覽員沒操作過：舊行為'); assert.equal(R.evaluateIdle(st).idle, true)
+    g.__fake.activity.guideAt = now - 5000                                            // 導覽員 5 秒前按了 P / ← → / 點進度點
+    st = mod.readIdleState()
+    assert.ok(st.idleMs >= 5000 && st.idleMs < 8000, `取較新的時間戳：${st.idleMs}`)
+    assert.deepEqual(R.evaluateIdle(st), { idle: false, reason: 'active' }, '導覽員在講解 → 版本更新 / 每日重載延後')
+    assert.deepEqual(R.evaluateIdle(st, { kiosk: true }), { idle: false, reason: 'active' }, '?kiosk 也一樣')
+    g.__fake.activity.guideAt = now - 59000
+    assert.equal(R.evaluateIdle(mod.readIdleState()).reason, 'active', '59 秒內仍延後')
+    g.__fake.activity.guideAt = now - 61000
+    assert.deepEqual(R.evaluateIdle(mod.readIdleState()), { idle: true, reason: '' }, '61 秒沒有導覽員操作 → 回到閒置（暫停中的導覽也不會永遠擋住重載）')
+    g.__fake.activity.last = now - 1000; g.__fake.activity.guideAt = -1e9
+    assert.ok(mod.readIdleState().idleMs < 3000, '使用者輸入照舊')
+    delete g.__fake.activity.guideAt
+    assert.doesNotThrow(() => mod.readIdleState(), '沒有 guideAt 欄位（舊 activity）不出錯')
+    // XR
+    assert.equal(mod.readIdleState().xrActive, false)
+    g.__fake.xr = () => true; g.__fake.activity.last = now - 999999
+    st = mod.readIdleState(); assert.equal(st.xrActive, true); assert.deepEqual(R.evaluateIdle(st), { idle: false, reason: 'xr' })
+    g.__fake.xr = () => { throw new Error('xr api changed') }
+    assert.equal(mod.readIdleState().xrActive, false, 'XR 介面壞掉 → 當作沒在 XR，不丟例外')
+  } finally {
+    if (hadDoc) Object.defineProperty(g, 'document', hadDoc); else delete g.document
+    delete g.__fake
   }
 })
 

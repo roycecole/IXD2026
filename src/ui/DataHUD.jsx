@@ -21,7 +21,7 @@ export default function DataHUD() {
           if (seriesMeta.kind === 'tide') { const age = ageFromLunar(seriesMeta.lunar, p.h); if (age != null) moonName = moonPhaseName(age) } // 潮汐是月亮的引力
           const txt = formatHud(seriesMeta, p, { moonName }) +
             (st.rec.speed < 0.01 ? ' · ' + t('已暫停') : (st.rec.speed || 1) !== 1 ? ` · ×${st.rec.speed}` : '') + (st.rec.loop ? ' · ' + t('循環') : '')
-          if (el.__t !== txt) { el.__t = txt; el.textContent = txt } // 內容約 1 秒才變，不必每幀寫 DOM
+          if (el.__t !== txt) { el.__t = txt; el.textContent = txt } // 內容變了才寫 DOM（空氣品質 0.2 秒、月亮 0.25 秒一步，不必每幀寫）
           el.style.opacity = 1
         } else el.style.opacity = 0
       }
@@ -30,5 +30,7 @@ export default function DataHUD() {
     raf = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(raf)
   }, [])
-  return <div className="data-hud" ref={ref} aria-live="polite" />
+  // 不是 live region：這行每 0.2–1 秒就換一次（空氣品質 0.2 秒一步、導覽時再加速），aria-live 會讓螢幕閱讀器的朗讀佇列堆積、播完還在念。
+  // 內容仍在無障礙樹裡（瀏覽模式讀得到）；播放的開始 / 結束與站名由資料卡、導覽字幕（換站才更新的 live region）負責。
+  return <div className="data-hud" ref={ref} aria-live="off" />
 }

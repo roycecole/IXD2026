@@ -5,8 +5,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import * as D from './diagnostics.js'
-import { DIAG_LS_KEY, loadSummary, saveSummary, sanitizeSummary, formatWhen, diagnosticsHref } from './diagnosticsSummary.js'
-import { registerEn, setLocale } from '../i18n/index.js'
+import { readFileSync } from 'node:fs'
+import { DIAG_LS_KEY, loadSummary, saveSummary, sanitizeSummary, formatWhen, formatSummaryLine, diagnosticsHref } from './diagnosticsSummary.js'
+import { registerEn, setLocale, t } from '../i18n/index.js'
 import en from '../i18n/en/diagnostics.js'
 
 // ───────────────────────────── 測試工具 ─────────────────────────────
@@ -1056,6 +1057,25 @@ test('報告：不含個資 / IP / 影像 / 音訊——相機與螢幕名稱、
   assert.ok(rep.text.includes('"chars": ' + chars)); assert.equal(rep.json.results.find((r) => r.id === 'speech').data.chars, chars)
 })
 
+test('報告的隱私範圍（README 與實作一致）：Web MIDI 埠名稱與手把的 id 字串會照實列出（判讀有沒有偵測到控制器用）；相機 / 螢幕 label、語音內容仍然不收', async () => {
+  const mi = midiSetup({ inputs: [{ name: "Cas's iPad Bluetooth MIDI" }, { name: 'nanoKONTROL2', manufacturer: 'KORG' }], outputs: [{ name: 'nanoKONTROL2' }] })
+  const pm = mi.probe.start(); await settle(); mi.probe.stop(); const midiR = await pm
+  const pd = padSetup(() => [fakePad({ over: { id: 'Xbox Wireless Controller (STANDARD GAMEPAD Vendor: 045e Product: 0b13)' } })])
+  const pp = pd.probe.start(); await adv(pd.clock, 200, 40); pd.probe.stop(); const padR = await pp
+  const scr = await D.createProbe('screens', makeEnv({ win: fakeWin({ getScreenDetails: () => Promise.resolve({ screens: [{ width: 1, height: 1, label: 'Alice-MacBook display', isPrimary: true }] }) }) }).env, collect().hooks).start()
+  const rep = D.buildReport({ results: { midi: midiR, gamepad: padR, screens: scr }, meta: {} })
+  for (const shown of ["Cas's iPad Bluetooth MIDI", 'nanoKONTROL2', 'Xbox Wireless Controller']) assert.ok(rep.text.includes(shown), `報告會列出：${shown}`)
+  assert.deepEqual(rep.json.results.find((r) => r.id === 'midi').data.inputs, ["Cas's iPad Bluetooth MIDI", 'nanoKONTROL2'])
+  assert.ok(rep.json.results.find((r) => r.id === 'gamepad').data.pads[0].id.includes('Xbox Wireless Controller'))
+  assert.ok(!rep.text.includes('Alice'), '螢幕 label 不收')
+  // 文件如實說明這個例外（以前寫「不含裝置名稱」）
+  const read = (f) => readFileSync(new URL(f, import.meta.url), 'utf8')
+  const zh = read('../../README.md'), en = read('../../README.en.md')
+  assert.doesNotMatch(zh, /影像、音訊或裝置名稱/); assert.doesNotMatch(en, /audio or device names/)
+  assert.match(zh, /Web MIDI 埠名稱與手把(的)?型號字串會照實列出/); assert.match(en, /Web MIDI port names and gamepad id strings/)
+  assert.match(read('./diagnostics.js'), /Web MIDI 埠名稱與手把的 id 字串會照實列出/)
+})
+
 test('報告：切成英文後標題 / 狀態 / 詳情都是英文；中文模式輸出不變', () => {
   const results = { ls: D.makeResult(D.getCheck('ls'), { status: 'pass', msg: { key: '寫入、讀回、刪除都成功' } }, 4) }
   const zh = D.buildReport({ results, meta: {} }).markdown
@@ -1119,6 +1139,32 @@ test('摘要：存成 { at, pass, fail, unsupported, pending, total }；讀回�
   assert.equal(loadSummary(thrower), null); assert.equal(saveSummary({ pass: 1, fail: 0 }, 5, thrower), null)
   assert.equal(saveSummary(null, 5, storage), null, '沒有摘要就不存')
   assert.equal(loadSummary(), null, '預設走 persist.js：Node 沒有 localStorage → null，不丟例外')
+})
+
+test('「上次診斷」那一行（formatSummaryLine）：有總數 → 通過 x / 共 N 項 + 失敗 / 不支援 / 尚未測；只跑快速檢查（大量尚未測）不會被看成「0 失敗 = 都驗過」；舊格式（沒有 total）維持原句', () => {
+  const at = new Date(2026, 8, 20, 14, 30).getTime()
+  const when = formatWhen(at, 'zh-TW')
+  // 只按「執行所有快速檢查」：37 項裡 25 項有結果（通過含資訊項）、12 項互動檢查尚未測
+  const onlyAuto = { at, pass: 25, fail: 0, unsupported: 0, pending: 12, total: 37 }
+  assert.equal(formatSummaryLine(onlyAuto, t, 'zh-TW'), `上次診斷：${when}，通過 25 / 37 項，失敗 0、不支援 0、尚未測 12`)
+  const safari = { at, pass: 20, fail: 0, unsupported: 5, pending: 12, total: 37 }
+  assert.match(formatSummaryLine(safari, t, 'zh-TW'), /不支援 5、尚未測 12$/, '不支援的項目也列出來')
+  const legacy = { at, pass: 20, fail: 2, unsupported: 0, pending: 0, total: 0 }
+  assert.equal(formatSummaryLine(legacy, t, 'zh-TW'), `上次診斷：${when}，通過 20 項、失敗 2 項`, '舊摘要沒有 total → 原本的一行')
+  assert.equal(formatSummaryLine({ at, pass: 3, fail: 0 }, t, 'zh-TW'), `上次診斷：${when}，通過 3 項、失敗 0 項`)
+  // 與診斷頁自己的算法一致：直接餵 summarize 的結果
+  const sum = D.summarize(['a', 'b', 'c', 'd', 'e'].map((id) => ({ id })), { a: { status: 'pass' }, b: { status: 'info' }, c: { status: 'fail' }, d: { status: 'unsupported' } })
+  const line = formatSummaryLine({ at, ...sum }, t, 'zh-TW')
+  assert.match(line, new RegExp(`通過 ${sum.pass} / ${sum.total} 項，失敗 ${sum.fail}、不支援 ${sum.unsupported}、尚未測 ${sum.pending}$`))
+  // 英文
+  registerEn(en); setLocale('en')
+  try {
+    const l = formatSummaryLine(onlyAuto, t, 'en-US')
+    assert.match(l, /^Last diagnosis: .+, 25 of 37 passed, 0 failed, 0 unsupported, 12 not tested yet$/); assert.ok(!/[㐀-鿿]/.test(l), l)
+    assert.match(formatSummaryLine(legacy, t, 'en-US'), /, 20 passed, 2 failed$/)
+  } finally { setLocale('zh') }
+  // 元件確實走這個函式（不是自己再拼一份）
+  assert.match(readFileSync(new URL('../ui/devices/DiagnosticsSection.jsx', import.meta.url), 'utf8'), /formatSummaryLine\(sum, t, localeTag\(locale\)\)/)
 })
 
 test('formatWhen / diagnosticsHref', () => {

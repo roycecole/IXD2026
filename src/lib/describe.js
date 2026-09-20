@@ -116,7 +116,13 @@ export function describeBoard(gov, opt, ctx = {}) {
     rows.push({ k: t('水庫'), v: (p.seaLevel ?? 0) > 0.97 ? t('{name} 水位 {level}% → 海水高度 {sea}（滿庫溢流）', P) : t('{name} 水位 {level}% → 海水高度 {sea}', P) })
   }
   const w = gov.weather
-  if (w) rows.push({ k: t('氣象'), v: t('{weather} · {temp}°C · 濕度 {rh}% · 風 {wind} m/s → 洋流 {current}', { weather: weatherText(w.weather), temp: w.airTemp, rh: w.humidity, wind: w.windSpeed, current: f2(p.current) }) })
+  if (w) {
+    const W = { weather: weatherText(w.weather), temp: w.airTemp, rh: w.humidity, wind: w.windSpeed, current: f2(p.current) }
+    // 「→ 洋流」只在洋流真的由這一列的風速（花蓮外海）算出來的選項才印（水庫 / 潮汐 / 空氣品質）：
+    // 揚塵的洋流來自雲林測站風速（映射列已經寫了）、月亮的洋流是寫死的預設值——印上去會出現兩個不同的風速對到同一個洋流值，互相矛盾。
+    const noCurrent = opt.kind === 'dust' || opt.kind === 'moon'
+    rows.push({ k: t('氣象'), v: noCurrent ? t('{weather} · {temp}°C · 濕度 {rh}% · 風 {wind} m/s', W) : t('{weather} · {temp}°C · 濕度 {rh}% · 風 {wind} m/s → 洋流 {current}', W) })
+  }
   for (const kind of ['birds', 'fish']) {
     const d = opt[kind]
     if (!d) continue

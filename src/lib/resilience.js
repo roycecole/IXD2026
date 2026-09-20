@@ -80,7 +80,7 @@ export function flagSummary(search, hash) {
 // 依網址與 build id 算出「這個視窗要啟用哪些防呆」。
 //   看門狗：只在展場模式（?kiosk）、觀眾視窗（?audience=1：投影機整天開著、卡死了沒人會發現）或明確 ?watchdog=1 啟用；?watchdog=0 一律關閉（一般使用者的背景 / 省電情境不會被誤重載）
 //   版本檢查：正式建置一律檢查；有新版時的自動重載預設開（展場 / 閒置才動），?autoupdate=0 只記錄不重載；dev 建置不檢查
-//   資料更新：展場 30 分鐘、一般 3 小時（一般只在頁面可見時）
+//   資料更新：展場 30 分鐘、一般 3 小時（一般只在頁面可見時）；觀眾視窗一律 30 分鐘（投影機整天開著，資料要跟得上展場的主視窗；它的網址不帶 ?kiosk）
 export function resolveConfig({ search = '', hash = '', buildId = BUILD_ID } = {}) {
   const mode = resolveMode(search, hash)
   const kiosk = flagOn(search, 'kiosk')
@@ -93,7 +93,7 @@ export function resolveConfig({ search = '', hash = '', buildId = BUILD_ID } = {
   const dev = !buildId || buildId === 'dev'
   const autoOff = flagOff(search, 'autoupdate')
   const version = { check: !dev, auto: !dev && !autoOff, reason: dev ? 'dev' : autoOff ? 'flag-off' : kiosk ? 'kiosk' : 'idle', everyMs: kiosk ? VERSION_MS_KIOSK : VERSION_MS }
-  const data = { everyMs: kiosk ? DATA_MS_KIOSK : DATA_MS, visibleOnly: !kiosk }
+  const data = mode === 'audience' ? { everyMs: DATA_MS_KIOSK, visibleOnly: false } : { everyMs: kiosk ? DATA_MS_KIOSK : DATA_MS, visibleOnly: !kiosk }
   return { mode, kiosk, buildId, watchdog, version, data, reloadHour: parseReloadHour(search), flags: flagSummary(search, hash) }
 }
 
@@ -274,12 +274,18 @@ export function pickOptionId(gov, wantedId) {
 }
 
 // ───────────────────────────── 閒置判斷 ─────────────────────────────
-// state：{ idleMs（距離最後一次人為輸入）, recMode, tourRunning, tourAuto, modalOpen }。busy 的原因依序：彈窗 > 有人操作 > 錄製 > 導覽 > 播放。
+// state：{ idleMs（距離最後一次人為輸入 / 導覽員操作）, recMode, tourRunning, tourAuto, modalOpen, xrActive?, fullscreen? }。
+// busy 的原因依序：彈窗 > XR 工作階段 > 全螢幕（觀眾視窗）> 有人操作 > 錄製 > 導覽 > 播放。
+//   · xrActive：手機正在 immersive-ar 看桌上的海，可能整段沒有任何輸入；重載會直接結束 XR 工作階段。展場（kiosk）也不放行——XR 一定是使用者主動開的。
+//   · fullscreen：只有觀眾視窗會帶（投影機的 requestFullscreen 全螢幕）。重載會退出全螢幕，而回去要有人走到投影機前點一下（瀏覽器不准腳本自己進全螢幕）→ 全螢幕中延後「重載」。
+//     資料更新是就地換資料（不重載），不受它影響（見 startGuards 的 getDataIdle）。
 // 展場（kiosk）或「閒置自動啟動的導覽」本來就是沒人時的常態（自動導覽會無限循環、播放序列）：不算忙，否則展場永遠等不到閒置。
-export const DEFAULT_IDLE_STATE = { idleMs: Infinity, recMode: 'idle', tourRunning: false, tourAuto: false, modalOpen: false }
+export const DEFAULT_IDLE_STATE = { idleMs: Infinity, recMode: 'idle', tourRunning: false, tourAuto: false, modalOpen: false, xrActive: false, fullscreen: false }
 export function evaluateIdle(state, { kiosk = false, minIdleMs = IDLE_MIN_MS } = {}) {
   const s = state || {}
   if (s.modalOpen) return { idle: false, reason: 'modal' }
+  if (s.xrActive) return { idle: false, reason: 'xr' }
+  if (s.fullscreen) return { idle: false, reason: 'fullscreen' }
   if (!(Number(s.idleMs) >= minIdleMs)) return { idle: false, reason: 'active' }
   if (s.recMode === 'recording') return { idle: false, reason: 'recording' }
   const autoTour = !!s.tourRunning && (!!kiosk || !!s.tourAuto)
@@ -348,10 +354,31 @@ export function defaultEnv() {
     caf: typeof g.cancelAnimationFrame === 'function' ? (id) => g.cancelAnimationFrame(id) : null,
     fetch: typeof g.fetch === 'function' ? (url, init) => g.fetch(url, init) : null,
     reload: () => { g.location.reload() },
-    idleState: () => DEFAULT_IDLE_STATE,     // 主畫面由 ResilienceService 換成讀 store / activity 的版本；觀眾視窗沒有人為輸入，永遠閒置
+    idleState: () => DEFAULT_IDLE_STATE,     // 主畫面由 ResilienceService 換成讀 store / activity 的版本；觀眾視窗由 audienceEnv() 換成「永遠閒置、但全螢幕中不放行重載」
     getLocalFetchedAt: null,                 // 主畫面：() => 目前 store.gov 的 fetchedAt
     applyData: null,                         // 主畫面：(gov) => 換掉 store.gov（不動海況與參數）；沒有 → 不做資料更新
     onDataApplied: null,                     // 主畫面：(gov) => 寫一行 OUT 日誌
+  }
+}
+
+// 觀眾視窗的防呆環境（ErrorBoundary 啟動它；入口 chunk 不能 import store，所以「怎麼換資料」由 AudienceApp 掛載後才用 registerDataHooks 註冊進來）。
+//   · 閒置：沒有人為輸入 → 永遠閒置，但「DOM 全螢幕中」不放行重載（見 evaluateIdle 的 fullscreen）。
+//   · 資料：觀眾視窗只在自己載入時抓一次 ocean.json；建置 id 只反映程式碼（vite.config.js），純資料的部署不會讓它重載——所以要自己定時就地換資料，才不會跟主視窗顯示不同的數值。
+export const dataHooks = { apply: null, getLocalFetchedAt: null, onApplied: null }
+export function registerDataHooks(h) {
+  const mine = { apply: null, getLocalFetchedAt: null, onApplied: null, ...(h || {}) }
+  Object.assign(dataHooks, mine)
+  return () => { if (dataHooks.apply === mine.apply && dataHooks.getLocalFetchedAt === mine.getLocalFetchedAt) Object.assign(dataHooks, { apply: null, getLocalFetchedAt: null, onApplied: null }) }
+}
+export function isFullscreen(doc = globalThis.document) {
+  try { return !!(doc && (doc.fullscreenElement || doc.webkitFullscreenElement)) } catch (e) { return false }
+}
+export function audienceEnv({ doc } = {}) {
+  return {
+    idleState: () => ({ ...DEFAULT_IDLE_STATE, fullscreen: isFullscreen(doc || globalThis.document) }),
+    getLocalFetchedAt: () => (typeof dataHooks.getLocalFetchedAt === 'function' ? dataHooks.getLocalFetchedAt() : null),
+    applyData: (d) => { if (typeof dataHooks.apply !== 'function') throw new Error('audience data applier is not registered yet'); dataHooks.apply(d) },
+    onDataApplied: (d) => { if (typeof dataHooks.onApplied === 'function') dataHooks.onApplied(d) },
   }
 }
 
@@ -636,7 +663,7 @@ export function installErrorCapture({ win, crashLog, status = opsStatus, cfg = {
 
 // ───────────────────────────── 組裝 ─────────────────────────────
 // 依設定啟動這個視窗需要的防呆；回傳 { config, stop, checkNow, reloader }。可重複啟動（StrictMode：start → stop → start），stop 會清掉所有計時器 / 監聽 / 排定的重載。
-// 只有主畫面（'main'）與觀眾視窗（'audience'）會啟動；遙控頁 / 診斷頁什麼都不做。
+// 只有主畫面（'main'）與觀眾視窗（'audience'）會啟動；遙控頁 / 診斷頁什麼都不做。資料更新只在有提供 env.applyData 時才啟動（主畫面：ResilienceService；觀眾視窗：audienceEnv）。
 // opts：{ config?, env?（覆寫 defaultEnv 的任何欄位）, status?, crashLog?, buildId? }
 export function startGuards(opts = {}) {
   const env = { ...defaultEnv(), ...(opts.env || {}) }
@@ -644,7 +671,9 @@ export function startGuards(opts = {}) {
   const status = opts.status || opsStatus
   const crashLog = opts.crashLog || getCrashLog()
   const reloader = createReloader({ env, status, crashLog, cfg })
-  const getIdle = () => evaluateIdle(safe(() => env.idleState(), DEFAULT_IDLE_STATE), { kiosk: cfg.kiosk })
+  const readIdle = () => safe(() => env.idleState(), DEFAULT_IDLE_STATE)
+  const getIdle = () => evaluateIdle(readIdle(), { kiosk: cfg.kiosk })                                          // 重載用（版本 / 每日）
+  const getDataIdle = () => evaluateIdle({ ...readIdle(), fullscreen: false }, { kiosk: cfg.kiosk })             // 資料就地更新用：不重載，觀眾視窗全螢幕中也照樣更新
   const parts = []
   const checkers = []
   status.set({ started: true, config: cfg })
@@ -663,8 +692,8 @@ export function startGuards(opts = {}) {
       parts.push(vc); checkers.push(vc.check)
     } else status.patch('version', { state: 'off' })
 
-    if (cfg.mode === 'main' && typeof env.fetch === 'function' && typeof env.applyData === 'function') {
-      const dr = createDataRefresher({ env, status, cfg, getIdle })
+    if (typeof env.fetch === 'function' && typeof env.applyData === 'function') {   // 主畫面 + 觀眾視窗（觀眾視窗的 applyData 由 audienceEnv() 提供）
+      const dr = createDataRefresher({ env, status, cfg, getIdle: getDataIdle })
       parts.push(dr); checkers.push(dr.check)
     } else status.patch('data', { state: 'off' })
 

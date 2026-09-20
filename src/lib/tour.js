@@ -31,6 +31,7 @@ export const AUTO_IDLE_DEFAULT = true            // 非 kiosk 時「閒置自動
 export const SPEAK_DEFAULT = false               // 字幕旁白預設不出聲（展場也一樣：要導覽員自己打開，或網址 ?speak=1）
 export const PAUSE_SPEED = 1e-6                  // 暫停「序列播放」用的倍速：tickPlayback 用 speed || 1，設 0 會被當成 1；極小值 = 實質凍結，繼續時還原該站的倍速
 export const NARRATION_MAX_WAIT_MS = 6000        // 該站時間到、旁白還沒念完時，最多再等這麼久（等的期間不算暫停，只是延後換站）
+export const AUTO_PAUSE_MAX_MS = 3 * 60 * 1000   // 自動（閒置 / 展場）導覽被暫停後，超過這麼久沒有任何導覽員操作（暫停 / 換站 / 跳站）就自動繼續；手動與導覽員模式（?tourhold=1）的導覽不逾時
 
 // ---------------------------------------------------------------------------------------------
 // 小工具
@@ -372,6 +373,9 @@ registerMirror('tour', {
 //   · 換站一律經過同一個 begin(i)（先寫導覽 OUT 日誌 → 套用海況 → 資料播放）；導覽員換站不是使用者「接手」，run.expect 同步更新，不會觸發 'input' / 'option' 中止。
 //   · 暫停凍結兩件事：這一站的計時（繼續後從剩餘時間接著算）與序列播放（倍速設成 PAUSE_SPEED，繼續時還原該站的倍速）。
 //     暫停不是「鎖定」：真實輸入（觸碰 / 按鍵 / MIDI）照樣中止導覽——tick 仍會偵測中斷，只是不推進時間。
+//     自動導覽的暫停有逾時（deps.autoPauseMs，預設 AUTO_PAUSE_MAX_MS）：展場上有人按了暫停就走開，投影機不能整個下午定格在同一站；逾時就自己繼續。
+//   · 自動導覽循環回第 0 站時重建站表（用當下的 gov 與日期）：站表是 start() 那一刻算的，無人值守的展場導覽一輪約 100 秒、無限循環，
+//     期間 gov 可能已被資料更新換掉（只換 gov、不動導覽），沿用舊站表字幕的數字就與球實際套用的資料不一致。手動 / 導覽員導覽的站表維持不變（進度點與複製連結的站序不會中途位移）。
 // ---------------------------------------------------------------------------------------------
 const PLAY = {
   tide: (s) => s.playGovSeries(),
@@ -400,6 +404,7 @@ export function createTourRunner(deps) {
   const emit = deps.emit || ((p) => useTourStore.setState(p))
   const build = deps.build || buildTour
   const isRemote = deps.isRemote || (() => useTourStore.getState().remote)
+  const autoPauseMs = isNum(deps.autoPauseMs) && deps.autoPauseMs > 0 ? deps.autoPauseMs : AUTO_PAUSE_MAX_MS
   const afterPlay = deps.afterPlay || (() => {})   // 每次「導覽自己開始播放序列」後呼叫（讓外層把 store 記的「演出次數」扣回去：導覽不是使用者的演出）
   const speaker = deps.narrator || sharedNarrator
   const speechOf = deps.speechText || sharedSpeechText
@@ -446,6 +451,7 @@ export function createTourRunner(deps) {
   function begin(i) {
     const cur = run.stops[i]
     run.i = i; run.at = now(); run.own = false; run.frozenMs = 0; run.waitFrom = null
+    run.pausedAt = run.at                                  // 暫停中換站也算導覽員操作：自動導覽的暫停逾時從這一刻重算
     log(t('導覽 {i}/{n}｜{title}', { i: i + 1, n: run.stops.length, title: captionText(cur.caption).title }))   // 先寫這一行，OUT 監看的順序才是「導覽 → 套用海況 → 資料播放」
     const s = st()
     if (s.rec.mode === 'playing') s.stopPlayback()        // 保險：轉站前先停掉上一站的播放（playSeries 只在 idle 才會開始）
@@ -474,12 +480,22 @@ export function createTourRunner(deps) {
     return true
   }
 
-  // 下一站：最後一站 → 自動（閒置啟動、無限循環）回第 0 站；手動 → 'done' 結束並還原
+  // 自動導覽循環回第 0 站前，用當下的 gov 重建站表（見上面的說明）。建不出來（丟例外 / 沒有任何一站）就沿用舊站表，導覽不中斷。
+  function rebuildStops() {
+    if (!run) return
+    let fresh = null
+    try { fresh = build(st().gov, run.opts) } catch (e) { fresh = null }
+    if (!Array.isArray(fresh) || !fresh.length) return
+    run.stops = fresh
+    emit({ stopList: fresh.map((x) => ({ id: x.id, caption: x.caption })) })
+  }
+
+  // 下一站：最後一站 → 自動（閒置啟動、無限循環）重建站表後回第 0 站；手動 → 'done' 結束並還原
   function next() {
     if (!run) return false
     const n = run.i + 1
     if (n < run.stops.length) return goto(n)
-    if (run.auto) return goto(0)
+    if (run.auto) { rebuildStops(); return goto(0) }
     return stop('done')
   }
   // 上一站：第 0 站 = 重播第 0 站
@@ -492,6 +508,7 @@ export function createTourRunner(deps) {
     const r = run
     if (!r || r.paused) return false
     r.paused = true
+    r.pausedAt = now()
     r.frozenMs = Math.max(0, now() - r.at)                 // 這一站已經過了多久：繼續時從這裡接著算，不重新計滿
     r.waitFrom = null
     if (r.own && st().rec.mode === 'playing') { st().setRecSpeed(PAUSE_SPEED); r.frozen = true }   // apply 站沒有序列 → 只凍計時
@@ -555,8 +572,8 @@ export function createTourRunner(deps) {
     const first = resolveStopIndex(stops, at, 0)
     touch()                                                 // 手動開始也算一次互動：閒置計時從現在重算
     const r = run = {
-      stops, i: -1, at: 0, own: false, expect: null, auto: !!auto, base: getActivity(), snap: { params: { ...s.params }, optionId: s.govOptionId, speed: s.rec.speed },
-      paused: !!hold, frozenMs: 0, frozen: false, spoke: false, waitFrom: null, offs: [],
+      stops, opts, i: -1, at: 0, own: false, expect: null, auto: !!auto, base: getActivity(), snap: { params: { ...s.params }, optionId: s.govOptionId, speed: s.rec.speed },
+      paused: !!hold, pausedAt: 0, frozenMs: 0, frozen: false, spoke: false, waitFrom: null, offs: [],
     }
     log(t('▶ 資料導覽開始（{n} 站）', { n: stops.length }))
     emit({ stopList: stops.map((x) => ({ id: x.id, caption: x.caption })) })
@@ -577,7 +594,10 @@ export function createTourRunner(deps) {
     if (run.own && s.rec.mode === 'idle') run.own = false   // 我們的序列播完了（或被按了停止）：停在終點直到本站結束
     else if (!run.own && s.rec.mode === 'playing') return stop('external')   // 使用者自己按了播放
     if (s.govOptionId !== run.expect) return stop('option') // 有人換了海況選項
-    if (run.paused) return                                  // 暫停：計時凍結，不換站
+    if (run.paused) {                                       // 暫停：計時凍結，不換站
+      if (run.auto && t0 - run.pausedAt >= autoPauseMs) resume()   // 自動導覽：暫停後一直沒人再操作 → 自己繼續（不能整個下午定格在同一站）
+      return
+    }
     if (t0 - run.at >= run.stops[run.i].durationMs) {
       // 旁白還在念：最多再等 NARRATION_MAX_WAIT_MS 讓句子念完（只是延後換站，不算暫停；暫停 / 中止 / 跳站都會結束這段等待）
       if (narrationBusy()) {

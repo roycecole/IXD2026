@@ -73,6 +73,9 @@ export function pickLatestOut(log) {
   return null
 }
 
+// 資料播放每一步寫一行的 OUT 事件（App.jsx：'DATA ' + formatHud(…)）：高頻（空氣品質 0.2 秒一步），不該進 aria-live 朗讀佇列
+export function isDataLine(text) { return typeof text === 'string' && /^DATA\s/.test(text) }
+
 // 節流：距離「上次更新」還要等多久才能更新下一次（毫秒，最小 0）。Footer 那一行是 aria-live，事件很密時不要每則都朗讀 / 重繪
 export function throttleDelay(lastAt, now, ms) {
   const d = Number(lastAt) + Number(ms) - Number(now)

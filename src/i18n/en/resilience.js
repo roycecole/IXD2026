@@ -70,6 +70,8 @@ export default {
   '錄製中': 'recording',
   '導覽中': 'tour running',
   '播放中': 'playing',
+  'AR 桌面使用中': 'AR tabletop in use',
+  '觀眾視窗全螢幕中': 'the audience window is fullscreen',
   '新版本': 'new version',
   '每日重載': 'daily reload',
   '畫面錯誤': 'Render error',

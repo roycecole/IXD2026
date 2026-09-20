@@ -8,6 +8,7 @@
   border: 1px solid var(--amber); background: rgba(255, 157, 43, 0.12); color: var(--amber);
   font-size: 11.5px; font-weight: 600; line-height: 1.4; letter-spacing: .01em; overflow-wrap: anywhere;
 }
+.gov-air-scale { font-size: 11px; line-height: 1.45; color: var(--muted); overflow-wrap: anywhere; }
 .gov-air-credit { font-size: 10.5px; line-height: 1.4; color: var(--dim); }
 .gov-air-credit a { color: var(--muted); text-decoration: underline; text-underline-offset: 2px; }
 .gov-air-credit a:hover { color: var(--accent); }

@@ -1,6 +1,9 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { createHash, randomBytes } from 'node:crypto'
+import { createHash } from 'node:crypto'
+import { readFileSync, readdirSync } from 'node:fs'
+import { join, relative, sep, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 // 供測試（scripts/vite-config.test.mjs）：node_modules 路徑 → chunk 名稱（其餘交給 Rollup 自動分塊）
 export function manualChunk(id) {
@@ -13,19 +16,51 @@ export function manualChunk(id) {
 }
 
 // ---- 版本檔（展場防呆：頁面定期比對 /version.json，有新版就在閒置時自動重新載入；見 src/lib/resilience.js）----
-// build id = 建置時間戳（UTC，YYYYMMDDHHMMSS）+ 短 hash（時間戳 + 隨機鹽的 sha1 前 7 碼）。同一次建置用同一個 id：
-//   · 外掛在建置時輸出 dist/version.json：{ id, builtAt }
+// build id = 「程式碼內容」的 sha1 前 12 碼（不含時間戳 / 隨機鹽）：src/、index.html、package.json / package-lock.json、vite.config.js、public/（不含 public/data/）。
+//   為什麼只看程式碼：CI 每 3 小時會重新整理 public/data/ocean.json 並重新部署（.github/workflows/refresh-data.yml）。id 若每次建置都不同，
+//   每一次「只換資料」的部署都會讓所有視窗整頁重載（投影機的觀眾視窗退出全螢幕、MIDI 要重連、手機遙控斷線）；資料的更新由頁面自己就地換
+//   （lib/resilience.js 的 createDataRefresher；觀眾視窗也是），只有程式真的變了才需要重載。測試檔（*.test.*）與文件（*.md）不算。
+//   · 同一份程式碼（不論建置幾次、何時建置）id 相同；任何程式檔改一個字 id 就不同
+//   · 外掛在建置時輸出 dist/version.json：{ id, builtAt }（builtAt 只給人看，比對只看 id）
 //   · define 把同一個 id 注入程式（__BUILD_ID__；dev 模式為 'dev'，程式據此不做版本檢查）
-export function makeBuildId(date = new Date(), salt = randomBytes(8).toString('hex')) {
-  const p = (n) => String(n).padStart(2, '0')
-  const ts = `${date.getUTCFullYear()}${p(date.getUTCMonth() + 1)}${p(date.getUTCDate())}${p(date.getUTCHours())}${p(date.getUTCMinutes())}${p(date.getUTCSeconds())}`
-  return `${ts}-${createHash('sha1').update(ts + salt).digest('hex').slice(0, 7)}`
+const ROOT = dirname(fileURLToPath(import.meta.url))
+const CODE_DIRS = ['src', 'public']
+const CODE_FILES = ['index.html', 'package.json', 'package-lock.json', 'vite.config.js']
+const SKIP_DIRS = new Set(['public/data'])                        // 相對於專案根目錄（POSIX 路徑）：資料快照不算程式碼
+const SKIP_FILE = /(\.test\.[cm]?js$|\.md$|(^|\/)\.DS_Store$)/
+
+// 會影響執行結果的檔案（相對路徑、POSIX 分隔、排序）。讀不到的目錄 / 檔案略過（不讓建置因此失敗）。
+export function listCodeFiles(root = ROOT) {
+  const out = []
+  const walk = (dir) => {
+    let ents = []
+    try { ents = readdirSync(dir, { withFileTypes: true }) } catch (e) { return }
+    for (const d of ents) {
+      const abs = join(dir, d.name)
+      const rel = relative(root, abs).split(sep).join('/')
+      if (d.isDirectory()) { if (!SKIP_DIRS.has(rel)) walk(abs) }
+      else if (d.isFile() && !SKIP_FILE.test(rel)) out.push(rel)
+    }
+  }
+  for (const d of CODE_DIRS) walk(join(root, d))
+  for (const f of CODE_FILES) { try { readFileSync(join(root, f)); out.push(f) } catch (e) { /* 沒有這個檔：略過 */ } }
+  return out.sort()
 }
 
-// command：'build' → 產生新的 id；'serve'（dev）→ 'dev'
-export function buildInfo(command, now = new Date()) {
+export function makeBuildId(root = ROOT) {
+  const h = createHash('sha1')
+  for (const rel of listCodeFiles(root)) {
+    let buf = null
+    try { buf = readFileSync(join(root, rel)) } catch (e) { continue }
+    h.update(rel); h.update('\0'); h.update(buf); h.update('\0')
+  }
+  return h.digest('hex').slice(0, 12)
+}
+
+// command：'build' → 依程式碼算 id；'serve'（dev）→ 'dev'
+export function buildInfo(command, now = new Date(), root = ROOT) {
   if (command !== 'build') return { id: 'dev', builtAt: '' }
-  return { id: makeBuildId(now), builtAt: now.toISOString() }
+  return { id: makeBuildId(root), builtAt: now.toISOString() }
 }
 
 export function versionPlugin(info) {

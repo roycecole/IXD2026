@@ -11,7 +11,7 @@
 //   非 DOM 輸入（MIDI / 語音 / 手機遙控 / 手把 / 手勢 / 滾輪）都會先呼叫 activity.touch()，touch 的同步掛鉤（onActivity）在動作「之前」中止導覽並還原。
 //   100ms 輪詢（TourService）只是保險網。
 import { useStore } from '../store/useStore.js'
-import { activity, touch, onActivity } from '../store/activity.js'
+import { activity, touch, touchGuide, onActivity } from '../store/activity.js'
 import { stats } from '../store/stats.js'
 import { LS, saveLS } from '../lib/persist.js'
 import { arState } from '../lib/ar.js'
@@ -70,8 +70,8 @@ export function tourIdleTick(now = performance.now()) {
   return 'wait'
 }
 
-// 這些按鍵不算「操作海」：H 演出模式 / I 資訊面板 / ? 說明 / T 導覽開關 / 導覽員快速鍵（← 上一站、→ 下一站、P 暫停 / 繼續）/ 修飾鍵與 Tab
-export const KEEP_KEYS = new Set(['t', 'T', 'h', 'H', 'i', 'I', '?', 'ArrowLeft', 'ArrowRight', 'p', 'P', 'Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Tab'])
+// 這些按鍵不算「操作海」：H 演出模式 / I 資訊面板 / L 系統事件面板 / ? 說明 / T 導覽開關 / 導覽員快速鍵（← 上一站、→ 下一站、P 暫停 / 繼續）/ 修飾鍵與 Tab
+export const KEEP_KEYS = new Set(['t', 'T', 'h', 'H', 'i', 'I', 'l', 'L', '?', 'ArrowLeft', 'ArrowRight', 'p', 'P', 'Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Tab'])
 // 點到這些元件不算「操作海」、不中斷導覽：導覽自己的卡片 / 字幕、語言切換（切語言時字幕要跟著換、導覽繼續）、
 // 分享 / 分享星球 / 錄影（要擷取「此刻看到的海」，不能先被還原）、資訊面板 / 說明 / 聲音 / 匯出 LOG、離開演出模式。
 // （TopBar 按鈕以 data-k 辨識；找不到對應元素時只是退化成「點了就中斷導覽」。）
@@ -79,14 +79,17 @@ export const KEEP_SELECTOR = '[data-tour-ui], .stage-exit, [data-k="lang"], [dat
 export const inKeepUi = (e) => { const el = e && e.target; return !!(el && el.closest && el.closest(KEEP_SELECTOR)) }
 
 // 導覽員快速鍵（只在導覽進行中；本函式是純判斷，可在 Node 測）：← 上一站、→ 下一站、P 暫停 / 繼續。
-//   忽略：ctrl / meta / alt 組合、輸入法組字中、輸入元件（INPUT / TEXTAREA / SELECT / contenteditable）與滑桿類元件（role="slider" 等，
+//   忽略：ctrl / meta / alt 組合、輸入法組字中、輸入元件（文字 / 數字 / 滑桿類 INPUT、TEXTAREA、SELECT、contenteditable；checkbox / 按鈕類 INPUT 不算——
+//   點過面板導覽卡的 checkbox 後焦點會留在上面，快速鍵不能因此失效）與滑桿類元件（role="slider" 等，
 //   例如虛擬控制器的旋鈕用方向鍵調值——那是在「操作海」，交給該元件，導覽會被它的 input 中止）、彈窗開著且焦點在裡面（isInModal，與 App 的全域快速鍵同一個判斷）。
 const NAV_KEYS = new Map([['ArrowLeft', 'prev'], ['ArrowRight', 'next'], ['p', 'toggle'], ['P', 'toggle']])
 const TYPING_ROLE = /^(slider|textbox|spinbutton|combobox|listbox|searchbox)$/
+const NON_TYPING_INPUT = /^(checkbox|button|submit|reset|image)$/   // 這些 type 不吃文字、也不用方向鍵調值（radio / range / number 會用方向鍵，仍算輸入元件）
 export function isTypingTarget(el) {
   if (!el) return false
   try {
-    if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName || '')) return true
+    const tag = el.tagName || ''
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(tag)) return !(tag === 'INPUT' && NON_TYPING_INPUT.test(String(el.type || '').toLowerCase()))
     if (el.isContentEditable) return true
     return TYPING_ROLE.test((typeof el.getAttribute === 'function' && el.getAttribute('role')) || '')
   } catch (e) { return false }
@@ -101,13 +104,17 @@ export function navKeyAction(e) {
 
 // 導覽進行中：碰螢幕 / 按鍵 → 立刻結束並還原（capture：先於任何處理器，使用者的動作會落在還原後的狀態上）。導覽自己的卡片與上面列出的非操作性按鈕不算。
 // 例外：導覽員快速鍵 ← → P（navKeyAction）——換站 / 暫停，不中止；處理時 preventDefault（不要捲動面板），按住不放不連續跳站。Esc 仍是結束。
-export function attachRunningGuards(win, runner = tourRunner) {
-  const onDown = (e) => { if (!inKeepUi(e)) runner.stop('input') }
+// 導覽員的操作（快速鍵、點導覽卡 / 進度點 / 字幕卡按鈕等 KEEP 元件）不是「操作海」，但要讓展場防呆知道「有人在場講解」：
+//   呼叫 guide()（預設 touchGuide：只記 activity.guideAt，不跑活動掛鉤、不動 activity.last），版本更新 / 每日重載 60 秒內不會在講解到一半時重載頁面。
+export function attachRunningGuards(win, runner = tourRunner, guide = touchGuide) {
+  const note = () => { try { guide() } catch (e) { /* 記錄失敗不影響導覽 */ } }
+  const onDown = (e) => { if (inKeepUi(e)) note(); else runner.stop('input') }
   const onKey = (e) => {
     if (e.key === 'Escape') { runner.stop('user'); return }
     const nav = navKeyAction(e)
     if (nav) {
       if (typeof e.preventDefault === 'function') e.preventDefault()
+      note()
       if (e.repeat) return
       if (nav === 'prev') runner.prev()
       else if (nav === 'next') runner.next()
@@ -115,7 +122,8 @@ export function attachRunningGuards(win, runner = tourRunner) {
       else runner.pause()
       return
     }
-    if (KEEP_KEYS.has(e.key) || e.ctrlKey || e.metaKey || e.altKey || inKeepUi(e)) return
+    if (inKeepUi(e)) { note(); return }                       // 在導覽卡 / 字幕卡的按鈕上按 Enter / 空白
+    if (KEEP_KEYS.has(e.key) || e.ctrlKey || e.metaKey || e.altKey) return
     runner.stop('input')
   }
   win.addEventListener('pointerdown', onDown, true)
@@ -166,19 +174,24 @@ const safeHref = () => { try { return typeof location !== 'undefined' ? location
 //   · 等 gov 有 options 才動；再延後 delayMs：App 在 setGov 之後、同一個 tick 內還要套用首次到訪 / 分享連結的參數，導覽要在那之後才記「導覽前」的狀態
 //   · 只有一次：done 旗標在「試過一次」（成功 / 失敗 / 不適用）時就立起，StrictMode 雙掛載、HMR 重新掛載都不會再啟動；start 失敗（例如正在錄製）就放棄，不重試
 //   · 觀眾視窗（remote / ?audience）不跑導覽 → 直接放棄
-//   · attach() 回傳取消函式（unmount 時退訂 + 清計時器）；重複 attach 安全。
+//   · 分頁在背景（Ctrl / Cmd + 點擊連結、載入途中被切走）時不啟動，等分頁變可見（visibilitychange）才排程：
+//     背景分頁的 rAF 不跑（資料播放不前進）、100ms 輪詢卻照時間換站，切回來時已不是連結指的那一站，甚至整輪已結束；仍然只啟動一次
+//   · attach() 回傳取消函式（unmount 時退訂 + 清計時器 + 移除 visibilitychange 監聽）；重複 attach 安全。
 // 計時器以「裸函式包一層」呼叫（原生 setTimeout 掛在別的物件上再呼叫會丟 Illegal invocation）。
 export const LINK_START_DELAY_MS = 400
 export function createLinkStarter({
   runner = tourRunner, store = useStore, tourStore = useTourStore, getSearch = safeSearch, delayMs = LINK_START_DELAY_MS,
   schedule = (fn, ms) => setTimeout(fn, ms), cancel = (id) => clearTimeout(id),
+  doc = typeof document !== 'undefined' ? document : null,
 } = {}) {
   let done = false
   let timer = null
   const govReady = () => { const g = store.getState().gov; return !!(g && Array.isArray(g.options) && g.options.length) }
+  const visible = () => { try { return !doc || !doc.hidden } catch (e) { return true } }
   function fire() {
     timer = null
     if (done) return
+    if (!visible()) return                                  // 排程後、觸發前被切到背景：不算「試過」，等分頁可見再排一次
     done = true
     const link = parseTourLink(getSearch())
     if (!link) return
@@ -188,10 +201,13 @@ export function createLinkStarter({
     if (done) return () => {}
     const search = getSearch()
     if (!parseTourLink(search) || tourStore.getState().remote || isAudienceSearch(search)) { done = true; return () => {} }
-    const check = () => { if (done || timer !== null || !govReady()) return; timer = schedule(fire, delayMs) }
+    const check = () => { if (done || timer !== null || !govReady() || !visible()) return; timer = schedule(fire, delayMs) }
     const off = store.subscribe((s, prev) => { if (s.gov !== prev.gov) check() })
+    const onVis = () => { if (visible()) check() }
+    const hasDoc = !!doc && typeof doc.addEventListener === 'function'
+    if (hasDoc) doc.addEventListener('visibilitychange', onVis)
     check()
-    return () => { off(); if (timer !== null) { cancel(timer); timer = null } }
+    return () => { off(); if (hasDoc) doc.removeEventListener('visibilitychange', onVis); if (timer !== null) { cancel(timer); timer = null } }
   }
   return { attach, isDone: () => done }
 }

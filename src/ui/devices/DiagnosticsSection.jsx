@@ -4,7 +4,7 @@
 // 診斷頁在另一個分頁寫入摘要時會觸發 storage 事件，這裡就地更新。
 import { useEffect, useState } from 'react'
 import { useT, useLocale, localeTag } from '../../i18n/index.js'
-import { DIAG_LS_KEY, loadSummary, formatWhen, diagnosticsHref } from '../../lib/diagnosticsSummary.js'
+import { DIAG_LS_KEY, loadSummary, formatSummaryLine, diagnosticsHref } from '../../lib/diagnosticsSummary.js'
 import '../../styles/diagnostics.css'
 
 export default function DiagnosticsSection() {
@@ -25,9 +25,7 @@ export default function DiagnosticsSection() {
       <div className="dev-sec-body">
         <a className="diag-open" href={diagnosticsHref(locale)} target="_blank" rel="noopener noreferrer">{t('開啟裝置診斷')}</a>
         <span className="diag-last" role="status">
-          {sum
-            ? t('上次診斷：{when}，通過 {pass} 項、失敗 {fail} 項', { when: formatWhen(sum.at, localeTag(locale)), pass: sum.pass, fail: sum.fail })
-            : t('還沒有診斷紀錄')}
+          {sum ? formatSummaryLine(sum, t, localeTag(locale)) : t('還沒有診斷紀錄')}
         </span>
       </div>
     </section>

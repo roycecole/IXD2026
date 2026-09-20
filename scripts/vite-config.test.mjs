@@ -3,8 +3,10 @@
 // 完整驗證是 npm run build 後看入口與 RemoteApp chunk 的 import（見 README 的效能一節）；這裡守住造成問題的兩個原因。
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, existsSync, readdirSync } from 'node:fs'
-import config, { manualChunk, makeBuildId, buildInfo, versionPlugin } from '../vite.config.js'
+import { readFileSync, existsSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import config, { manualChunk, makeBuildId, buildInfo, versionPlugin, listCodeFiles } from '../vite.config.js'
 
 const nm = (p) => `/Users/x/IXD2026/node_modules/${p}`
 
@@ -31,29 +33,90 @@ test('main.jsx 不靜態載入 store / 場景：否則整個 store（連同 hapt
 })
 
 // ---------------------------------------------------------------------------------------------
-// 展場防呆的版本檔：build id = 建置時間戳 + 短 hash；外掛輸出 dist/version.json，define 把同一個 id 注入程式（__BUILD_ID__）。
+// 展場防呆的版本檔：build id = 「程式碼內容」的 sha1 前 12 碼；外掛輸出 dist/version.json，define 把同一個 id 注入程式（__BUILD_ID__）。
 // 頁面（services/ResilienceService → lib/resilience.js）定期以 fetch('/version.json', { cache: 'no-store' }) 比對，不同 = 有新版。
+// 為什麼不含時間戳 / 隨機鹽：CI 每 3 小時只換 public/data/ocean.json 就重新部署，id 若每次不同，所有視窗（含投影機的觀眾視窗）都會為了「只換資料」整頁重載。
 // ---------------------------------------------------------------------------------------------
 const flat = (a) => (Array.isArray(a) ? a.flatMap(flat) : [a])
 const versionPluginOf = (cfg) => flat(cfg.plugins).find((p) => p && p.name === 'midisea-version')
 const emitted = (plugin) => { const out = []; plugin.generateBundle.call({ emitFile: (f) => out.push(f) }); return out }
 
-test('makeBuildId：UTC 時間戳（14 位）+ 短 hash（7 碼）；同輸入同結果、不同鹽不同 hash', () => {
-  const d = new Date(Date.UTC(2026, 8, 20, 12, 34, 56))
-  const id = makeBuildId(d, 'salt-a')
-  assert.match(id, /^\d{14}-[0-9a-f]{7}$/)
-  assert.ok(id.startsWith('20260920123456-'))
-  assert.equal(makeBuildId(d, 'salt-a'), id)
-  assert.notEqual(makeBuildId(d, 'salt-b'), id)
-  assert.match(makeBuildId(), /^\d{14}-[0-9a-f]{7}$/, '預設用現在時間與隨機鹽')
-  assert.notEqual(makeBuildId(), makeBuildId(), '兩次建置（即使同一秒）id 也不同')
+// 暫存的迷你專案：與真實專案同樣的頂層結構
+function fixture(extra = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'midisea-id-'))
+  const files = {
+    'src/main.jsx': 'console.log(1)\n', 'src/lib/a.js': 'export const a = 1\n', 'index.html': '<html></html>\n', 'package.json': '{}\n', 'package-lock.json': '{}\n', 'vite.config.js': '// cfg\n',
+    'public/sw.js': '// sw\n', 'public/icon.svg': '<svg/>\n', 'public/data/ocean.json': '{"fetchedAt":"2026-09-20T09:00"}\n', ...extra,
+  }
+  const put = (rel, text) => { const abs = join(root, rel); mkdirSync(join(abs, '..'), { recursive: true }); writeFileSync(abs, text) }
+  for (const [rel, text] of Object.entries(files)) put(rel, text)
+  return { root, put, done: () => rmSync(root, { recursive: true, force: true }) }
+}
+
+test('makeBuildId：12 位小寫 hex；同一份程式碼（不論建置幾次、何時建置）id 相同——純資料的部署不會讓所有視窗重載', () => {
+  const f = fixture()
+  try {
+    const id = makeBuildId(f.root)
+    assert.match(id, /^[0-9a-f]{12}$/)
+    assert.equal(makeBuildId(f.root), id, '同一份內容 → 同一個 id')
+    f.put('public/data/ocean.json', '{"fetchedAt":"2026-09-20T12:00","x":"資料變了"}\n')   // CI 的 refresh-data：只換資料
+    f.put('public/data/extra.json', '{}\n')
+    assert.equal(makeBuildId(f.root), id, '只換 public/data/ 下的資料 → id 不變（不重載）')
+    f.put('src/lib/notes.md', '# 文件\n'); f.put('src/lib/a.test.mjs', 'test\n'); f.put('README.md', 'x\n')
+    assert.equal(makeBuildId(f.root), id, '測試檔與文件不算程式碼')
+  } finally { f.done() }
 })
 
-test('buildInfo：build 產生新 id + ISO 時間；dev（serve）為 "dev"', () => {
-  const now = new Date(Date.UTC(2026, 0, 2, 3, 4, 5))
-  const b = buildInfo('build', now)
-  assert.match(b.id, /^20260102030405-[0-9a-f]{7}$/); assert.equal(b.builtAt, '2026-01-02T03:04:05.000Z')
-  assert.deepEqual(buildInfo('serve', now), { id: 'dev', builtAt: '' })
+test('makeBuildId：任何程式檔改一個字、新增 / 刪除檔案、動 index.html / package-lock.json / vite.config.js / public 的靜態檔 → id 就不同（真的有新版才重載）', () => {
+  const f = fixture()
+  try {
+    const seen = new Set([makeBuildId(f.root)])
+    const changed = (label) => { const id = makeBuildId(f.root); assert.ok(!seen.has(id), label); seen.add(id) }
+    f.put('src/lib/a.js', 'export const a = 2\n'); changed('改一個字')
+    f.put('src/lib/b.js', 'export const b = 1\n'); changed('新增檔案')
+    f.put('public/sw.js', '// sw v2\n'); changed('service worker 也是程式')
+    f.put('index.html', '<html><body></body></html>\n'); changed('index.html')
+    f.put('package-lock.json', '{"v":2}\n'); changed('套件版本（lock）')
+    f.put('vite.config.js', '// cfg 2\n'); changed('建置設定')
+    f.put('public/icon.svg', '<svg id="x"/>\n'); changed('public 的靜態資產')
+    rmSync(join(f.root, 'src/lib/b.js')); changed('刪除檔案')   // 回到與「新增 b.js 之前 + 其他修改」不同的內容
+    // 檔名也算內容：同樣的位元組換個名字 → 不同
+    f.put('src/lib/c.js', 'export const c = 1\n'); const c1 = makeBuildId(f.root)
+    rmSync(join(f.root, 'src/lib/c.js')); f.put('src/lib/d.js', 'export const c = 1\n')
+    assert.notEqual(makeBuildId(f.root), c1)
+  } finally { f.done() }
+})
+
+test('makeBuildId：與檔案建立順序 / 時間無關（同樣的內容 → 同樣的 id）；缺少 package-lock.json 等檔案不丟錯', () => {
+  const a = fixture(), b = fixture()
+  try {
+    assert.equal(makeBuildId(a.root), makeBuildId(b.root))
+    const rmRoot = mkdtempSync(join(tmpdir(), 'midisea-id-empty-'))
+    try { assert.match(makeBuildId(rmRoot), /^[0-9a-f]{12}$/, '空目錄也算得出 id（不丟錯）') } finally { rmSync(rmRoot, { recursive: true, force: true }) }
+    rmSync(join(b.root, 'package-lock.json')); assert.match(makeBuildId(b.root), /^[0-9a-f]{12}$/); assert.notEqual(makeBuildId(a.root), makeBuildId(b.root))
+  } finally { a.done(); b.done() }
+})
+
+test('listCodeFiles（真實專案）：含 src / public 的程式與靜態檔、index.html、package-lock.json、vite.config.js；不含 public/data/、測試檔、文件；POSIX 路徑且已排序', () => {
+  const files = listCodeFiles()
+  for (const must of ['src/main.jsx', 'src/lib/resilience.js', 'public/sw.js', 'index.html', 'package.json', 'vite.config.js']) assert.ok(files.includes(must), must)
+  assert.ok(!files.some((f) => f.startsWith('public/data/')), '資料快照不算程式碼')
+  assert.ok(!files.some((f) => /\.test\.[cm]?js$/.test(f)), '測試檔不算')
+  assert.ok(!files.some((f) => /\.md$/.test(f)), '文件不算')
+  assert.ok(!files.some((f) => f.includes('\\')), 'POSIX 分隔')
+  assert.deepEqual(files, [...files].sort())
+  assert.match(makeBuildId(), /^[0-9a-f]{12}$/); assert.equal(makeBuildId(), makeBuildId(), '真實專案連算兩次相同')
+})
+
+test('buildInfo：build 依程式碼算 id + ISO 時間；dev（serve）為 "dev"', () => {
+  const f = fixture()
+  try {
+    const now = new Date(Date.UTC(2026, 0, 2, 3, 4, 5))
+    const b = buildInfo('build', now, f.root)
+    assert.equal(b.id, makeBuildId(f.root)); assert.equal(b.builtAt, '2026-01-02T03:04:05.000Z')
+    assert.equal(buildInfo('build', new Date(Date.UTC(2026, 5, 1)), f.root).id, b.id, '建置時間不同、程式碼相同 → id 相同')
+    assert.deepEqual(buildInfo('serve', now, f.root), { id: 'dev', builtAt: '' })
+  } finally { f.done() }
 })
 
 test('versionPlugin：只在 build 套用，輸出 version.json = { id, builtAt }', () => {
@@ -65,19 +128,27 @@ test('versionPlugin：只在 build 套用，輸出 version.json = { id, builtAt 
   assert.deepEqual(JSON.parse(files[0].source), { id: 'ID-1', builtAt: '2026-01-02T03:04:05.000Z' })
 })
 
-test('vite 設定：build 時 define 的 __BUILD_ID__ 與 version.json 的 id 是同一個；dev 為 "dev"；每次建置 id 不同', () => {
+test('vite 設定：build 時 define 的 __BUILD_ID__ 與 version.json 的 id 是同一個；dev 為 "dev"；同一份程式碼重複建置 id 相同（只換資料的部署不改 id）', () => {
   assert.equal(typeof config, 'function', '設定是函式形式（依 command 決定 build id）')
   const a = config({ command: 'build', mode: 'production' })
   const id = JSON.parse(a.define.__BUILD_ID__)
-  assert.match(id, /^\d{14}-[0-9a-f]{7}$/)
+  assert.match(id, /^[0-9a-f]{12}$/)
   const plugin = versionPluginOf(a)
   assert.ok(plugin, '設定裡有版本檔外掛')
   assert.equal(JSON.parse(emitted(plugin)[0].source).id, id, 'version.json 與程式內的 build id 一致')
   const b = config({ command: 'build', mode: 'production' })
-  assert.notEqual(JSON.parse(b.define.__BUILD_ID__), id)
+  assert.equal(JSON.parse(b.define.__BUILD_ID__), id, '同一份程式碼再建置一次：id 不變')
   assert.equal(JSON.parse(config({ command: 'serve', mode: 'development' }).define.__BUILD_ID__), 'dev')
   // 既有設定沒被動到
   assert.equal(a.base, '/'); assert.equal(a.build.rollupOptions.output.manualChunks, manualChunk)
+})
+
+test('CI 資料刷新（refresh-data.yml）只 commit public/data/ocean.json：這個檔案在 id 的計算範圍之外（原始碼層級守住，避免有人把資料目錄加回去）', () => {
+  const cfg = readFileSync(new URL('../vite.config.js', import.meta.url), 'utf8')
+  assert.match(cfg, /SKIP_DIRS = new Set\(\['public\/data'\]\)/)
+  assert.doesNotMatch(cfg, /randomBytes|Math\.random/, 'id 不能再混入隨機鹽')
+  const wf = readFileSync(new URL('../.github/workflows/refresh-data.yml', import.meta.url), 'utf8')
+  assert.match(wf, /git add public\/data\/ocean\.json/)
 })
 
 test('resilience.js 以 typeof 讀 __BUILD_ID__（Node / dev 沒有定義時不會 ReferenceError，退回 "dev"）', () => {
@@ -102,7 +173,7 @@ test('dist（建置後）：version.json 存在且 id 出現在 bundle 內', { s
   const root = new URL('../dist/', import.meta.url)
   assert.ok(existsSync(new URL('version.json', root)), 'dist/version.json 不存在——先跑 npm run build')
   const v = JSON.parse(readFileSync(new URL('version.json', root), 'utf8'))
-  assert.match(v.id, /^\d{14}-[0-9a-f]{7}$/); assert.ok(!Number.isNaN(Date.parse(v.builtAt)))
+  assert.match(v.id, /^[0-9a-f]{12}$/); assert.ok(!Number.isNaN(Date.parse(v.builtAt)))
   const assets = readdirSync(new URL('assets/', root)).filter((f) => f.endsWith('.js'))
   const hits = assets.filter((f) => readFileSync(new URL('assets/' + f, root), 'utf8').includes(v.id))
   assert.ok(hits.length >= 1, `bundle 內找不到 build id ${v.id}`)

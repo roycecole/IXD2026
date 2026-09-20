@@ -21,12 +21,14 @@ import { hasTourLink } from './tourLink.js'
 // ============================================================================================
 // targets：CSS 選擇器（依序嘗試，第一個「存在、看得到」的就是高亮目標；全部落空 → 置中卡片，不卡住、不報錯）。
 // 選擇器對應的是現有元件的 class / data-k：.canvas-wrap（App）、.panel .group（ParamPanel：第一個是 OCEAN 滑桿群）、
-// .gov-select / .gov-card（DataCard）、.tour-card（TourControls）、.toolstrip / [data-k=help]（TopBar）、.footer-help（Footer）。
+// .gov-select（DataCard）、.tour-card / .gov-card（TourControls）、.toolstrip / [data-k=help]（TopBar）、.footer-help（Footer）。
 export const STEPS = [
   { id: 'welcome', title: T('歡迎來到 MidiSea'), body: T('一顆裝著海的球，海況來自台灣政府開放資料。按「開始」，一步一步帶你玩。'), targets: [], nextLabel: T('開始') },
   { id: 'play', title: T('轉動與觸碰'), body: T('拖曳球體轉動，兩指或滾輪縮放；點一下亮起星星，雙擊進入全螢幕演出模式。'), targets: ['.canvas-wrap'] },
   { id: 'sea', title: T('調整海'), body: T('拖動滑桿（或轉 MIDI 旋鈕），改變海水高度、洋流與清澈度，球會立刻回應。'), targets: ['.panel .group', '.panel'] },
-  { id: 'data', title: T('接上真實資料'), body: T('選一個資料，例如水庫、潮汐、月亮或揚塵，球就依真實資料變化；再按「▶ 播放」看它一天的起伏。'), targets: ['.gov-select', '.gov-card'] },
+  // 只找 .gov-select：DataCard 存在時一定有它；資料還沒載入時 DataCard 不渲染，而 .gov-card 這時只會命中「資料導覽」卡（TourControls 的根元素也叫 gov-card），
+  // 聚光框會亮在一張寫著「導覽需要海況資料」的 disabled 卡片上、和文案「選一個資料」對不上 → 找不到就退回置中卡片（resolveTarget 已處理）。
+  { id: 'data', title: T('接上真實資料'), body: T('選一個資料，例如水庫、潮汐、月亮或揚塵，球就依真實資料變化；再按「▶ 播放」看它一天的起伏。'), targets: ['.gov-select'] },
   { id: 'tour', title: T('資料導覽'), body: T('按 T 或「▶ 開始導覽」，球會自動巡演今日的水庫、潮汐、月亮、鳥與魚；碰一下就停止。'), targets: ['.tour-card', '.gov-card'] },
   { id: 'more', title: T('更多功能'), body: T('工具列還有分享、實景 AR、多人合奏、裝置、EN / 中文切換與說明。'), targets: ['.toolstrip', '.topbar'] },
   { id: 'done', title: T('準備好了'), body: T('隨時按「說明」看完整說明，也能在說明裡選「重新看新手導覽」。'), targets: ['[data-k="help"]', '.footer-help'], nextLabel: T('開始探索') },

@@ -70,6 +70,7 @@ export default {
   '{name} 水位 {level}% → 海水高度 {sea}（滿庫溢流）': '{name} water level {level}% → sea level {sea} (full-reservoir overflow)',
   '{name} 水位 {level}% → 海水高度 {sea}': '{name} water level {level}% → sea level {sea}',
   '{weather} · {temp}°C · 濕度 {rh}% · 風 {wind} m/s → 洋流 {current}': '{weather} · {temp}°C · humidity {rh}% · wind {wind} m/s → current {current}',
+  '{weather} · {temp}°C · 濕度 {rh}% · 風 {wind} m/s': '{weather} · {temp}°C · humidity {rh}% · wind {wind} m/s',
   '{basin} {m} 月': ({ basin, m }) => `${basin} · ${MON[m - 1] || m}`,
   '{basin} {m} 月 {v} 種': ({ basin, m, v }) => `${basin} · ${MON[m - 1] || m}: ${v} species`,
   '{basin} {m} 月 {v} 種（內插）': ({ basin, m, v }) => `${basin} · ${MON[m - 1] || m}: ${v} species (interpolated)`,

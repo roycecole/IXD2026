@@ -197,6 +197,8 @@ export default function DataCard() {
           </div>
           <div className="gov-air-src" role="note">
             <span className="gov-air-badge">{t('模型資料（Open-Meteo / CAMS），非政府觀測')}</span>
+            {/* 空間尺度的警語（資料檔 air.note 也寫了，但 UI 以前從不顯示）：地名 + 小數點一位會讓人以為是測站級的讀數；觸控裝置也看不到 title，所以是可見文字 */}
+            <span className="gov-air-scale">{t('約數十公里的粗網格模型估計，可能與地面測站數值不同，請勿當官方空品判讀')}</span>
             <span className="gov-air-credit">
               {airLink
                 ? <a href={airLink} target="_blank" rel="noopener noreferrer">Weather data by Open-Meteo.com</a>

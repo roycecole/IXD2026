@@ -175,7 +175,9 @@ function Dialog({ index, source }) {
   // 貼底的 bottom sheet 直接用 bottom 對齊視窗底邊（iOS Safari 的網址列收合會讓量到的視窗高度與 fixed 的基準差一截，用 top 算會浮起來）；其餘用 top
   const cardStyle = place
     ? (place.mode === 'sheet' && place.side === 'bottom' ? { left: place.left, top: 'auto', bottom: 8, width: place.width } : { left: place.left, top: place.top, width: place.width })
-    : { left: 0, top: 0, width: cardWidthFor(viewportNow().w), visibility: 'hidden' }   // 第一次定位完成前不顯示（useLayoutEffect 會在繪製前算好）
+    : { left: 0, top: 0, width: cardWidthFor(viewportNow().w), opacity: 0 }   // 第一次定位完成前不顯示（useLayoutEffect 會在繪製前算好，使用者看不到這一格）。
+    // 不能用 visibility: 'hidden'：瀏覽器不讓 visibility:hidden 的元素取得焦點，而 attachModalFocus 的 focus() 在第一次 commit 的 passive effect 就跑（React 會先 flush 它才做 setLay 觸發的重繪）——
+    // 焦點就沒進卡片（螢幕閱讀器聽不到對話框、鍵盤要多按一次）。opacity: 0 的元素照樣可聚焦；卡片 CSS 沒有 opacity 轉場，第二次 commit 移除它就是原樣。
   const progress = t('第 {n} / {total} 步', { n: pr.n, total: pr.total })
   const nextLabel = t(step.nextLabel || NEXT_LABEL)
 

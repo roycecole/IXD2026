@@ -356,6 +356,23 @@ test('resolveTarget：依序嘗試 targets；第一個存在且看得到的勝�
   assert.equal(resolveTarget(null, ctx), null)
 })
 
+test('第 4 步（接上真實資料）只找 .gov-select：資料還沒載入時 DataCard 不渲染，.gov-card 只剩「資料導覽」卡——不能把聚光亮在它身上，找不到 → 置中卡片', () => {
+  const step = STEPS.find((x) => x.id === 'data')
+  assert.deepEqual(step.targets, ['.gov-select'], '沒有會命中導覽卡的備援')
+  const vp = { w: 1000, h: 700 }, good = rectFrom({ left: 10, top: 10, width: 200, height: 80 })
+  const tourCard = { id: 'tour-card', className: 'gov-card tour-card' }, select = { id: 'select' }
+  // 資料沒載入：畫面上只有導覽卡（class 含 gov-card），沒有 .gov-select
+  const noData = { viewport: vp, query: (sel) => (sel === '.gov-card' || sel === '.tour-card' ? tourCard : null), getRect: () => good }
+  assert.equal(resolveTarget(step, noData), null, '不再亮在導覽卡上')
+  // 資料載入後：DataCard 渲染，.gov-select 存在
+  const loaded = { viewport: vp, query: (sel) => (sel === '.gov-select' ? select : sel === '.gov-card' || sel === '.tour-card' ? tourCard : null), getRect: () => good }
+  const hit = resolveTarget(step, loaded)
+  assert.equal(hit.el, select); assert.equal(hit.selector, '.gov-select')
+  // 第 5 步（資料導覽）本來就該找導覽卡：不受影響
+  const tour = STEPS.find((x) => x.id === 'tour')
+  assert.equal(resolveTarget(tour, noData).el, tourCard)
+})
+
 test('resolveTarget：query / prepare / getRect 丟例外、矩形太小 → 都當作沒有，不報錯、不卡住', () => {
   const vp = { w: 1000, h: 700 }
   const el = { id: 'x' }
@@ -639,6 +656,16 @@ test('根元素帶 modal-backdrop onboard-backdrop（閒置導覽在引導進行
   assert.ok(/role="dialog"/.test(jsx) && /aria-modal="true"/.test(jsx) && /aria-label=\{t\('新手導覽'\)\}/.test(jsx), '卡片是 role=dialog aria-modal + aria-label')
   assert.ok(/attachModalFocus\(/.test(jsx), '焦點進入卡片、Esc、Tab 圈選、結束後還原')
   assert.ok(/prefers-reduced-motion: reduce/.test(css), 'prefers-reduced-motion 不做動畫')
+})
+
+test('卡片第一次 commit 必須可聚焦（回歸）：定位完成前用 opacity: 0，不是 visibility: hidden——visibility:hidden 的元素不能取得焦點，attachModalFocus 在第一次 passive effect 的 focus() 會無聲失敗', () => {
+  const jsx = read('../ui/Onboarding.jsx')
+  const style = jsx.match(/const cardStyle = [\s\S]*?\n\s*const progress/)[0].replace(/\/\/.*$/gm, '')   // 去掉行尾註解（註解裡會提到 visibility: 'hidden'）
+  assert.match(style, /: \{ left: 0, top: 0, width: cardWidthFor\(viewportNow\(\)\.w\), opacity: 0 \}/, '尚未定位：opacity: 0')
+  assert.doesNotMatch(style, /visibility\s*:\s*['"]hidden['"]/, '不可用 visibility:hidden（不可聚焦）')
+  assert.doesNotMatch(style, /display\s*:\s*['"]none['"]/, '也不可用 display:none')
+  assert.doesNotMatch(read('../styles/onboarding.css'), /\.onboard-card[^{]*\{[^}]*transition:[^}]*opacity/, '卡片沒有 opacity 轉場（否則第二次 commit 會淡入而不是原樣出現）')
+  assert.match(jsx, /useEffect\(\(\) => attachModalFocus\(\{\s*container: cardRef\.current,/, '焦點仍由 attachModalFocus 在掛載的 effect 移進卡片')
 })
 
 test('說明視窗：有「重新看新手導覽」按鈕（先關視窗再開導覽）；role=dialog；Footer / TopBar 沒被改', () => {

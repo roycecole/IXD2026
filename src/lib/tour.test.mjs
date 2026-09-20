@@ -17,7 +17,7 @@ import { makeNarrator, withStorage } from './tourTestEnv.mjs'
 import {
   buildTour, captionText, speedFor, tourTotalMs, createTourRunner, useTourStore, resolveAutoIdle, resolveSpeak, isAudienceSearch, resolveStopIndex,
   setAutoIdle, setSpeak, supportsNarration,
-  MIN_SPEED, MAX_SPEED, TOUR_MS, PAUSE_SPEED, NARRATION_MAX_WAIT_MS, SPEAK_DEFAULT,
+  MIN_SPEED, MAX_SPEED, TOUR_MS, PAUSE_SPEED, NARRATION_MAX_WAIT_MS, SPEAK_DEFAULT, AUTO_PAUSE_MAX_MS,
 } from './tour.js'
 
 const { dict } = await loadEnDict()
@@ -330,6 +330,7 @@ function harness({ gov = mkGov(), snapOption = 'zengwen', rec = {}, auto = false
   const store = { getState: state }
   const runner = createTourRunner({
     store, now: () => clock.t, getActivity: () => act.last, touch: () => { touches++; act.last = clock.t },
+    build: (g, o) => buildTour(g, { now: NOW, ...o }),                       // 站表用固定的「今天」：月出月沒等字幕與 stops8()（也用 NOW）一致，不隨實際日期漂移
     emit: (p) => emitted.push(p), isRemote: () => flags.remote, afterPlay: () => { afterPlays++ },
     ...(narrator ? { narrator } : {}), ...extra,
   })
@@ -883,6 +884,118 @@ test('導覽員操作不重置閒置計時（touch 只在開始與結束時呼�
   h.runner.next(); h.runner.prev(); h.runner.pause(); h.runner.goto(3); h.runner.resume(); h.runner.goto('air'); h.step(3000)
   assert.equal(h.touches(), t0)
   assert.equal(h.runner.isRunning(), true)
+})
+
+// ---- 自動導覽的暫停逾時（展場：有人按了暫停就走開，投影機不能整個下午定格在同一站）----
+test('暫停逾時：自動導覽暫停超過 AUTO_PAUSE_MAX_MS 沒人再操作 → 自己繼續（emit paused:false、寫「資料導覽繼續」、該站計時接著跑）；逾時之前維持暫停', () => {
+  assert.equal(AUTO_PAUSE_MAX_MS, 3 * 60 * 1000)
+  const h = harness({ auto: true })
+  h.run(); h.step(4000)
+  h.runner.pause()
+  h.step(AUTO_PAUSE_MAX_MS - 1000)
+  assert.equal(h.runner.isPaused(), true, '還沒逾時'); assert.equal(h.runner.current().index, 0)
+  h.step(1000)                                                                       // 滿 3 分鐘
+  assert.equal(h.runner.isPaused(), false, '逾時自動繼續'); assert.equal(h.runner.isRunning(), true)
+  assert.equal(h.emitted.filter((e) => e.paused === false && !('running' in e)).length, 1)
+  assert.ok(h.S.log.some((l) => l.includes('資料導覽繼續（第 1 站）')))
+  h.step(6800); assert.equal(h.runner.current().index, 0, '暫停前已過 4000ms：剩餘 7000ms 才換站（不重新計滿）')
+  h.step(300); assert.equal(h.runner.current().index, 1)
+})
+
+test('暫停逾時：暫停中換站（goto / next / prev）算導覽員操作，逾時從那一刻重算；再暫停也重算；序列站逾時繼續後還原該站倍速', () => {
+  const h = harness({ auto: true }), st = stops8()
+  h.run(); h.runner.pause()
+  h.step(AUTO_PAUSE_MAX_MS - 5000)
+  h.runner.goto('air'); assert.equal(h.runner.isPaused(), true, '換站不解除暫停')
+  h.step(AUTO_PAUSE_MAX_MS - 5000); assert.equal(h.runner.isPaused(), true, '從換站那一刻重算')
+  assert.equal(h.S.rec.speed, PAUSE_SPEED, '序列站在暫停中凍結')
+  h.step(5000); assert.equal(h.runner.isPaused(), false)
+  assert.equal(h.S.rec.speed, st[4].speed, '逾時繼續 = resume：還原該站的倍速')
+  h.runner.pause(); h.step(AUTO_PAUSE_MAX_MS - 1000); h.runner.resume(); h.runner.pause()
+  h.step(AUTO_PAUSE_MAX_MS - 1000); assert.equal(h.runner.isPaused(), true, '再次暫停重新計時')
+})
+
+test('暫停逾時：手動導覽與導覽員模式（hold）不逾時——導覽員暫停在某一站講解，沒有時限；可用 deps.autoPauseMs 調整自動導覽的時限', () => {
+  const m = harness({ auto: false })
+  m.run(); m.runner.pause(); m.step(30 * 60 * 1000)
+  assert.equal(m.runner.isPaused(), true); assert.equal(m.runner.current().index, 0)
+  const hold = harness({ auto: false })
+  hold.run({ at: 'air', hold: true }); hold.step(30 * 60 * 1000)
+  assert.equal(hold.runner.isPaused(), true); assert.equal(hold.runner.current().stop.id, 'air')
+  const c = harness({ auto: true, extra: { autoPauseMs: 5000 } })
+  c.run(); c.runner.pause(); c.step(4900); assert.equal(c.runner.isPaused(), true); c.step(200); assert.equal(c.runner.isPaused(), false)
+  for (const bad of [0, -1, NaN, 'x', null]) {   // 壞值 → 用預設
+    const d = harness({ auto: true, extra: { autoPauseMs: bad } })
+    d.run(); d.runner.pause(); d.step(10000); assert.equal(d.runner.isPaused(), true, String(bad))
+  }
+})
+
+test('暫停逾時：暫停中的真實輸入照樣中止導覽（暫停不是鎖定）；逾時繼續後導覽仍能被輸入中止', () => {
+  const h = harness({ auto: true })
+  h.run(); h.runner.pause(); h.step(AUTO_PAUSE_MAX_MS + 1000)
+  assert.equal(h.runner.isPaused(), false)
+  h.act.last = h.clock.t + 1; h.step(100)
+  assert.equal(h.runner.isRunning(), false)
+})
+
+// ---- 自動導覽循環回第 0 站時重建站表（資料更新後字幕要跟球實際套用的資料一致）----
+test('自動導覽循環：回第 0 站前用當下的 gov 重建站表——資料更新（換 gov）後字幕的數字是新資料的，並重新 emit stopList', () => {
+  const h = harness({ auto: true })
+  h.run()
+  assert.equal(h.runner.current().stop.caption.p.level, 77.3)
+  const g2 = clone(h.S.gov); g2.options[0].level = 55.5; g2.options[0].params.seaLevel = 0.55; g2.air.history = g2.air.history.map((p) => ({ ...p, pm25: p.pm25 + 40 }))
+  h.S.gov = g2                                                                       // ResilienceService.applyGovData：只換 gov、不動導覽
+  h.runner.goto(7)
+  h.emitted.length = 0
+  assert.equal(h.runner.next(), true)
+  assert.equal(h.runner.current().index, 0); assert.equal(h.runner.current().auto, true)
+  assert.equal(h.runner.current().stop.caption.p.level, 55.5, '字幕是新資料')
+  assert.equal(h.runner.current().stop.caption.p.sea, 0.55)
+  const e = h.emitted.find((x) => 'stopList' in x)
+  assert.ok(e, '站表重建 → 重新 emit stopList'); assert.equal(e.stopList[0].caption.p.level, 55.5)
+  assert.equal(e.stopList.find((x) => x.id === 'air').caption.p.lo, 52, '空氣品質站的 PM2.5 範圍也是新窗口算的（12 + 40）')
+  assert.equal(lastRunning(h).total, 8)
+  assert.ok(h.calls.some((c) => c[0] === 'setGovOption'), '照常換站')
+})
+
+test('自動導覽循環：站表在「回第 0 站」才重建——中途換站不重建；手動導覽 / 導覽員導覽（最後一站 = done）不重建', () => {
+  let builds = 0
+  const counted = (g, o) => { builds++; return buildTour(g, { now: NOW, ...o }) }
+  const h = harness({ auto: true, extra: { build: counted } })
+  h.run(); assert.equal(builds, 1)
+  h.runner.next(); h.runner.goto(3); h.runner.prev(); assert.equal(builds, 1, '中途換站：站表不動（進度點 / 複製連結的站序穩定）')
+  h.runner.goto(7); h.runner.next(); assert.equal(builds, 2, '回第 0 站：重建一次')
+  const m = harness({ auto: false, extra: { build: counted } })
+  builds = 0
+  m.run(); m.runner.goto(7); m.runner.next()
+  assert.equal(m.runner.isRunning(), false); assert.equal(builds, 1, '手動導覽：只有 start 建過一次')
+})
+
+test('自動導覽循環：重建失敗（丟例外 / 沒有任何一站 / 壞值）→ 沿用舊站表，導覽不中斷；站數變了（例如空氣品質資料不見）→ total 與 stopList 跟著新站表、不越界', () => {
+  for (const bad of [() => { throw new Error('boom') }, () => [], () => null, () => 'nope']) {
+    let n = 0
+    const h = harness({ auto: true, extra: { build: (g, o) => (++n === 1 ? buildTour(g, { now: NOW, ...o }) : bad()) } })
+    h.run(); h.runner.goto(7)
+    assert.doesNotThrow(() => h.runner.next())
+    assert.equal(h.runner.isRunning(), true); assert.equal(h.runner.current().index, 0); assert.equal(h.runner.current().stop.id, 'reservoir'); assert.equal(lastRunning(h).total, 8)
+  }
+  const h = harness({ auto: true })
+  h.run(); h.runner.goto(7)
+  const g2 = clone(h.S.gov); delete g2.air; g2.options = g2.options.filter((o) => o.kind !== 'air'); h.S.gov = g2   // 空氣品質資料不見：只少那一站
+  assert.equal(h.runner.next(), true)
+  assert.equal(lastRunning(h).total, 7); assert.equal(h.emitted.filter((x) => 'stopList' in x).pop().stopList.length, 7)
+  for (let i = 0; i < 8; i++) h.runner.next()                                        // 繼續循環：不越界、不中止
+  assert.equal(h.runner.isRunning(), true); assert.ok(h.runner.current().index >= 0 && h.runner.current().index < 7)
+})
+
+test('自動導覽循環：start 的 opts 沿用到重建（AR 實景略過月亮 / 星座的 skip 不會在第二輪失效）', () => {
+  const seen = []
+  const h = harness({ auto: true, extra: { build: (g, o) => { seen.push(o); return buildTour(g, { now: NOW, ...o }) } } })
+  h.run({ opts: { skip: ['moon', 'stations'] } })
+  assert.equal(h.runner.current().total, 6)
+  h.runner.goto(5); h.runner.next()
+  assert.deepEqual(seen.map((o) => o && o.skip), [['moon', 'stations'], ['moon', 'stations']])
+  assert.equal(lastRunning(h).total, 6)
 })
 
 test('start({ at }：0 起算的 index 或站 id；找不到 / 壞值 → 從第 0 站）', () => {

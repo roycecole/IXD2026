@@ -43,6 +43,8 @@ export default {
     'Check the real hardware on site before the show: camera, microphone, speech, vibration, AR, dual screen, pen… and export a report. The diagnostics page uploads nothing.',
   '開啟裝置診斷': 'Open device diagnostics',
   '上次診斷：{when}，通過 {pass} 項、失敗 {fail} 項': ({ when, pass, fail }) => `Last diagnosis: ${when}, ${pass} passed, ${fail} failed`,
+  '上次診斷：{when}，通過 {pass} / {total} 項，失敗 {fail}、不支援 {unsupported}、尚未測 {pending}': ({ when, pass, total, fail, unsupported, pending }) =>
+    `Last diagnosis: ${when}, ${pass} of ${total} passed, ${fail} failed, ${unsupported} unsupported, ${pending} not tested yet`,
   '還沒有診斷紀錄': 'No diagnostics run yet',
 
   // ---- 分組 ----

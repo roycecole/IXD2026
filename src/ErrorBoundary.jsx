@@ -3,13 +3,14 @@
 //   · 崩潰寫進 localStorage 環狀紀錄（最近 20 筆：時間 / 訊息 / stack 前 300 字 / build id / 網址旗標），同一個錯誤（StrictMode 雙呼叫）合併成一筆。
 //   · 自動重載退避：第 1 次 5 秒；1 分鐘內第 2 次 15 秒、第 3 次 60 秒；10 分鐘內累積 5 次 → 停止自動重載，改顯示「請人工處理」與手動按鈕（避免無限重載風暴）。
 //   · window 'error' / 'unhandledrejection' 只記錄、不重載（見 lib/resilience.js 的 installErrorCapture）。
-//   · 觀眾視窗（?audience=1）不渲染 Services，所以由這裡啟動它需要的防呆（WebGL 遺失 / 看門狗 / 版本檢查）；主畫面由 services/ResilienceService.jsx 啟動。
+//   · 觀眾視窗（?audience=1）不渲染 Services，所以由這裡啟動它需要的防呆（WebGL 遺失 / 看門狗 / 版本檢查 / 資料更新）；主畫面由 services/ResilienceService.jsx 啟動。
+//     觀眾視窗的環境來自 audienceEnv()：全螢幕（投影機）中不因新版而重載（重載會退出全螢幕，要有人到投影機前點一下）；資料就地更新，換資料的方法由 AudienceApp 註冊（入口 chunk 不能 import store）。
 //   · 提示（GuardNotice）：WebGL 遺失 / 已恢復、即將重新載入、熔斷停止自動重載。不放進 store，所以入口 chunk（含手機遙控頁）不會被拉進 store / three。
 //   · 可注入：props.deps = { log, now, reload, setInterval, clearInterval, buildId, flags, win, search, hash }（測試用；預設走真實環境）。
 import React, { useEffect, useState, useSyncExternalStore } from 'react'
 import { t as translateNow, T, useT } from './i18n/index.js'
 import {
-  BUILD_ID, opsStatus, getCrashLog, planAutoReload, errorInfo, installErrorCapture, resolveConfig, startGuards, flagSummary,
+  BUILD_ID, opsStatus, getCrashLog, planAutoReload, errorInfo, installErrorCapture, resolveConfig, startGuards, flagSummary, audienceEnv,
 } from './lib/resilience.js'
 import './styles/resilience.css'
 
@@ -59,7 +60,7 @@ export default class ErrorBoundary extends React.Component {
     if (this.props.deps) return   // 測試注入時不啟動真實防呆
     try {
       const cfg = resolveConfig({ search: d.search, hash: d.hash })
-      if (cfg.mode === 'audience' && !this.guards) this.guards = startGuards({ config: cfg })
+      if (cfg.mode === 'audience' && !this.guards) this.guards = startGuards({ config: cfg, env: audienceEnv() })
     } catch (e) { /* 防呆本身不能讓頁面出錯 */ }
   }
 

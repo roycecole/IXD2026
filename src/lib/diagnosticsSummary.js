@@ -38,6 +38,17 @@ export function formatWhen(at, tag = 'zh-TW') {
   } catch (e) { return '' }
 }
 
+// 「上次診斷」那一行的文字（主畫面「裝置」面板用）。t：翻譯函式（元件的 useT()）；tag：'zh-TW' / 'en-US'。
+//   只顯示「通過 / 失敗」會讓人誤以為 0 失敗 = 硬體都驗過了：只按「執行所有快速檢查」的話，相機 / 麥克風 / MIDI / 手把 / 螢幕等互動檢查全部沒跑（尚未測），
+//   Safari 等瀏覽器不支援的項目也被略過不提。所以有總數時一併列出「通過 x / 共 N 項，失敗、不支援、尚未測」。
+//   「通過」含資訊項（環境資訊：UA / 螢幕 / 時區…），與診斷頁自己的總覽 / 各群組的 x/y 是同一個算法（summarize），所以這裡不改算法。
+//   舊格式的摘要（沒有 total）→ 維持原本的一行。
+export function formatSummaryLine(sum, t, tag = 'zh-TW') {
+  const when = formatWhen(sum.at, tag)
+  if (!(sum.total > 0)) return t('上次診斷：{when}，通過 {pass} 項、失敗 {fail} 項', { when, pass: sum.pass, fail: sum.fail })
+  return t('上次診斷：{when}，通過 {pass} / {total} 項，失敗 {fail}、不支援 {unsupported}、尚未測 {pending}', { when, pass: sum.pass, total: sum.total, fail: sum.fail, unsupported: sum.unsupported, pending: sum.pending })
+}
+
 // 「開啟裝置診斷」連結：以目前語系開新分頁（診斷頁的語系偏好只存在 localStorage，?lang= 讓新分頁一開始就跟目前的介面一致）
 export function diagnosticsHref(locale) {
   return '?diagnostics=1' + (locale === 'en' || locale === 'zh' ? '&lang=' + locale : '')

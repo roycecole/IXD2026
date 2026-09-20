@@ -12,7 +12,7 @@ const KIND_LABEL = {
   error: T('未捕捉的錯誤'), rejection: T('未處理的 Promise 拒絕'), reload: T('自動重新載入'),
 }
 const RELOAD_WHY = { version: T('新版本'), daily: T('每日重載') }
-const BUSY_WHY = { modal: T('有視窗開著'), active: T('有人操作中'), recording: T('錄製中'), tour: T('導覽中'), playing: T('播放中') }
+const BUSY_WHY = { modal: T('有視窗開著'), active: T('有人操作中'), recording: T('錄製中'), tour: T('導覽中'), playing: T('播放中'), xr: T('AR 桌面使用中'), fullscreen: T('觀眾視窗全螢幕中') }
 
 const has = (obj, k) => Object.prototype.hasOwnProperty.call(obj, k)
 const two = (n) => String(n).padStart(2, '0')

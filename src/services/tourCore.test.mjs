@@ -9,7 +9,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { useStore } from '../store/useStore.js'
-import { activity, touch, onActivity } from '../store/activity.js'
+import { activity, touch, touchGuide, onActivity } from '../store/activity.js'
 import { createTourRunner, buildTour, useTourStore, TOUR_MS, PAUSE_SPEED } from '../lib/tour.js'
 import { registerEn, setLocale } from '../i18n/index.js'
 import { loadEnDict } from '../../scripts/i18n-check.mjs'
@@ -457,6 +457,83 @@ test('導覽員操作（真的 store）：goto / next / prev / pause / resume / 
   runner.stop('user'); detach()
 })
 
+// ---- 導覽員操作 = 「有人在場講解」：留下 activity.guideAt（展場防呆的閒置判斷用），但不能是 touch()（會中止導覽）----
+test('導覽員操作留下 guideAt：← → P / 點導覽卡與進度點 / 在導覽卡按鈕上按 Enter 都呼叫 guide()；一般畫面點擊 / 一般字母是「接手」（中止、不記 guide）；T / H 等 KEEP 鍵不記', () => {
+  const win = makeWin(), r = fakeRunner()
+  let guides = 0
+  const off = attachRunningGuards(win, r, () => { guides++ })
+  press(win, 'ArrowRight'); press(win, 'ArrowLeft'); press(win, 'p'); assert.equal(guides, 3)
+  press(win, 'ArrowRight', { repeat: true }); assert.equal(guides, 4, '按住不放也算在場（只是不連續跳站）')
+  win.emit('pointerdown', { target: tourBtn }); assert.equal(guides, 5)
+  press(win, 'Enter', { target: tourBtn }); press(win, ' ', { target: tourBtn }); assert.equal(guides, 7)
+  assert.deepEqual(r.calls.filter((c) => c.startsWith('stop')), [], '都不中止導覽')
+  win.emit('pointerdown', { target: { closest: () => null } }); press(win, ' ', { target: null }); press(win, 'a')
+  assert.equal(guides, 7, '接手不算導覽員操作'); assert.deepEqual(r.calls.filter((c) => c.startsWith('stop')), ['stop:input', 'stop:input', 'stop:input'])
+  press(win, 't'); press(win, 'H'); press(win, 'Shift'); assert.equal(guides, 7, '與導覽卡無關的 KEEP 鍵不記')
+  press(win, 'ArrowRight', { ctrlKey: true }); press(win, 'ArrowRight', { target: { tagName: 'INPUT' } }); assert.equal(guides, 7, '被忽略的組合 / 輸入元件不記')
+  off()
+})
+
+test('導覽員操作留下 guideAt（真的 store / activity）：只更新 guideAt——activity.last 不動、導覽仍在跑；導覽自己 tick 換站不更新 guideAt（否則自動導覽永遠不閒置）', () => {
+  const { runner, win, advance, detach } = setup()
+  const off = attachRunningGuards(win, runner)              // 預設的 guide = 真的 touchGuide
+  runner.start({ auto: true })
+  activity.guideAt = -1e9
+  const last0 = activity.last
+  win.emit('keydown', keyEv('ArrowRight', { preventDefault: pd }))
+  assert.ok(activity.guideAt > 0, '← → 換站記下時間'); assert.equal(activity.last, last0)
+  activity.guideAt = -1e9; win.emit('keydown', keyEv('p', { preventDefault: pd })); assert.ok(activity.guideAt > 0, 'P 暫停')
+  assert.equal(runner.isRunning(), true); assert.equal(runner.isPaused(), true)
+  activity.guideAt = -1e9; win.emit('pointerdown', { target: tourBtn }); assert.ok(activity.guideAt > 0, '點導覽卡 / 進度點 / 字幕卡按鈕')
+  assert.equal(activity.last, last0, '導覽員操作全程不算使用者活動'); assert.equal(runner.isRunning(), true)
+  win.emit('keydown', keyEv('p', { preventDefault: pd }))   // 繼續
+  activity.guideAt = -1e9
+  advance(buildTour(S().gov)[runner.current().index].durationMs)   // 導覽自己時間到換站
+  assert.equal(runner.isRunning(), true); assert.equal(activity.guideAt, -1e9, '導覽自己的換站不算導覽員操作')
+  runner.stop('user'); off(); detach()
+})
+
+test('touchGuide：只寫 activity.guideAt（不動 activity.last、不跑活動掛鉤）；初值是很久以前（不會讓剛載入的頁面被當成「導覽員剛操作過」）', () => {
+  assert.ok(activity.guideAt !== undefined)
+  let hooked = 0
+  const off = onActivity(() => { hooked++ })
+  const last0 = activity.last
+  touchGuide()
+  assert.equal(hooked, 0, '不觸發活動掛鉤（掛鉤會中止導覽）'); assert.equal(activity.last, last0)
+  assert.ok(activity.guideAt > 0 && activity.guideAt <= performance.now())
+  off(); activity.guideAt = -1e9
+})
+
+test('L（系統事件面板）快速鍵在 KEEP_KEYS：導覽進行中按 L 不中止導覽；Footer 切換鈕與 Monitor 隱藏鈕帶 data-tour-ui（點它們也不中止）', () => {
+  assert.ok(KEEP_KEYS.has('l') && KEEP_KEYS.has('L'))
+  const win = makeWin(), r = fakeRunner()
+  attachRunningGuards(win, r)
+  press(win, 'l'); press(win, 'L'); assert.deepEqual(r.calls, [], 'L 只是切版面，不算操作海')
+  press(win, 'k'); assert.deepEqual(r.calls, ['stop:input'], '其他字母照舊接手')
+  const read = (f) => readFileSync(new URL(f, import.meta.url), 'utf8')
+  const footer = read('../ui/Footer.jsx'), monitor = read('../ui/Monitor.jsx')
+  assert.match(footer.match(/<button[^>]*id=\{MONITOR_TOGGLE_ID\}[\s\S]*?>/)[0], /data-tour-ui/)
+  assert.match(monitor.match(/<button[^>]*className="monitor-hide"[\s\S]*?>/)[0], /data-tour-ui/)
+})
+
+test('isTypingTarget：checkbox / 按鈕類 INPUT 不算輸入元件（點過導覽卡的 checkbox 後 ← → P 仍可用）；文字 / 數字 / 滑桿 / radio 等仍算', () => {
+  for (const type of ['checkbox', 'CHECKBOX', 'button', 'submit', 'reset', 'image']) {
+    const el = { tagName: 'INPUT', type }
+    assert.equal(isTypingTarget(el), false, type)
+    assert.equal(navKeyAction(keyEv('ArrowLeft', { target: el })), 'prev', type); assert.equal(navKeyAction(keyEv('ArrowRight', { target: el })), 'next', type); assert.equal(navKeyAction(keyEv('p', { target: el })), 'toggle', type)
+  }
+  for (const type of ['text', 'search', 'number', 'email', 'password', 'url', 'tel', 'range', 'radio', 'date', '', undefined]) assert.equal(isTypingTarget({ tagName: 'INPUT', type }), true, String(type))
+  assert.equal(isTypingTarget({ tagName: 'INPUT' }), true, '沒有 type 屬性 = 文字框')
+  assert.equal(isTypingTarget({ tagName: 'TEXTAREA', type: 'checkbox' }), true); assert.equal(isTypingTarget({ tagName: 'SELECT' }), true)
+  const win = makeWin(), r = fakeRunner()
+  attachRunningGuards(win, r)
+  const cb = { tagName: 'INPUT', type: 'checkbox', closest: (sel) => (sel === KEEP_SELECTOR ? {} : null), getAttribute: () => null }   // 面板導覽卡的 checkbox（帶 data-tour-ui 的容器內）
+  const e1 = press(win, 'p', { target: cb }); const e2 = press(win, 'ArrowRight', { target: cb })
+  assert.deepEqual(r.calls, ['pause', 'next']); assert.equal(e1.prevented, 1); assert.equal(e2.prevented, 1)
+  r.calls.length = 0
+  press(win, 'p', { target: { tagName: 'INPUT', type: 'text' } }); assert.deepEqual(r.calls, [], '文字框裡打 p 不是快速鍵')
+})
+
 test('暫停（真的 store）：序列播放凍結——倍速為極小值、播放頭實質不動、不換站；繼續後還原該站的倍速、播放頭照常前進', () => {
   const { runner, advance, toStation, win, detach } = setup()
   const off = attachRunningGuards(win, runner)
@@ -603,6 +680,67 @@ test('連結啟動器：預設的計時器是「裸函式包一層」——換�
     starter.attach(); timers.advance(LINK_START_DELAY_MS)
     assert.deepEqual(runner.starts, [{ auto: false, at: 'fish', hold: false }])
   } finally { restore() }
+})
+
+// ---- 背景分頁載入的深連結：等分頁可見才啟動（否則背景時 rAF 不跑、計時器照換站，切回來已不是連結指的那一站）----
+function hiddenDoc(hidden = true) {
+  const L = new Set()
+  const d = {
+    hidden,
+    addEventListener(type, fn) { if (d !== this) throw illegal(); if (type === 'visibilitychange') L.add(fn) },
+    removeEventListener(type, fn) { if (d !== this) throw illegal(); if (type === 'visibilitychange') L.delete(fn) },
+    setHidden(v) { d.hidden = v; for (const f of [...L]) f({}) },
+    count: () => L.size,
+  }
+  return d
+}
+function linkKitDoc(doc, over = {}) {
+  const timers = makeTimers()
+  const { setTimeout: fakeSet, clearTimeout: fakeClear } = timers
+  const store = fakeGovStore(GOV)
+  const runner = { starts: [], start(o) { runner.starts.push(o); return true } }
+  const starter = createLinkStarter({ runner, store, tourStore: { getState: () => ({ remote: false }) }, getSearch: () => '?tourstop=air', schedule: (fn, ms) => fakeSet(fn, ms), cancel: (id) => fakeClear(id), doc, ...over })
+  return { timers, store, runner, starter }
+}
+
+test('連結啟動器：分頁在背景（Ctrl / Cmd + 點連結）→ 不排程、不啟動；變可見後才排程並「只」啟動一次', () => {
+  const doc = hiddenDoc(true)
+  const k = linkKitDoc(doc)
+  const off = k.starter.attach()
+  assert.equal(k.timers.pending(), 0, '背景：不排程'); assert.equal(doc.count(), 1, '訂閱 visibilitychange')
+  k.timers.advance(60000); assert.equal(k.runner.starts.length, 0, '背景一整分鐘：導覽沒有被啟動、不會照時間換站'); assert.equal(k.starter.isDone(), false, '還沒試過')
+  k.store.set({ gov: { options: [{ id: 'x' }] } }); assert.equal(k.timers.pending(), 0, '背景時 gov 變化也不排程')
+  doc.setHidden(false)
+  assert.equal(k.timers.pending(), 1, '可見了：排程'); k.timers.advance(LINK_START_DELAY_MS - 1); assert.equal(k.runner.starts.length, 0)
+  k.timers.advance(1)
+  assert.deepEqual(k.runner.starts, [{ auto: false, at: 'air', hold: false }]); assert.equal(k.starter.isDone(), true)
+  doc.setHidden(true); doc.setHidden(false); k.timers.advance(10000); assert.equal(k.runner.starts.length, 1, '之後再切換可見不會重啟')
+  off(); assert.equal(doc.count(), 0)
+})
+
+test('連結啟動器：排程之後、觸發之前被切到背景 → 這次不啟動（不算「試過」），回到前景再排一次；已可見時行為不變', () => {
+  const doc = hiddenDoc(false)
+  const k = linkKitDoc(doc)
+  k.starter.attach(); assert.equal(k.timers.pending(), 1)
+  doc.hidden = true                                                                  // 計時器到期前被切走（不一定有時間收到 visibilitychange）
+  k.timers.advance(LINK_START_DELAY_MS)
+  assert.equal(k.runner.starts.length, 0); assert.equal(k.starter.isDone(), false)
+  doc.setHidden(false); k.timers.advance(LINK_START_DELAY_MS)
+  assert.equal(k.runner.starts.length, 1)
+  const v = linkKitDoc(hiddenDoc(false)); v.starter.attach(); v.timers.advance(LINK_START_DELAY_MS)
+  assert.deepEqual(v.runner.starts, [{ auto: false, at: 'air', hold: false }], '可見分頁：與以前完全相同')
+})
+
+test('連結啟動器：StrictMode（attach / detach / attach）在背景分頁也不殘留 visibilitychange 監聽、不啟動兩次；detach 取消尚未觸發的啟動；沒有 document（Node / SSR）視為可見', () => {
+  const doc = hiddenDoc(true)
+  const k = linkKitDoc(doc)
+  const off1 = k.starter.attach(); off1(); assert.equal(doc.count(), 0)
+  const off2 = k.starter.attach(); assert.equal(doc.count(), 1)
+  doc.setHidden(false); off2(); assert.equal(k.timers.pending(), 0, 'detach 取消尚未觸發的啟動'); assert.equal(doc.count(), 0)
+  k.timers.advance(10000); assert.equal(k.runner.starts.length, 0)
+  k.starter.attach(); doc.setHidden(true); doc.setHidden(false); k.timers.advance(LINK_START_DELAY_MS); assert.equal(k.runner.starts.length, 1)
+  const nodoc = linkKitDoc(null); nodoc.starter.attach(); nodoc.timers.advance(LINK_START_DELAY_MS); assert.equal(nodoc.runner.starts.length, 1)
+  const bad = linkKitDoc({ get hidden() { throw new Error('x') } }); bad.starter.attach(); bad.timers.advance(LINK_START_DELAY_MS); assert.equal(bad.runner.starts.length, 1, '讀 hidden 出錯 → 當作可見')
 })
 
 // =============================================================================================

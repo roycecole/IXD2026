@@ -8,6 +8,7 @@ import { loadOceanData } from './lib/govdata.js'
 import { getMirror } from './lib/mirror.js'
 import { useT } from './i18n/index.js'
 import { AUDIENCE_CHANNEL, createAudience, pickGovOptionId } from './lib/audience.js'
+import { registerDataHooks } from './lib/resilience.js'
 import { registerCoreMirrors } from './services/AudienceService.jsx'
 import { keepAwake } from './lib/wakeLock.js'
 import { useQualityStore } from './lib/qualityStore.js'
@@ -57,6 +58,13 @@ export default function AudienceApp() {
     })
     return () => { dead = true }
   }, [])
+
+  // 之後的資料更新：建置 id 只反映程式碼、純資料的部署不會讓這個視窗重載（重載會退出全螢幕），所以由展場防呆（ErrorBoundary 啟動的 startGuards）
+  // 每 30 分鐘重抓 ocean.json，這裡只提供「怎麼換」：只換 gov、保留目前的海況選項，不動參數（同上面的載入）。
+  useEffect(() => registerDataHooks({
+    getLocalFetchedAt: () => { const g = useStore.getState().gov; return g ? g.fetchedAt : null },
+    apply: (d) => useStore.setState({ gov: d, govOptionId: pickGovOptionId(d, useStore.getState().govOptionId) }),
+  }), [])
 
   useEffect(() => { document.title = t('MidiSea 觀眾視窗') }, [t])
 

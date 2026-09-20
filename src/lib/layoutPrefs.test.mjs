@@ -8,7 +8,7 @@ import { LS } from './persist.js'
 import {
   NARROW_MAX, MONITOR_ID, MONITOR_TOGGLE_ID,
   defaultMonitorShown, normalizePref, readMonitorPref, writeMonitorPref, parseLogParam, resolveMonitorShown,
-  pickLatestOut, throttleDelay, watchNarrowViewport, createLayoutPrefs,
+  pickLatestOut, isDataLine, throttleDelay, watchNarrowViewport, createLayoutPrefs,
 } from './layoutPrefs.js'
 
 // 會檢查 this 的假 localStorage（原生 Storage 方法脫離物件呼叫會丟 TypeError: Illegal invocation）
@@ -308,4 +308,27 @@ test('接線檢查：App 有 L 鍵與條件渲染、Footer 有 aria 屬性與 ar
   assert.match(monitor, /aria-label=\{t\('輸入輸出監看：MIDI 進、系統事件出'\)\}/)
   assert.match(monitor, /aria-expanded="true"/)
   assert.match(monitor, /aria-controls=\{MONITOR_ID\}/)
+})
+
+// ---- 螢幕閱讀器：高頻的資料播放行不進 aria-live ----
+test('isDataLine：資料播放每步寫的「DATA …」行（App.jsx pushLog(\'out\', \'DATA \' + formatHud(…))）→ true；使用者動作 / 導覽 / 系統事件 → false；壞輸入不丟錯', () => {
+  assert.equal(isDataLine('DATA 09-16 08:00 · PM2.5 23.8'), true)
+  assert.equal(isDataLine('DATA\t潮位 150 cm'), true)
+  assert.equal(isDataLine('導覽 3/8｜今日月亮'), false)
+  assert.equal(isDataLine('AR 實景開啟'), false)
+  assert.equal(isDataLine('產生分享連結'), false)
+  assert.equal(isDataLine('DATABASE 已更新'), false, '只認「DATA + 空白」開頭')
+  assert.equal(isDataLine('資料 DATA x'), false)
+  for (const bad of [null, undefined, 42, {}, [], '']) assert.equal(isDataLine(bad), false)
+  // 與 pickLatestOut 串起來（Footer 實際拿到的字串：空白已收斂）
+  assert.equal(isDataLine(pickLatestOut([{ dir: 'out', text: '  DATA   09-16  08:00 ' }])), true)
+})
+
+test('接線檢查（螢幕閱讀器）：Footer 的 DATA 行 aria-hidden（其他 OUT 事件仍在 aria-live 裡朗讀）；DataHUD 不是 live region（每 0.2–1 秒換一次會讓朗讀佇列堆積）', () => {
+  const read = (p) => readFileSync(new URL(p, import.meta.url), 'utf8')
+  const footer = read('../ui/Footer.jsx'), hud = read('../ui/DataHUD.jsx')
+  assert.match(footer, /isDataLine\(text\)/); assert.match(footer, /aria-hidden=\{isDataLine\(text\) \? 'true' : undefined\}/)
+  assert.match(footer, /className="footer-out-text"[^>]*aria-hidden=/, '文字節點本身要 aria-hidden（不是只藏 OUT 標籤）')
+  assert.match(footer, /aria-live="polite" aria-atomic="true"/, '其他事件仍然朗讀')
+  assert.doesNotMatch(hud, /aria-live="polite"/); assert.match(hud, /aria-live="off"/)
 })

@@ -38,7 +38,7 @@ export default function Monitor() {
       <div className="mcol">
         <div className="mhead mhead-row">
           <span>{t('OUT · 系統事件')}</span>
-          <button type="button" className="monitor-hide" onClick={hide}
+          <button type="button" className="monitor-hide" onClick={hide} data-tour-ui
                   aria-label={t('隱藏系統事件')} title={t('隱藏系統事件（快速鍵 L）')} aria-expanded="true" aria-controls={MONITOR_ID}>
             <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" focusable="false">
               <path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />

@@ -6,10 +6,12 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { seriesFromAir, seriesFromDust, automationFor, formatHud, airMapping, AIR_PM_SCALE } from './series.js'
 import { describeBoard, describeForLog, airSummary, airWhereText, airPmText } from './describe.js'
-import { airMap, airParams, AIR_PM_SCALE as DATA_SCALE, AIR_SOURCE } from '../../scripts/gov/air.mjs'
+import { airMap, airParams, AIR_PM_SCALE as DATA_SCALE, AIR_SOURCE, AIR_NOTE } from '../../scripts/gov/air.mjs'
+const AIR_NOTE_TEXT = String(AIR_NOTE)
 import { loadEnDict, HAN } from '../../scripts/i18n-check.mjs'
-import { registerEn, setLocale, getLocale } from '../i18n/index.js'
+import { registerEn, setLocale, getLocale, translate } from '../i18n/index.js'
 import { nameText } from '../i18n/data.js'
+import { renderShareCard } from './capture.js'
 
 const { dict: EN_DICT } = await loadEnDict()
 registerEn(EN_DICT)
@@ -125,15 +127,67 @@ test('describeBoard(air)：英文——不含中文、措辭固定；切回中�
   const en = inEn(() => textOf(rowsOf(GOV, OPT, { now: new Date(2026, 8, 20, 12, 0) })))
   assert.deepEqual(en.slice(0, 3), [
     'Air quality｜Mailiao, Yunlin County · PM2.5 48 · PM10 60 μg/m³ · US AQI 120 · 09-20 11:00',
-    'Source｜Open-Meteo (CAMS global atmospheric model) · modeled data, not government observations',
+    'Source｜Modeled, not government observations · Open-Meteo CAMS',
     'Mapping｜PM2.5 ↑ → water clarity 0.54 · trash 0.35 · glow 0.52',
   ])
   for (const l of en) assert.ok(!HAN.test(l), l)
   const log = inEn(() => describeForLog(GOV, OPT, { now: new Date(2026, 8, 20, 12, 0) }))
-  assert.ok(log.every((l) => !HAN.test(l)) && log.some((l) => /modeled data, not government observations/.test(l)), log.join('\n'))
+  assert.ok(log.every((l) => !HAN.test(l)) && log.some((l) => /Modeled, not government observations/.test(l)), log.join('\n'))
   assert.equal(getLocale(), 'zh'); assert.deepEqual(textOf(rowsOf(GOV, OPT, { now: new Date(2026, 8, 20, 12, 0) })), zh1)
   const none = inEn(() => textOf(rowsOf({ ...GOV, air: null }, OPT)))
-  assert.deepEqual(none.slice(0, 2), ['Air quality｜No data yet', 'Source｜Open-Meteo (CAMS global atmospheric model) · modeled data, not government observations'])
+  assert.deepEqual(none.slice(0, 2), ['Air quality｜No data yet', 'Source｜Modeled, not government observations · Open-Meteo CAMS'])
+})
+
+// ---- 分享星球圖：資料列有字數上限（中文 40、英文 64），超過會被硬截斷——「模型資料，非政府觀測」不能被截掉（圖貼到社群後脫離 App，那句是唯一的說明）----
+function drawShareCard(lines) {
+  const drawn = []
+  const state = { font: '' }
+  const ctx = new Proxy(state, {
+    get(t, k) {
+      if (k in t) return t[k]
+      if (k === 'measureText') return (str) => ({ width: [...str].length * (parseFloat(/(\d+)px/.exec(t.font)?.[1]) || 10) * 0.55 })
+      if (k === 'createLinearGradient') return () => ({ addColorStop() {} })
+      if (k === 'fillText') return (text) => drawn.push({ text, font: t.font })
+      return () => {}
+    },
+    set(t, k, v) { t[k] = v; return true },
+  })
+  const saved = globalThis.document
+  globalThis.document = { querySelector: () => ({ width: 1200, height: 800, clientWidth: 1200 }), createElement: () => ({ width: 0, height: 0, getContext: () => ctx }) }
+  try { renderShareCard({ lines }) } finally { if (saved === undefined) delete globalThis.document; else globalThis.document = saved }
+  return drawn.map((d) => d.text)
+}
+
+test('分享星球（空氣品質）：來源列不被字數上限截斷——「非政府觀測」在中英文分享圖上都完整保留；來源列在中 / 英文都在上限內', () => {
+  const CAP = { zh: 40, en: 64 }   // capture.js 的資料列字數上限
+  const rows = () => describeBoard(GOV, OPT, { now: new Date(2026, 8, 20, 12, 0) }).slice(0, 3).map((x) => `${x.k}｜${x.v}`)   // TopBar.jsx doShareImage 的做法：前 3 列
+  for (const [loc, tag, disclaimer] of [['zh', '來源｜', /模型資料，非政府觀測值/], ['en', 'Source｜', /Modeled, not government observations/]]) {
+    setLocale(loc)
+    try {
+      const lines = rows()
+      const src = lines.find((l) => l.startsWith(tag))
+      assert.ok(src, `${loc}：有來源列`); assert.ok([...src].length <= CAP[loc], `${loc}：來源列 ${[...src].length} 字元，上限 ${CAP[loc]}`)
+      const drawn = drawShareCard(lines).find((x) => x.startsWith(tag))
+      assert.equal(drawn, src, `${loc}：畫上去的與資料列完全相同（沒被截斷、沒被加「…」）`)
+      assert.match(drawn, disclaimer)
+      assert.ok(!drawn.endsWith('…'))
+    } finally { setLocale('zh') }
+  }
+})
+
+test('資料卡的空間尺度警語：可見文字（不只是 title）說明是「數十公里粗網格的模型估計、可能與地面測站不同」；與資料檔的 air.note 同一個意思；中英文都有、英文不含中文', () => {
+  const KEY = '約數十公里的粗網格模型估計，可能與地面測站數值不同，請勿當官方空品判讀'
+  const card = readFileSync(new URL('../ui/DataCard.jsx', import.meta.url), 'utf8')
+  const src = card.match(/<div className="gov-air-src"[\s\S]*?<\/div>/)[0]
+  assert.ok(src.includes(`<span className="gov-air-scale">{t('${KEY}')}</span>`), '在「模型資料」標籤旁的可見 <span>')
+  assert.ok(src.indexOf('gov-air-badge') < src.indexOf('gov-air-scale') && src.indexOf('gov-air-scale') < src.indexOf('gov-air-credit'), '標籤 → 警語 → 出處')
+  assert.match(readFileSync(new URL('../styles/air.css', import.meta.url), 'utf8'), /\.gov-air-scale \{/)
+  assert.match(KEY, /數十公里/); assert.match(KEY, /地面測站/); assert.match(KEY, /官方/)
+  assert.match(AIR_NOTE_TEXT, /數十公里/); assert.match(AIR_NOTE_TEXT, /地面測站/); assert.match(AIR_NOTE_TEXT, /官方/)   // 資料端寫的警語（air.mjs）：UI 講的是同一件事
+  const en = inEn(() => translate('en', KEY))
+  assert.ok(en && !HAN.test(en) && /tens of kilometres/.test(en) && /ground-station/.test(en) && /official/.test(en), en)
+  assert.equal(translate('zh', KEY), KEY)
+  assert.ok(real.air && typeof real.air.note === 'string' && real.air.note.length > 0, 'ocean.json 仍帶 air.note')
 })
 
 test('誠實：任何顯示處都不說它是政府資料——中文出現「政府」只能是「非政府」，英文出現 government 只能是「not government」', () => {
@@ -144,6 +198,30 @@ test('誠實：任何顯示處都不說它是政府資料——中文出現「�
   const en = inEn(() => [...textOf(rowsOf(GOV, OPT)), ...describeForLog(GOV, OPT), nameText(s.name), ...s.points.map((p) => formatHud(s, p))].join('\n'))
   assert.ok(/model/i.test(en) && !/official|observed/i.test(en))
   assert.ok(!en.replaceAll('not government', '').toLowerCase().includes('government'), en)
+})
+
+test('氣象列的「→ 洋流」只在洋流真的由花蓮外海風速算出來的選項才印（水庫 / 潮汐 / 空氣品質）；揚塵（測站風速）與月亮（預設值）不印，免得同一面板兩個風速對到同一個洋流值', () => {
+  const now = new Date(2026, 8, 20, 12, 0)
+  const weatherRow = (o) => describeBoard(real, o, { now }).find((r) => r.k === '氣象')
+  const f2 = (v) => (Math.round(v * 100) / 100).toFixed(2)
+  for (const o of real.options) {
+    const row = weatherRow(o)
+    assert.ok(row, o.id)
+    if (o.kind === 'dust' || o.kind === 'moon') assert.doesNotMatch(row.v, /洋流/, `${o.id}：洋流不是這個風速算的`)
+    else assert.ok(row.v.endsWith(`→ 洋流 ${f2(o.params.current)}`), `${o.id}：${row.v}`)
+  }
+  const dust = real.options.find((o) => o.kind === 'dust'), moon = real.options.find((o) => o.kind === 'moon')
+  assert.ok(dust && moon, '真實資料有揚塵與月亮選項')
+  // 矛盾的重現：以前揚塵的映射列（測站風速 → 洋流）與氣象列（花蓮外海風速 → 同一個洋流值）並列
+  assert.match(describeBoard(real, dust, { now }).find((r) => r.k === '映射').v, /洋流/)
+  // 英文與 OUT 日誌行同步
+  inEn(() => {
+    for (const o of [dust, moon]) assert.doesNotMatch(describeBoard(real, o, { now }).find((r) => r.k === 'Weather').v, /current/, o.id)
+    assert.match(describeBoard(real, real.options.find((o) => o.kind === 'air'), { now }).find((r) => r.k === 'Weather').v, /→ current \d\.\d\d$/)
+    for (const o of [dust, moon]) for (const l of describeForLog(real, o, { now })) if (l.includes('Weather')) assert.doesNotMatch(l, /current/, l)
+  })
+  for (const o of [dust, moon]) for (const l of describeForLog(real, o, { now })) if (l.includes('氣象')) assert.doesNotMatch(l, /洋流/, l)
+  assert.equal(weatherRow(real.options.find((o) => o.id === 'feitsui')).v.split(' → ').length, 2, '水庫選項維持原樣')
 })
 
 test('與揚塵並存：同一個 gov 的揚塵選項描述 / 序列不受空氣品質影響', () => {
@@ -206,7 +284,7 @@ test('真實 ocean.json：seriesFromAir 100+ 點、映射有明顯動態範圍�
   const en = inEn(lines)
   for (const l of zh) assert.doesNotMatch(l, /undefined|NaN|null/, l)
   for (const l of en) { assert.doesNotMatch(l, /undefined|NaN|null/, l); assert.ok(!HAN.test(l), l) }
-  assert.ok(zh.some((l) => l.startsWith('來源｜') && l.includes('模型資料')) && en.some((l) => l.startsWith('Source｜') && /modeled data/.test(l)))
+  assert.ok(zh.some((l) => l.startsWith('來源｜') && l.includes('模型資料')) && en.some((l) => l.startsWith('Source｜') && /Modeled, not government observations/.test(l)))
   assert.notDeepEqual(zh, en)
   for (const o of real.options) assert.ok(describeBoard(real, o).length > 0, o.id)                          // 新選項沒有弄壞其他選項（全選項的英文乾淨度見 i18n-data.test.mjs 的全掃）
   inEn(() => assert.ok(!HAN.test(nameText(opt.name)) && !HAN.test(nameText(s.name)) && !HAN.test(nameText(real.air.place)), 'nameText'))
