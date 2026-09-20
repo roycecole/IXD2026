@@ -16,19 +16,33 @@ export async function askSensorPermission() {
   } catch (e) { return false }
 }
 
+// 螢幕方向（0 / 90 / 180 / 270）
+const screenAngle = () => {
+  const a = (typeof screen !== 'undefined' && screen.orientation && typeof screen.orientation.angle === 'number') ? screen.orientation.angle
+    : (typeof window.orientation === 'number' ? window.orientation : 0)
+  return ((a % 360) + 360) % 360
+}
+
 // 傾斜：以啟用當下姿勢為基準（歸零可重設）。gamma=左右、beta=前後；range 度 = 洋流打滿。
 // 傾向哪邊，洋流就流向哪邊（上緣朝外傾 = 流向遠方）。50ms 節流 + 變化 <1% 不送 + 死區防抖。
+// 橫放時 deviceorientation 的歐拉角會在 gamma=±90 附近萬向鎖、軸向也跟著換，直接用會錯軸或亂跳 →
+// 只支援直向（含倒立）；橫放時暫停送出並通知 UI（onLandscape），回直向自動重設基準。
 export function startTilt(emit, opts = {}) {
   const range = opts.range || 40
   const dead = opts.deadzone == null ? 3 : opts.deadzone
-  let beta0 = null, lastX = -1, lastY = -1, lastT = 0, first = true
+  let beta0 = null, lastX = -1, lastY = -1, lastT = 0, first = true, wasLandscape = null
   const dz = (v) => (Math.abs(v) < dead ? 0 : v - Math.sign(v) * dead)
   const handler = (e) => {
     if (e.beta == null || e.gamma == null) return
+    const ang = screenAngle()
+    const landscape = ang === 90 || ang === 270
+    if (landscape !== wasLandscape) { wasLandscape = landscape; beta0 = null; lastX = lastY = -1; opts.onLandscape && opts.onLandscape(landscape) }
+    if (landscape) return
     if (first) { first = false; opts.onFirst && opts.onFirst() }
     if (beta0 == null) beta0 = e.beta
-    const fx = clamp(0.5 + (dz(e.gamma) / range) * 0.5, 0, 1)
-    const fy = clamp(0.5 + (dz(e.beta - beta0) / range) * 0.5, 0, 1)
+    const sgn = ang === 180 ? -1 : 1 // 倒立直向：左右與前後都反向
+    const fx = clamp(0.5 + ((sgn * dz(e.gamma)) / range) * 0.5, 0, 1)
+    const fy = clamp(0.5 + ((sgn * dz(e.beta - beta0)) / range) * 0.5, 0, 1)
     const now = performance.now()
     if (now - lastT < 50) return
     if (Math.abs(fx - lastX) < 0.01 && Math.abs(fy - lastY) < 0.01) return

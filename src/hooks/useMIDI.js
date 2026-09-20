@@ -11,6 +11,7 @@ import { bleConnect, bleSupported } from '../lib/blemidi.js'
 //   Solo1-4 = 鯨/豚/龜/清垃圾 觸發時亮 0.3 秒。
 
 let midiOut = null
+let bleCur = null   // 目前的藍牙連線句柄（{name, device, disconnect}）
 let ledTimer = null
 let flashUntil = { 32: 0, 33: 0, 34: 0, 35: 0 }
 let lastSpawnSeen = { whale: 0, dolphin: 0, turtle: 0 }
@@ -88,10 +89,16 @@ export function useMIDI() {
       return
     }
     try {
+      if (bleCur) { try { bleCur.disconnect() } catch (e) {} bleCur = null } // 重連前先斷舊連線（不留殭屍 GATT）
       const dev = await bleConnect({
         onMsg: routeMidi,
-        onDisconnect: () => { const s = useStore.getState(); s.setMidi({ bleName: null }); s.pushLog('in', '藍牙 MIDI 已斷線') },
+        onDisconnect: (d) => {
+          // 只有「目前這台」斷線才清狀態：先前被換掉的舊連線晚到的斷線事件不該把新連線的名稱清掉
+          if (bleCur && bleCur.device !== d) return
+          const s = useStore.getState(); s.setMidi({ bleName: null }); s.pushLog('in', '藍牙 MIDI 已斷線'); bleCur = null
+        },
       })
+      bleCur = dev
       const s = useStore.getState()
       s.setMidi({ bleName: dev.name, error: null })
       s.pushLog('in', `藍牙 MIDI 已連線：${dev.name}`)

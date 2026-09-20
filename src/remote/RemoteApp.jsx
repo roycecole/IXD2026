@@ -105,7 +105,10 @@ export default function RemoteApp({ hostId }) {
     }
     if (!(await askSensorPermission())) { setSensMsg('未取得感測器權限（iOS 請在提示中允許「動作與方向」）'); return }
     let seen = false
-    tiltRef.current = startTilt(({ flowX, flowY }) => { send({ t: 'p', pid: 'flowX', v: flowX }); send({ t: 'p', pid: 'flowY', v: flowY }) }, { onFirst: () => { seen = true; setSensMsg('') } })
+    tiltRef.current = startTilt(({ flowX, flowY }) => { send({ t: 'p', pid: 'flowX', v: flowX }); send({ t: 'p', pid: 'flowY', v: flowY }) }, {
+      onFirst: () => { seen = true; setSensMsg('') },
+      onLandscape: (l) => { seen = true; setSensMsg(l ? '請直向握持手機（橫放時傾斜感測暫停）' : '') },
+    })
     shakeStop.current = startShake((vel) => {
       send({ t: 'n', note: 17, vel })
       try { navigator.vibrate && navigator.vibrate(15) } catch (e) {}

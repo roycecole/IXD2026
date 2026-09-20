@@ -23,11 +23,14 @@ export default function MultiModal({ onClose }) {
         })
       } catch (e) { drawn.current = '' }
     }
-    const refresh = () => { if (!dead) { setState((s) => ({ ...s, ready: multiState.on, count: multiState.count, err: null })); draw() } }
+    // 只有 host 真的在線才清錯誤（否則離線時錯誤訊息每 2 秒被抹掉，之後永遠卡在「正在開啟…」）
+    const refresh = () => { if (!dead) { setState((s) => ({ ...s, ready: multiState.on, count: multiState.count, err: multiState.on ? null : s.err })); draw() } }
+    const boot = () => startHost().then(refresh).catch((e) => { if (!dead) setState((s) => ({ ...s, err: e.message || e.type || '啟動失敗' })) })
     const off = onHostChange(refresh)
-    startHost().then(refresh).catch((e) => { if (!dead) setState((s) => ({ ...s, err: e.message || e.type || '啟動失敗' })) })
+    boot()
     const iv = setInterval(refresh, 2000)
-    return () => { dead = true; off(); clearInterval(iv) }
+    const iv2 = setInterval(() => { if (!multiState.on) boot() }, 5000) // 離線時每 5 秒重試（與展場 QR 一致）
+    return () => { dead = true; off(); clearInterval(iv); clearInterval(iv2) }
   }, [])
 
   const copy = async () => {

@@ -4,7 +4,7 @@ import { LS, SS, loadLS, saveLS, removeLS, loadSS, saveSS } from '../lib/persist
 import { noteQueue } from '../audio/bus.js'
 import { padEvents, purifyMeta } from './events.js'
 import { setHud } from './hud.js'
-import { touch } from './activity.js'
+import { touch, touchGlow } from './activity.js'
 import { bumpStat } from './stats.js'
 import { SCENES } from '../timeline/scenes.js'
 
@@ -80,6 +80,7 @@ export const useStore = create((set, get) => ({
     }
     st.setParam(pid, v)
     setHud(pid, clamp01(v)); touch()   // 參數 HUD + 活動時間戳
+    if (pid === 'glow') touchGlow()    // 手動調輝光 → AR 環境光自動調輝光暫停 8 秒
     if (st.rec.mode === 'recording') recBuffer.push({ t: st.rec.playhead, pid, value: clamp01(v) })
   },
 

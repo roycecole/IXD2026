@@ -17,7 +17,16 @@ export function parseBleMidi(b) {
   if (n < 2 || !(b[0] & 0x80)) return out
   let i = 1, running = 0, inSysex = false
   while (i < n) {
-    if (inSysex) { if (b[i++] === 0xf7) inSysex = false; continue }
+    if (inSysex) {
+      // SysEx 結尾 F7 之前一定有時間戳；時間戳的低 7 位若恰為 0x77，位元組值也是 0xF7（約 1/128 機率）——
+      // 因此「下一個位元組是 F7」時，目前這個 bit7 位元組是時間戳，兩個一起吃掉才是正確結尾。
+      const c = b[i++]
+      if (c & 0x80) {
+        if (b[i] === 0xf7) { i++; inSysex = false }
+        else if (c === 0xf7) inSysex = false           // 沒有時間戳的違規 F7：仍視為結尾
+      }
+      continue
+    }
     if (b[i] & 0x80) { i++; if (i >= n) break }              // 時間戳低位（狀態位元組之前一定有）
     let s
     if (b[i] & 0x80) {                                       // 狀態位元組
@@ -66,10 +75,17 @@ export async function bleConnect({ onMsg, onDisconnect }) {
     optionalServices: [BLE_MIDI_SERVICE],
   })
   const server = await dev.gatt.connect()
-  const svc = await server.getPrimaryService(BLE_MIDI_SERVICE)
-  const chr = await svc.getCharacteristic(BLE_MIDI_CHAR)
-  const detach = attachBleCharacteristic(chr, onMsg)
-  await chr.startNotifications()
+  let detach = () => {}
+  try {
+    const svc = await server.getPrimaryService(BLE_MIDI_SERVICE)
+    const chr = await svc.getCharacteristic(BLE_MIDI_CHAR)
+    detach = attachBleCharacteristic(chr, onMsg)
+    await chr.startNotifications()
+  } catch (e) {                                         // 半途失敗要收乾淨，否則裝置佔著連線、下次連不上
+    detach()
+    try { server.disconnect() } catch (x) {}
+    throw e
+  }
   dev.addEventListener('gattserverdisconnected', () => { detach(); onDisconnect && onDisconnect(dev) })
-  return { name: dev.name || 'BLE MIDI', disconnect: () => { try { dev.gatt.disconnect() } catch (e) {} } }
+  return { name: dev.name || 'BLE MIDI', device: dev, disconnect: () => { try { dev.gatt.disconnect() } catch (e) {} } }
 }

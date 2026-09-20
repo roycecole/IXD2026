@@ -33,12 +33,22 @@ export function onHostChange(fn) { listeners.add(fn); return () => listeners.del
 const ALLOWED_P = new Set(PARAM_ORDER)
 const ALLOWED_A = new Set(['spawnWhale', 'spawnDolphin', 'spawnTurtle', 'clearTrash', 'transportPlay', 'transportStop', 'transportRecord'])
 
-// 匯出供測試 / 未來其他傳輸層（WebSocket 等）重用
-export function dispatch(m) {
+// 洋流方向是「兩軸拼成的向量」：多支手機同時傾斜時各寫一軸 → 拼出無人的向量、洋流抖動。
+// 以連線為單位做擁有權：最近有動的那支手機擁有洋流向量，其他手機在其靜止 1.5 秒內的 flowX/flowY 一律忽略。
+const flowOwner = { src: null, t: 0 }
+const FLOW_HOLD_MS = 1500
+
+// 匯出供測試 / 未來其他傳輸層（WebSocket 等）重用。src = 來源連線識別（無則不做擁有權判斷）
+export function dispatch(m, src) {
   try {
     if (!m || typeof m !== 'object') return
     const st = useStore.getState()
     if (m.t === 'p' && ALLOWED_P.has(m.pid) && typeof m.v === 'number') {
+      if (src != null && (m.pid === 'flowX' || m.pid === 'flowY')) {
+        const now = Date.now()
+        if (flowOwner.src != null && flowOwner.src !== src && now - flowOwner.t < FLOW_HOLD_MS) return
+        flowOwner.src = src; flowOwner.t = now
+      }
       st.input(m.pid, Math.max(0, Math.min(1, m.v)))
     } else if (m.t === 'a' && ALLOWED_A.has(m.a)) {
       st[m.a]()
@@ -57,6 +67,7 @@ function makeId() {
 
 function wire(p) {
   p.on('connection', (c) => {
+    c.__t0 = Date.now()
     conns.push(c)
     c.on('open', () => {
       multiState.count = conns.filter((x) => x.open).length
@@ -66,9 +77,10 @@ function wire(p) {
       notify()
       useStore.getState().pushLog('in', `遙控器加入 · 聲部「${role.label.split(' ')[0]}」（${multiState.count} 人連線）`)
     })
-    c.on('data', dispatch)
-    c.on('close', () => { conns = conns.filter((x) => x !== c); multiState.count = conns.filter((x) => x.open).length; notify() })
-    c.on('error', () => {})
+    c.on('data', (m) => dispatch(m, c.peer))
+    const drop = () => { conns = conns.filter((x) => x !== c); multiState.count = conns.filter((x) => x.open).length; notify() }
+    c.on('close', drop)
+    c.on('error', drop) // 從未 open 的連線（ICE 失敗）PeerJS 不會發 close → 只能靠 error / 逾時清掉，否則展場 24h 會累積
   })
   // 與訊號伺服器斷線（網路瞬斷 / 伺服器重啟）：既有 WebRTC 連線不受影響，稍後用同一個 ID 重連，QR 不變
   p.on('disconnected', () => { setTimeout(() => { if (!p.destroyed) { try { p.reconnect() } catch (e) {} } }, 1500) })
@@ -85,6 +97,13 @@ function ensureSync() {
   // 狀態回傳：每秒把目前參數同步到所有遙控器（滑桿跟著主畫面走）
   if (syncIv) return
   syncIv = setInterval(() => {
+    // 清掉 30 秒仍未 open 的殭屍連線（掃碼後 ICE 失敗、對方直接關頁面等）
+    const now = Date.now()
+    const alive = conns.filter((x) => x.open || now - (x.__t0 || now) < 30000)
+    if (alive.length !== conns.length) {
+      conns.filter((x) => !alive.includes(x)).forEach((x) => { try { x.close() } catch (e) {} })
+      conns = alive
+    }
     const open = conns.filter((x) => x.open)
     if (!open.length) return
     const payload = { t: 'sync', params: useStore.getState().params }

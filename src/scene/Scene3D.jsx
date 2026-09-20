@@ -1225,8 +1225,16 @@ function MoonSky() {
     if (!S.init) { S.init = true; S.x = tx; S.y = ty; S.phase = tPhase }
     S.alpha += (wantAlpha - S.alpha) * k
     if (wantAlpha > 0.02) {
+      // 靜止且在地平線下時，貼靠的那一側會在下中天（H=±π）瞬間換邊：直接淡出再從新的一側淡入，不要橫掃過整個畫面
+      const side = tx < 0 ? -1 : 1
+      if (S.side && S.side !== side && Math.abs(tx - S.x) > xr) { S.alpha = 0; S.x = tx; S.y = ty }
+      S.side = side
       if (S.alpha < 0.05) { S.x = tx; S.y = ty; S.phase = tPhase }                                            // 剛要淡入：直接就位，不從舊座標 / 舊月相滑過來
-      else { S.x += (tx - S.x) * k; S.y += (ty - S.y) * k; S.phase += (tPhase - S.phase) * k }              // 平時平滑跟隨（播放時月亮劃過天空）
+      else {
+        S.x += (tx - S.x) * k; S.y += (ty - S.y) * k
+        let dp = tPhase - S.phase; dp = Math.atan2(Math.sin(dp), Math.cos(dp))                                // 相位走最短弧（新月 2π→0 不倒轉整個週期）
+        S.phase += dp * k
+      }
     }                                                                                                       // 淡出時位置凍結，避免滑走
     if (mesh.current) { mesh.current.visible = S.alpha > 0.01; mesh.current.position.set(S.x, S.y, MOON_Z) }
     if (halo.current) { halo.current.visible = S.alpha > 0.01; halo.current.position.set(S.x, S.y, MOON_Z - 0.1) }

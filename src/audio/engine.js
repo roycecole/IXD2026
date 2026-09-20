@@ -18,6 +18,7 @@ if (import.meta.env.DEV) Object.defineProperty(window, '__audio', { get: () => (
 let N = null            // Tone 節點集合（使用者手勢後才建立，符合瀏覽器 autoplay 政策）
 let muted = false
 let sparkleAt = 0
+let dripAcc = 0, lastUpdateT = 0 // 水滴聲以時間累積
 const lastSpawns = { whale: 0, dolphin: 0, turtle: 0, purify: 0 }
 
 function build() {
@@ -48,6 +49,7 @@ function build() {
     oscillator: { type: 'sine' },
     envelope: { attack: 0.03, decay: 0.5, sustain: 0, release: 1.8 },
   })
+  pluck.maxPolyphony = 64 // 淨化琶音一次 6 聲部、尾音長 1.8s；預設上限 32，連按約 5 次就會丟音
   pluck.connect(pluckGain)
 
   // 生物叫聲（滑音單音）→ 立體聲相 Panner（跟隨生物游過的位置）
@@ -111,7 +113,10 @@ export function chime() {
 }
 
 // 淨化波 → 明亮大調五聲上行琶音（不論當下濁度都用大調：那正是「變乾淨」的聲音），頂端再拖一個高八度光亮尾音
+let lastArpAt = -1
 function purifyArp(v) {
+  if (Tone.now() - lastArpAt < 0.25) return // 連按 / 多來源同時觸發：0.25 秒內只放一次，避免聲部堆疊爆音
+  lastArpAt = Tone.now()
   const root = 45 + (useStore.getState().params.seaLevel ?? 0.5) * 65
   const t = Tone.now() + 0.02
   const idx = [0, 1, 2, 3, 5] // 2, 2.25, 2.5, 3, 4（根音上方一個八度內的五聲音階）
@@ -182,8 +187,16 @@ export function audioUpdate() {
   }
   if (sp.purify > lastSpawns.purify) { lastSpawns.purify = sp.purify; purifyArp(purifyMeta.v) } // 淨化波 → 上行琶音
 
-  const over = Math.max(0, ((p.seaLevel ?? 0) - 0.97) / 0.03) // 溢流（與 OverflowFx 同門檻）→ 水滴聲，最多約 3 滴/秒
-  if (over > 0 && Math.random() < 0.05 + over * 0.25) dripOnce()
+  // 溢流（與 OverflowFx 同門檻）→ 水滴聲。以「經過的時間」累積（每秒 0.4–3 滴），
+  // 與 audioUpdate 被呼叫的頻率（60 / 120 / 144Hz 螢幕）無關
+  const over = Math.max(0, ((p.seaLevel ?? 0) - 0.97) / 0.03)
+  const dtA = lastUpdateT ? Math.min(0.5, t - lastUpdateT) : 0.1
+  lastUpdateT = t
+  if (over > 0) {
+    dripAcc += dtA * (0.4 + over * 2.6)
+    for (let k = 0; dripAcc >= 1 && k < 2; k++) { dripOnce(); dripAcc -= 1 }
+    if (dripAcc > 2) dripAcc = 2
+  } else dripAcc = 0
 
   while (noteQueue.length) {                              // nanoPAD2 → 音階觸發
     const { note, vel } = noteQueue.shift()

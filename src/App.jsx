@@ -13,8 +13,6 @@ import DataHUD from './ui/DataHUD.jsx'
 import KioskQR from './ui/KioskQR.jsx'
 import { arState, arStart, arStop, arFilter, createLumaSampler, glowForLuma } from './lib/ar.js'
 import { stats } from './store/stats.js'
-import { hudState } from './store/hud.js'
-import { PARAMS } from './params/registry.js'
 import { multiState } from './lib/multiplayer.js'
 import { useMIDI } from './hooks/useMIDI.js'
 import { useStore } from './store/useStore.js'
@@ -126,7 +124,7 @@ export default function App() {
       const L = sample(videoRef.current)
       if (L == null) return
       arState.luma = L
-      if (hudState.label === PARAMS.glow.label && performance.now() - hudState.t < 8000) return
+      if (performance.now() - activity.glowAt < 8000) return // 使用者剛手動調過輝光 → 暫停自動
       const target = glowForLuma(L, arState.clarity)
       smooth = smooth == null ? target : smooth + (target - smooth) * 0.35
       const st = useStore.getState()

@@ -5,6 +5,7 @@
 //   潮汐：有 CWA_KEY → datastore API；否則 / 失敗 → CWA 公開檔（免金鑰）；再失敗 → 保留舊 series。
 import { readFile, writeFile } from 'node:fs/promises'
 import { realpathSync } from 'node:fs'
+import { resolve as resolvePath } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import {
   TIDE_FILE_URL, tideApiUrl, findTideForecasts, pickLocation, flattenEvents,
@@ -115,7 +116,8 @@ const FALLBACK = [
 ]
 
 async function main() {
-  const url = process.env.OCEAN_JSON_PATH ? new URL(process.env.OCEAN_JSON_PATH, 'file://' + process.cwd() + '/') : new URL('../public/data/ocean.json', import.meta.url)
+  // pathToFileURL(resolve(...))：路徑含 # ? 空白或為 Windows 路徑都安全（字串拼 file:// 會錯）
+  const url = process.env.OCEAN_JSON_PATH ? pathToFileURL(resolvePath(process.env.OCEAN_JSON_PATH)) : new URL('../public/data/ocean.json', import.meta.url)
   let cur = null
   try { cur = JSON.parse(await readFile(url, 'utf8')) } catch (e) {}
 
@@ -127,7 +129,14 @@ async function main() {
   }
   if (!w) {
     try { w = await fromOpenMeteo() }
-    catch (e) { console.error('weather fetch failed:', e.message); process.exit(0) } // 不覆蓋既有檔案
+    catch (e) {
+      console.error('weather fetch failed:', e.message)
+      // 天氣失敗不該擋住其他資料（例如每日潮汐、逐日刷新的各資料集）：沿用上次的天氣繼續刷新
+      const o = cur && cur.weather
+      if (!o) process.exit(0) // 連舊天氣都沒有 → 不覆蓋既有檔案
+      const hr = taipeiHour(Date.now())
+      w = { airTemp: o.airTemp, humidity: o.humidity, windSpeed: o.windSpeed, windDir: o.windDir, precip: o.precip, clear: o.weather === '晴', isDay: hr >= 6 && hr < 18, weather: o.weather, time: cur.fetchedAt, gov: false }
+    }
   }
 
   const base = (cur?.options && cur.options.length ? cur.options : FALLBACK)

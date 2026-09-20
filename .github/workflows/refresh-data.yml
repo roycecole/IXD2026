@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  actions: write  # 用 GITHUB_TOKEN 派發 deploy（見下：GITHUB_TOKEN 的 push 不會觸發其他 workflow）
 
 jobs:
   refresh:
@@ -21,6 +22,7 @@ jobs:
         env:
           CWA_KEY: ${{ secrets.CWA_KEY }} # 中央氣象署開放資料金鑰（政府源）；未設定時自動退回 Open-Meteo
       - name: Commit if changed
+        id: commit
         run: |
           if ! git diff --quiet public/data/ocean.json; then
             git config user.name "midisea-bot"
@@ -28,6 +30,15 @@ jobs:
             git add public/data/ocean.json
             git commit -m "chore: refresh 今日海況資料"
             git push
+            echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "ocean.json unchanged"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
+      # 以 GITHUB_TOKEN push 的 commit 不會觸發 deploy.yml（GitHub 的設計，避免無限迴圈），
+      # 所以刷新後的資料若不主動派發 deploy，永遠進不了線上站台。workflow_dispatch 不受此限。
+      - name: Deploy refreshed data
+        if: steps.commit.outputs.changed == 'true'
+        run: gh workflow run deploy.yml --ref main
+        env:
+          GH_TOKEN: ${{ github.token }}
