@@ -4,6 +4,7 @@ import VoiceService from './VoiceService.jsx'
 import HapticsService from './HapticsService.jsx'
 import QualityService from './QualityService.jsx'
 import TourService from './TourService.jsx'
+import ResilienceService from './ResilienceService.jsx'
 
 // 所有常駐服務的掛載點（App.jsx 只渲染這一個元件，新增服務不必再改 App）
 export default function Services() {
@@ -15,6 +16,7 @@ export default function Services() {
       <HapticsService />
       <QualityService />
       <TourService />
+      <ResilienceService />
     </>
   )
 }

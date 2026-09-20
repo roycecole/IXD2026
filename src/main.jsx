@@ -26,14 +26,17 @@ const RemoteApp = lazy(() => import('./remote/RemoteApp.jsx'))
 // ?audience=1 → 觀眾視窗（雙螢幕：投影機顯示同一片海，主視窗的操作即時同步；不載 UI / 服務）
 const audienceMode = flagOn(location.search, 'audience')
 const AudienceApp = lazy(() => import('./AudienceApp.jsx'))
+// ?diagnostics=1 → 裝置診斷頁（展前在現場硬體逐項檢查相機 / 麥克風 / 語音 / 震動 / XR…並匯出報告；不載 three / 主畫面）
+const diagnosticsMode = flagOn(location.search, 'diagnostics')
+const DiagnosticsApp = lazy(() => import('./DiagnosticsApp.jsx'))
 // 主畫面 / 觀眾視窗一開始就預載 3D 場景（three / r3f）：它們不在入口 chunk 裡（手機遙控頁不需要），不預載的話要等 App 渲染完才開始抓 → 多一趟往返。
 // 手機遙控頁（#remote=）不預載，維持輕量。
-if (!remoteMatch) import('./scene/Scene3D.jsx').catch(() => {})
+if (!remoteMatch && !diagnosticsMode) import('./scene/Scene3D.jsx').catch(() => {})
 
 createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <Suspense fallback={<div className="canvas-loading">{t('載入中…')}</div>}>
-      {remoteMatch ? <RemoteApp hostId={decodeURIComponent(remoteMatch[1])} /> : audienceMode ? <AudienceApp /> : <App />}
+      {remoteMatch ? <RemoteApp hostId={decodeURIComponent(remoteMatch[1])} /> : diagnosticsMode ? <DiagnosticsApp /> : audienceMode ? <AudienceApp /> : <App />}
     </Suspense>
   </React.StrictMode>,
 )

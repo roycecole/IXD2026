@@ -7,6 +7,8 @@ import VoiceSection from './devices/VoiceSection.jsx'
 import HapticsSection from './devices/HapticsSection.jsx'
 import QualitySection from './devices/QualitySection.jsx'
 import XrSection from './devices/XrSection.jsx'
+import DiagnosticsSection from './devices/DiagnosticsSection.jsx'
+import OpsSection from './devices/OpsSection.jsx'
 
 // 「裝置」面板：把各種裝置 / 感測器功能集中一處（觀眾視窗、相機手勢、語音、觸覺、畫質、AR 桌面）。
 // 每一節是 ui/devices/*Section.jsx（各自負責自己的開關、狀態與說明）；背後常駐的邏輯在 services/*Service.jsx。
@@ -32,6 +34,8 @@ export default function DevicesModal({ onClose }) {
         <HapticsSection />
         <QualitySection />
         <XrSection />
+        <DiagnosticsSection />
+        <OpsSection />
         <button className="modal-start" onClick={onClose}>{t('完成')}</button>
       </div>
     </div>
