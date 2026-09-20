@@ -1,6 +1,6 @@
 // AR 實景背景：網頁相機（getUserMedia）鋪在畫布後面，球體照常渲染（Canvas 透明）。
 // 模糊 / 清澈只作用在背景 <video>（CSS filter，GPU 加速），不影響球體本身。
-export const arState = { on: false, err: null, autoGlow: true, luma: 0 }  // 模糊 / 清澈已改為共用參數 bgBlur / bgClarity（一般畫面與 AR 同一組）
+export const arState = { on: false, err: null, autoGlow: true, luma: 0, video: null }  // 模糊 / 清澈已改為共用參數 bgBlur / bgClarity（一般畫面與 AR 同一組）
 
 // 環境光感知：把 <video> 縮成 16×9 取平均亮度（0..1，Rec.709 權重）。太小不影響效能（約 144 像素）。
 export function createLumaSampler() {
@@ -35,6 +35,7 @@ export async function arStart(video, onEnd) {
     // 相機被系統/其他分頁收走時自動退出 AR（否則場景卡在透明背景）
     stream.getVideoTracks().forEach((tr) => { tr.onended = () => { arStop(video); onEnd && onEnd() } })
     if (video) { video.srcObject = stream; await video.play().catch(() => {}) }
+    arState.video = video || null                  // 分享圖 / 錄影要合成相機畫面，需要這個元素
     arState.on = true; arState.err = null
     return true
   } catch (e) {
@@ -47,12 +48,18 @@ export function arStop(video) {
   try { stream && stream.getTracks().forEach((t) => t.stop()) } catch (e) {}
   stream = null
   if (video) video.srcObject = null
-  arState.on = false
+  arState.on = false; arState.video = null
 }
 
 // 背景濾鏡：模糊＝高斯模糊 0..22px（bgBlur 0..1）；清澈＝亮度+飽和（bgClarity：低=朦朧暗、高=清亮）。只作用在相機畫面。
-export function arFilter(blur01 = 0.27, clarity01 = 0.85) {
-  const px = Math.max(0, Math.min(1, blur01)) * 22
+// scale：blur 半徑的縮放（畫面上用 CSS 像素；輸出到分享圖 / 錄影的 2D canvas 時要換算成目標像素）。
+export function arFilter(blur01 = 0.27, clarity01 = 0.85, scale = 1) {
+  const px = Math.max(0, Math.min(1, blur01)) * 22 * scale
   const c = Math.max(0, Math.min(1, clarity01))
   return `blur(${px.toFixed(1)}px) brightness(${(0.35 + c * 0.75).toFixed(2)}) saturate(${(0.5 + c * 0.7).toFixed(2)})`
+}
+
+// 目前的實景脈絡（給分享圖 / 錄影合成用）：實景開啟且有相機畫面 → { video, blur01, clarity01 }，否則 null
+export function arContext(params) {
+  return arState.on && arState.video ? { video: arState.video, blur01: params.bgBlur ?? 0.27, clarity01: params.bgClarity ?? 0.85 } : null
 }

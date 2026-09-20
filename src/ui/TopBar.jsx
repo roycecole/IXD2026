@@ -3,6 +3,7 @@ import { useStore } from '../store/useStore.js'
 import { SCENES } from '../timeline/scenes.js'
 import { buildShareUrl } from '../lib/share.js'
 import { captureCanvas, downloadBlob, shareSnapshot } from '../lib/capture.js'
+import { arContext } from '../lib/ar.js'
 import { audioToggle, audioState } from '../audio/engine.js'
 import { micToggle } from '../audio/mic.js'
 import { bleSupported } from '../lib/blemidi.js'
@@ -58,6 +59,7 @@ export default function TopBar({ onConnect, onBle, onInfo, onVK, vkOn, onMulti, 
     pushLog('out', '● 開始錄影（10 秒）')
     captureCanvas({
       seconds: 10,
+      getAr: () => arContext(useStore.getState().params), // 實景時錄「相機背景 + 球體」
       onProgress: (el) => setCapPct(Math.round((el / 10) * 100)),
       onDone: (blob, ext, err) => {
         setCapPct(-1)
@@ -77,7 +79,7 @@ export default function TopBar({ onConnect, onBle, onInfo, onVK, vkOn, onMulti, 
   const doShareImage = async () => {
     const st = useStore.getState()
     const rows = describeBoard(st.gov, st.govOption())          // 分享圖帶上目前海況的資料列
-    const r = await shareSnapshot({ lines: rows.slice(0, 3).map((x) => `${x.k}｜${x.v}`) })
+    const r = await shareSnapshot({ lines: rows.slice(0, 3).map((x) => `${x.k}｜${x.v}`), ar: arContext(st.params) }) // 實景時連真實背景一起輸出
     if (!r.ok) { setShareMsg('分享失敗：' + r.why); pushLog('out', '分享星球失敗：' + r.why) }
     else if (r.how === 'download') { setShareMsg('已下載分享圖'); pushLog('out', '分享星球 → 下載 PNG') }
     else if (r.how === 'share') pushLog('out', '分享星球 → 系統分享')
