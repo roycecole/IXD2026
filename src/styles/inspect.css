@@ -1,0 +1,43 @@
+/* 點物件看資料出處的小卡片（ui/InspectCard.jsx）：貼近被點的星 / 月亮 / 鳥群，畫布內；手機寬度停靠畫布下緣。 */
+.inspect-card {
+  position: absolute; z-index: 5; width: 252px; max-width: calc(100% - 16px);
+  background: rgba(8, 12, 22, 0.84); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  border: 1px solid var(--line2); border-radius: 10px; padding: 7px 12px 10px;
+  font-size: 12px; line-height: 1.5; color: var(--text);
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.45);
+  cursor: default; user-select: text; -webkit-user-select: text;
+  animation: icIn 0.16s ease-out;
+}
+.inspect-card.dock { left: 8px; right: 8px; bottom: 8px; top: auto; width: auto; max-width: none; }
+@keyframes icIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+.ic-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.ic-eyebrow { padding-top: 3px; color: var(--accent); font-size: 10.5px; letter-spacing: 0.04em; }
+.ic-x {
+  flex: none; width: 28px; height: 28px; min-width: 0; min-height: 0; padding: 0; margin: -3px -8px 0 0;
+  line-height: 26px; text-align: center; font-size: 17px; border: none; background: transparent; color: var(--muted); border-radius: 50%; cursor: pointer;
+}
+.ic-x:hover { color: var(--text); background: rgba(255, 255, 255, 0.12); }
+.ic-title { margin: -1px 0 5px; font-size: 15px; font-weight: 600; line-height: 1.3; word-break: break-word; }
+
+.ic-rows { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0; }
+.ic-row { display: contents; }
+.ic-rows dt { color: var(--muted); white-space: nowrap; }
+.ic-rows dd { margin: 0; color: #d6d9e6; word-break: break-word; }
+.ic-note { margin: 7px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.ic-src { margin: 7px 0 0; padding-top: 6px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10.5px; line-height: 1.45; }
+
+/* 物件位置的小圓環：把卡片與被點的物件連起來 */
+.inspect-pin {
+  position: absolute; z-index: 5; width: 20px; height: 20px; margin: -10px 0 0 -10px; border-radius: 50%; pointer-events: none;
+  border: 1.5px solid var(--accent); box-shadow: 0 0 10px rgba(93, 202, 165, 0.55); animation: icPin 1.6s ease-out infinite;
+}
+@keyframes icPin { 0% { transform: scale(0.7); opacity: 0.95; } 100% { transform: scale(1.5); opacity: 0; } }
+
+@media (pointer: coarse) { .ic-x { width: 36px; height: 36px; line-height: 34px; margin: -5px -10px 0 0; } }
+@media (prefers-reduced-motion: reduce) { .inspect-card, .inspect-pin { animation: none; } }
+
+/* 觀眾視窗（?audience=1）：投影距離遠 → 依視窗寬度放大字級；不接受任何輸入 */
+.audience-app .inspect-card { width: 22em; font-size: clamp(13px, 1.05vw, 30px); pointer-events: none; }
+.audience-app .ic-x { display: none; }
+.audience-app .inspect-pin { width: 1.7em; height: 1.7em; margin: -0.85em 0 0 -0.85em; font-size: clamp(13px, 1.05vw, 30px); }

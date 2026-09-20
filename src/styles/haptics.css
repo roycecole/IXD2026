@@ -1,0 +1,11 @@
+/* 「裝置」面板的觸覺回饋一節（ui/devices/HapticsSection.jsx） */
+.hap-sec .hap-seg { display: inline-flex; gap: 4px; }
+.hap-sec .hap-seg button { padding: 4px 12px; font-size: 12px; min-width: 44px; }
+.hap-sec .hap-seg button.on { color: var(--accent); border-color: var(--accent); background: #0f2a22; }
+.hap-sec .hap-test { padding: 4px 12px; font-size: 12px; }
+.hap-sec .hap-test.on { color: var(--accent); border-color: var(--accent); background: #0f2a22; }
+.hap-sec .hap-now { font-size: 12px; color: var(--accent); }
+.hap-sec .hap-status { flex: 1 0 100%; margin: 2px 0 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 12px; color: var(--muted); }
+.hap-sec .hap-status li { display: flex; align-items: center; gap: 6px; }
+.hap-sec .hap-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); flex: 0 0 auto; }
+.hap-sec .hap-dot.ok { background: var(--accent); }

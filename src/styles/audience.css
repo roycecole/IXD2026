@@ -1,0 +1,49 @@
+/* ---- 觀眾視窗（?audience=1）：投影機用的全螢幕海 ---- */
+.audience-app {
+  position: fixed; inset: 0; overflow: hidden; background: var(--bg);
+  cursor: none; user-select: none; -webkit-user-select: none;
+}
+.audience-app.show-cursor { cursor: default; }
+/* 畫布不接受任何輸入（避免觀眾誤觸把海戳凹 / 觸發互動）：整個場景子樹 pointer-events:none，點擊只落在外層（用來進全螢幕） */
+.aud-scene { position: absolute; inset: 0; }
+.aud-scene, .aud-scene * { pointer-events: none !important; }
+.audience-app .canvas-loading { position: absolute; inset: 0; }
+.audience-app .data-board-x { display: none; }   /* 沒有控制 UI：資料看板的 × 也不給 */
+
+/* 投影距離遠：資料看板 / HUD 依視窗寬度放大字級（覆寫 styles.css 的固定 px；比它們多一層 class，手機寬度的 media query 也壓得過） */
+.audience-app .data-board {
+  left: 1.4vw; top: 1.4vw; max-width: min(46vw, 900px); border-radius: 0.9em;
+  font-size: clamp(12px, 1.05vw, 30px); line-height: 1.55; padding: 0.65em 0.9em 0.75em;
+}
+.audience-app .data-board-title { font-size: 1.08em; }
+.audience-app .data-board-row { grid-template-columns: 3.4em 1fr; gap: 0.7em; }
+html[lang='en'] .audience-app .data-board-row { grid-template-columns: 7.4em 1fr; }
+.audience-app .data-hud {
+  top: 1.4vw; font-size: clamp(13px, 1.3vw, 36px); padding: 0.35em 1.1em; max-width: 60vw;
+  white-space: normal; text-align: center;
+}
+
+/* 狀態提示（等待主視窗 / 不支援 / 關不掉）與「點一下進入全螢幕」：小而不搶戲 */
+.aud-status {
+  position: absolute; left: 1.4vw; bottom: 1.4vw; z-index: 6; display: flex; flex-direction: column; gap: 4px;
+  max-width: min(70vw, 560px); padding: 8px 14px; border-radius: 14px; pointer-events: none;
+  background: rgba(8, 12, 22, 0.62); border: 1px solid var(--line2); color: var(--muted); font-size: 13px; line-height: 1.5;
+}
+.aud-status small { font-size: 11.5px; color: var(--dim); }
+.aud-status.warn { color: #e6c07a; border-color: #6b5a2e; }
+.aud-status.aud-close { bottom: calc(1.4vw + 64px); }
+.aud-dot { display: inline-block; width: 7px; height: 7px; margin-right: 8px; border-radius: 50%; background: var(--amber); vertical-align: middle; animation: audPulse 1.6s ease-in-out infinite; }
+.aud-fs-hint {
+  position: absolute; left: 50%; bottom: 3vh; transform: translateX(-50%); z-index: 6; pointer-events: none;
+  padding: 7px 18px; border-radius: 18px; background: rgba(8, 12, 22, 0.66); border: 1px solid var(--line2);
+  color: var(--text); font-size: 14px; animation: audPulse 2.4s ease-in-out infinite;
+}
+@keyframes audPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .aud-dot, .aud-fs-hint { animation: none; } }
+
+/* ---- 「裝置」面板：觀眾視窗一節 ---- */
+.aud-status-row { flex: 1 0 100%; display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 12.5px; color: var(--muted); }
+.aud-conn.on { color: var(--accent); }
+.aud-conn::before { content: '●'; margin-right: 6px; font-size: 11px; }
+.aud-note { flex: 1 0 100%; margin: 0; padding: 7px 10px; border-radius: 8px; font-size: 12px; line-height: 1.65; color: #c8cbd8; background: rgba(93, 202, 165, 0.08); border: 1px solid rgba(93, 202, 165, 0.25); }
+.aud-note.warn { color: #e6c07a; background: rgba(230, 192, 122, 0.08); border-color: rgba(230, 192, 122, 0.3); }

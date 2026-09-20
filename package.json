@@ -12,6 +12,7 @@
     "i18n": "node scripts/i18n-report.mjs"
   },
   "dependencies": {
+    "@mediapipe/tasks-vision": "1.0.1",
     "@react-three/fiber": "^8.17.10",
     "cannon-es": "^0.20.0",
     "peerjs": "^1.5.5",

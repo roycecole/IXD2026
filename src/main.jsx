@@ -21,11 +21,14 @@ window.addEventListener('hashchange', () => {
 })
 const App = lazy(() => import('./App.jsx'))
 const RemoteApp = lazy(() => import('./remote/RemoteApp.jsx'))
+// ?audience=1 → 觀眾視窗（雙螢幕：投影機顯示同一片海，主視窗的操作即時同步；不載 UI / 服務）
+const audienceMode = (() => { try { return new URLSearchParams(location.search).get('audience') === '1' } catch (e) { return false } })()
+const AudienceApp = lazy(() => import('./AudienceApp.jsx'))
 
 createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <Suspense fallback={<div className="canvas-loading">{t('載入中…')}</div>}>
-      {remoteMatch ? <RemoteApp hostId={decodeURIComponent(remoteMatch[1])} /> : <App />}
+      {remoteMatch ? <RemoteApp hostId={decodeURIComponent(remoteMatch[1])} /> : audienceMode ? <AudienceApp /> : <App />}
     </Suspense>
   </React.StrictMode>,
 )

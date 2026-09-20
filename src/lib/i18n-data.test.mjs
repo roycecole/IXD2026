@@ -73,7 +73,8 @@ const hudOf = (id) => {
     'dust-wind': seriesFromDust({ county: '雲林縣', history: hist([[T(9), null, 3.2, 29, 70], [T(12), null, 6, null, 65]]) }),
     moon: seriesFromMoon(govBase.moon) }[id]
   const ctx = id === 'tide' ? { moonName: moonPhaseName(8) } : undefined
-  const pick = id === 'tide' ? [0, 8, 15, 23] : s.points.map((_, i) => i)
+  // 調查年表是逐年稠密序列（含「無調查」年，其文字另在 series.test.mjs 驗）：這裡只釘「調查年」的輸出逐字不變
+  const pick = id === 'tide' ? [0, 8, 15, 23] : s.points.map((_, i) => i).filter((i) => !s.points[i].gap)
   return pick.map((i) => formatHud(s, s.points[i], ctx))
 }
 
@@ -553,9 +554,9 @@ const STORE_ZH = {
       "out:▶ 播放錄製",
       "out:▶ 資料播放：曾文水庫 2026-09-19 進流量（3 筆，m³/s）",
       "out:▶ 播放錄製",
-      "out:▶ 資料播放：曾文溪流域 2004–2015 調查年表 鳥種數（3 筆，種）",
+      "out:▶ 資料播放：曾文溪流域 2004–2015 調查年表 鳥種數（12 筆，種）",
       "out:▶ 播放錄製",
-      "out:▶ 資料播放：南化水庫樣點（曾文溪流域） 2004–2006 調查年表 魚種數（2 筆，種）",
+      "out:▶ 資料播放：南化水庫樣點（曾文溪流域） 2004–2006 調查年表 魚種數（3 筆，種）",
       "out:▶ 播放錄製",
       "out:▶ 資料播放：揚塵（雲林縣） 09-20 09:00 → 09-20 12:00 PM10（2 筆，μg/m³）",
       "out:▶ 播放錄製",
@@ -608,9 +609,9 @@ const STORE_EN = {
       "out:▶ Playing recording",
       "out:▶ Data playback: Zengwen Reservoir 2026-09-19 Inflow (3 records, m³/s)",
       "out:▶ Playing recording",
-      "out:▶ Data playback: Zengwen River basin 2004–2015 survey timeline Bird species (3 records, species)",
+      "out:▶ Data playback: Zengwen River basin 2004–2015 survey timeline Bird species (12 records, species)",
       "out:▶ Playing recording",
-      "out:▶ Data playback: Nanhua Reservoir sites (Zengwen River basin) 2004–2006 survey timeline Fish species (2 records, species)",
+      "out:▶ Data playback: Nanhua Reservoir sites (Zengwen River basin) 2004–2006 survey timeline Fish species (3 records, species)",
       "out:▶ Playing recording",
       "out:▶ Data playback: Dust (Yunlin County) 09-20 09:00 → 09-20 12:00 PM10 (2 records, μg/m³)",
       "out:▶ Playing recording",

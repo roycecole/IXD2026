@@ -1,0 +1,51 @@
+/* 相機手勢：畫布角落的指示（徽章 + 相機使用中）與「裝置」面板那一節的樣式。
+   徽章屬資訊面板（受 overlays.hud 控制）；「相機使用中」指示永遠顯示。 */
+
+.gesture-overlay {
+  position: absolute; top: 10px; right: 10px; z-index: 6;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+  pointer-events: none;                      /* 不擋畫布的拖曳 / 點選 */
+}
+.gesture-overlay.fixed { position: fixed; z-index: 50; }
+.app.stagemode .gesture-overlay { top: 48px; }   /* 避開右上角「離開演出模式」的 ✕ */
+
+.gesture-cam {
+  display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 12px;
+  font-size: 11px; letter-spacing: .02em; color: #ffdede;
+  background: rgba(58, 12, 16, 0.74); border: 1px solid rgba(255, 110, 110, 0.55);
+}
+.gesture-cam-dot {
+  display: block; width: 8px; height: 8px; border-radius: 50%;
+  background: #ff5a5a; box-shadow: 0 0 6px #ff5a5a;
+  animation: gesturePulse 1.6s ease-in-out infinite;
+}
+@keyframes gesturePulse { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+
+.gesture-badge {
+  padding: 4px 12px; border-radius: 14px; white-space: nowrap;
+  font-family: var(--mono); font-size: 12px; color: var(--accent);
+  background: rgba(8, 12, 22, 0.55); border: 1px solid var(--line2); backdrop-filter: blur(4px);
+  transition: border-color .25s, box-shadow .25s;
+}
+.gesture-badge.calm { border-color: var(--accent); box-shadow: 0 0 10px rgba(93, 202, 165, 0.35); }
+
+@media (max-width: 820px) {
+  .gesture-overlay { top: 8px; right: 8px; }
+  .gesture-badge { font-size: 11px; padding: 3px 10px; }
+  .gesture-cam { font-size: 10.5px; padding: 3px 9px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gesture-cam-dot { animation: none; }
+  .gesture-badge { transition: none; }
+}
+
+/* ---- 「裝置」面板：相機手勢一節 ---- */
+.gesture-status { display: flex; align-items: center; gap: 8px; }
+.gesture-status .gesture-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.gesture-status.run .gesture-dot { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+.gesture-status.load .gesture-dot { background: #e6c07a; animation: gesturePulse 1.2s ease-in-out infinite; }
+.gesture-status.err .gesture-dot { background: #ff7a7a; }
+.gesture-list { flex: 1 0 100%; margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.75; color: #c8cbd8; }
+.gesture-list b { color: var(--accent); font-weight: 600; margin-right: 8px; }
+.gesture-toggle[aria-disabled='true'] { opacity: .5; cursor: not-allowed; }
+@media (prefers-reduced-motion: reduce) { .gesture-status.load .gesture-dot { animation: none; } }

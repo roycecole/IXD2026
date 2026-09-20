@@ -8,6 +8,10 @@ import { ageFromLunar, moonAge, moonPhaseAngle, moonIllum, moonSky, dateAtHour, 
 import { chime, setCreaturePan } from '../audio/engine.js'
 import { micState } from '../audio/mic.js'
 import { padEvents, purifyMeta } from '../store/events.js'
+import { registerPickSource, collectCandidates, pickSources, pickTarget, createTapTracker, buildInspectData, playContext, inspectStore } from '../lib/inspect.js'   // 點物件看資料出處（螢幕空間選取 + 卡片狀態）
+import { createPenForce, createPenFlow } from '../lib/pointerExpr.js'   // 觸控筆：壓力 → 浪勁、傾斜 → 洋流方向
+import { useQualityStore } from '../lib/qualityStore.js'
+import { tierFx, dprRange } from '../lib/quality.js'
 
 // 線稿海洋球：細線輪廓 + 微光 + 通透。程序化波浪（非流體模擬）、簡化弧形反光（非折射）。
 // 效能：useFrame 內以 getState() 讀參數；線段全部寫進少數共用 batch（2 個 draw call），
@@ -86,6 +90,27 @@ const VIS = {
   shootingStars: 3,                  // 背景流星
 }
 if (REDUCED) Object.assign(VIS, { surfLinesX: 16, jelly: 7, fish: 18, trash: 8, particles: 26, shootingStars: 0 })
+
+// ---- 自動畫質（lib/quality.js、services/QualityService.jsx）----
+// QF = 目前等級的效果係數（high 全為 1 / true = 現況）。各 useFrame 直接讀這個共用物件，不逐幀 getState；
+// 等級由 QualityDriver 訂閱 store 後更新。生物數量 = 「active 數量 × QF.creatures」，VIS 陣列本身不重建。
+const QF = { ...tierFx(useQualityStore.getState().tier) }
+function QualityDriver() {
+  useEffect(() => {
+    let cur = null
+    const apply = (s) => { if (s.tier !== cur) { cur = s.tier; Object.assign(QF, tierFx(s.tier)) } }
+    apply(useQualityStore.getState())
+    return useQualityStore.subscribe(apply)
+  }, [])
+  return null
+}
+
+// ---- 色彩空間（海色偏亮校正）----
+// three 的 Color.setHSL 預設把 HSL「當成 linear-sRGB」，經輸出編碼後比設計稿亮很多。走內建材質的顏色（頂點色線條 / PointsMaterial /
+// MeshBasicMaterial）、scene.background 與 fog（three 內部轉成輸出色空間）都要傳 SRGB，讓 HSL 以 sRGB 解讀。
+// 例外：自訂 ShaderMaterial 直出 gl_FragColor（沒有 colorspace_fragment）的 uniform——AtmosphereGlow.uColor 與 BackdropFX 的 uHaze——
+// 數值本來就是「螢幕值」，預設解讀已等於 sRGB，再傳 SRGB 反而會被轉成 linear 而過暗，所以維持預設。
+const SRGB = THREE.SRGBColorSpace
 
 // ---- 平滑環境值 ----
 const env = { seaLevel: 0.55, current: 0.45, clarity: 0.6, jelly: 0.5, fish: 0.55, swim: 0.5, trash: 0.25, glow: 0.6, hue: 0.5 }
@@ -188,7 +213,7 @@ function EnvDriver() {
     glowBoost *= Math.exp(-dt * 2.2)
     fishDash *= Math.exp(-dt * 1.4)
     const clar = effClarity()
-    _wc.setHSL(waterHue(), 0.5 + clar * 0.2, 0.55 + clar * 0.15) // 場景配色：色相轉調、清澈提亮
+    _wc.setHSL(waterHue(), 0.5 + clar * 0.2, 0.63 + clar * 0.15, SRGB) // 場景配色：色相轉調、清澈提亮（l 0.55→0.63：改 sRGB 解讀後補償，線條螢幕亮度維持約 85%，色更飽和）
     wcol.r = _wc.r; wcol.g = _wc.g; wcol.b = _wc.b
   })
   return null
@@ -270,11 +295,14 @@ function WaterParticles() {
     m.frustumCulled = false; return m
   }, [])
   const st = useMemo(() => Array.from({ length: N }, (_, i) => ({
-    surf: i < N * 0.6, a: Math.random() * Math.PI * 2, r: Math.random(), y: -Math.random() * 1.4, sp: 0.3 + Math.random() * 0.7,
+    surf: i % 5 < 3, a: Math.random() * Math.PI * 2, r: Math.random(), y: -Math.random() * 1.4, sp: 0.3 + Math.random() * 0.7,   // 6 成水面、4 成水下；交錯排列，這樣畫質降級只畫前 N 顆時比例不變
   })), [])
   useFrame((state, dt) => {
     const yw = seaY(), arr = pts.geometry.attributes.position.array
-    st.forEach((p, i) => {
+    const cnt = Math.max(1, Math.min(N, Math.round(N * QF.particles)))   // 自動畫質：只更新 / 繪製前 cnt 顆
+    pts.geometry.setDrawRange(0, cnt)
+    for (let i = 0; i < cnt; i++) {
+      const p = st[i]
       p.a += dt * p.sp * (0.15 + env.current * 0.5)
       if (p.surf) {
         const rr = Math.sqrt(Math.max(0.05, WR * WR - yw * yw)) * 0.92 * p.r
@@ -286,10 +314,10 @@ function WaterParticles() {
         const rmax = Math.sqrt(Math.max(0.02, WR * WR - p.y * p.y)) * 0.8 * p.r
         arr[i * 3] = Math.cos(p.a) * rmax; arr[i * 3 + 1] = p.y; arr[i * 3 + 2] = Math.sin(p.a) * rmax
       }
-    })
+    }
     pts.geometry.attributes.position.needsUpdate = true
     pts.material.opacity = 0.35 + env.glow * 0.5
-    pts.material.color.setHSL(waterHue() + 0.04, 0.6, 0.74) // 粒子跟著場景色相
+    pts.material.color.setHSL(waterHue() + 0.04, 0.6, 0.74, SRGB) // 粒子跟著場景色相（改 sRGB 解讀；l 不補償，螢幕亮度約 92%）
   })
   return <primitive object={pts} />
 }
@@ -300,7 +328,7 @@ function WaterVolume() {
   useFrame(() => {
     const m = ref.current; if (!m) return
     const clar = effClarity()
-    m.material.color.setHSL(waterHue() - (1 - clar) * 0.1, 0.5, 0.14 + clar * 0.08)
+    m.material.color.setHSL(waterHue() - (1 - clar) * 0.1, 0.5, 0.24 + clar * 0.10, SRGB) // l 0.14+0.08c → 0.24+0.10c：sRGB 解讀後補償，水體染色量（對新背景）與舊版相當
     m.material.opacity = 0.05 + (1 - clar) * 0.16
   })
   return <mesh ref={ref}><sphereGeometry args={[WR, 32, 32]} /><meshBasicMaterial transparent opacity={0.08} side={THREE.BackSide} depthWrite={false} /></mesh>
@@ -487,7 +515,7 @@ function LineCreatures() {
       burstQueue.push({ x: (Math.random() - 0.5) * 2, y: seaY() - 0.2, z: (Math.random() - 0.5) * 2 })
     }
     // 水母
-    const jellyActive = Math.round(effJelly() * VIS.jelly)
+    const jellyActive = Math.round(effJelly() * VIS.jelly * QF.creatures)
     jellies.forEach((j, i) => {
       j.vis += ((i < jellyActive ? 1 : 0) - j.vis) * Math.min(1, dt * 2)
       j.y += Math.sin(t * 0.35 + j.ph) * (0.02 + env.swim * 0.045) * dt * 3
@@ -509,7 +537,7 @@ function LineCreatures() {
         c.cy = c.y + Math.sin(t * 0.5 + c.wobPh) * 0.15
       }
     })
-    const fishActive = Math.round(effFish() * VIS.fish)
+    const fishActive = Math.round(effFish() * VIS.fish * QF.creatures)
     fishes.forEach((f, i) => {
       f.vis += ((i < fishActive ? 1 : 0) - f.vis) * Math.min(1, dt * 2)
       const c = clusters[f.cluster]
@@ -535,7 +563,7 @@ function LineCreatures() {
     })
     // 垃圾（瓶 / 袋）：cannon-es 剛體 — 浮在水面互相碰撞、被洋流推、被淨化波推開
     // 注意：applyForce/applyImpulse 不傳第二參數（施力點在質心），否則會注入假力矩瘋轉
-    const trashActive = Math.round(env.trash * VIS.trash)
+    const trashActive = Math.round(env.trash * VIS.trash * QF.creatures)
     const sp0 = useStore.getState().spawns
     if (sp0.purify > lastPurifyLC.current) {           // 淨化波：向外+向上衝量把垃圾推散
       lastPurifyLC.current = sp0.purify
@@ -828,8 +856,9 @@ function GlassShell() {
       if (ptrs.current.size === 1) {
         if (p.gathering) return                           // 聚集中：手指停留餵魚，不轉球
         st.input('spin', st.params.spin + dx * 0.003)     // 左右拖曳 → 自轉
-        spinImpulse = Math.max(-6, Math.min(6, spinImpulse + dx * 0.05)) // 慣性儲能
-        waveMomentum = Math.min(2.5, waveMomentum + Math.abs(dx) * 0.012)
+        const pk = PEN_ON ? penForce.move(e) : 1          // 觸控筆壓力 → 浪勁乘數（壓越大越大；非筆 / 無壓力資料 = 1，與原本完全相同）
+        spinImpulse = Math.max(-6, Math.min(6, spinImpulse + dx * 0.05 * pk)) // 慣性儲能
+        waveMomentum = Math.min(2.5, waveMomentum + Math.abs(dx) * 0.012 * pk)
         if (p.touch) st.input('seaLevel', (st.params.seaLevel ?? 0.5) - dy * 0.0045) // 觸控上下滑 → 海水高度
       }
     }
@@ -844,6 +873,7 @@ function GlassShell() {
         }
         ptrs.current.delete(e.pointerId)
       }
+      if (PEN_ON) penForce.up(e)                          // 筆抬起 → 壓力平滑歸零
       if (ptrs.current.size < 2) pinch.current = null
     }
     window.addEventListener('pointermove', mv)
@@ -886,6 +916,7 @@ function GlassShell() {
           touch: (e.pointerType ?? ne.pointerType) === 'touch',
           point: e.point ? { x: e.point.x, y: e.point.y, z: e.point.z } : null,
         })
+        if (PEN_ON) penForce.down(ne)                     // 觸控筆：以第一筆壓力起頭（滑鼠 / 手指不啟用）
         if (ptrs.current.size >= 2) { pinch.current = null; gather = null } // 第二指落下 → 重建縮放基準
         clearTimeout(gatherTimer.current)
         gatherTimer.current = setTimeout(() => {          // 長按 0.5s → 魚群聚集到手指
@@ -915,7 +946,7 @@ function AtmosphereGlow() {
     vertexShader: 'uniform vec3 uPoke; uniform float uPokeStr; varying vec3 vN; varying vec3 vV; void main(){ vec3 nrm=normalize(position); float infl=smoothstep(0.3,1.0,dot(nrm,uPoke)); float back=smoothstep(0.45,1.0,dot(nrm,-uPoke)); vec3 pos=position-nrm*infl*uPokeStr+nrm*back*uPokeStr*0.35; vec4 mv=modelViewMatrix*vec4(pos,1.0); vN=normalize(normalMatrix*normal); vV=normalize(-mv.xyz); gl_Position=projectionMatrix*mv; }',
     fragmentShader: 'varying vec3 vN; varying vec3 vV; uniform vec3 uColor; void main(){ float f=pow(1.0-abs(dot(vN,vV)),3.5); gl_FragColor=vec4(uColor, f*0.45); }',
   }), [])
-  useFrame(() => { mat.uniforms.uColor.value.setHSL(waterHue() + 0.05, 0.8, 0.26 + env.glow * 0.16 + glowBoost * 0.08); mat.uniforms.uPoke.value.copy(poke.dir); mat.uniforms.uPokeStr.value = poke.str })
+  useFrame(() => { mat.uniforms.uColor.value.setHSL(waterHue() + 0.05, 0.8, 0.26 + env.glow * 0.16 + glowBoost * 0.08); mat.uniforms.uPoke.value.copy(poke.dir); mat.uniforms.uPokeStr.value = poke.str }) // uColor 是自訂 shader 直出（無色彩管理）：數值即螢幕值，setHSL 維持預設解讀（見檔案上方 SRGB 說明），不傳 SRGB
   return <mesh scale={1.12}><sphereGeometry args={[SHELL, 48, 48]} /><primitive object={mat} attach="material" /></mesh>
 }
 
@@ -988,7 +1019,7 @@ function ShootingStars() {
   })), [])
   useFrame((_, dt) => {
     bBegin(batch)
-    if (arState.on) { bEnd(batch); return } // AR 實景不放流星
+    if (arState.on || !QF.shootingStars) { bEnd(batch); return } // AR 實景 / 低畫質不放流星
     slots.forEach((s) => {
       if (!s.active) {
         s.next -= dt
@@ -1055,9 +1086,9 @@ function FogDriver() {
     const day = 0.5 + 0.5 * Math.sin((dayT / 240) * Math.PI * 2) // 生態敘事：極慢晝夜（4 分鐘一輪）
     const clar = effClarity()
     const hw = waterHue() + 0.05
-    fog.color.setHSL(hw, 0.5, 0.04 + clar * 0.06 + day * 0.012)
+    fog.color.setHSL(hw, 0.6, 0.04 + clar * 0.06 + day * 0.012, SRGB)   // 改 sRGB 解讀（原 linear 解讀偏亮灰）；s 0.5→0.6 補回深藍飽和度，接近設計稿 #05121f
     fog.near = 3.5 - (1 - clar) * 1.5; fog.far = 9 + clar * 6
-    bgc.setHSL(hw + 0.02, 0.42, 0.045 + day * 0.028)             // 背景隨晝夜 / 場景配色微變
+    bgc.setHSL(hw + 0.02, 0.7, 0.065 + day * 0.035, SRGB)        // 背景隨晝夜 / 場景配色微變（sRGB 解讀；s 0.42→0.7、l 0.045+0.028d → 0.065+0.035d：夜 ≈ 設計稿 #05101c 深藍、晝略亮，不死黑）
   })
   return null
 }
@@ -1142,6 +1173,7 @@ function Galaxy() {
   const grp = useRef()
   useFrame((_, dt) => {
     if (grp.current) grp.current.rotation.y += dt * 0.004
+    pts.geometry.setDrawRange(0, Math.max(1, Math.round(N * QF.particles)))   // 自動畫質：粒子上限係數
     let inten = 0.55                                        // 河川資料 → 銀河濃度
     const gov = useStore.getState().gov
     if (gov && gov.rivers && gov.rivers.length) {
@@ -1188,6 +1220,8 @@ function MoonSky() {
   const s = useRef({ alpha: 0, x: -MOON_R, y: 0.6, phase: 0, init: false })
   const { camera, size } = useThree()
   useEffect(() => { if (mesh.current) mesh.current.layers.set(BG_LAYER); if (halo.current) halo.current.layers.set(BG_LAYER) }, [])
+  // 點物件看資料出處：把月亮圓盤（世界座標 + 半徑 1.25）暴露給選取器，按需呼叫、不在每幀更新；alpha 太低（淡出 / 幾乎看不見）時選取器不會選它
+  useEffect(() => registerPickSource('moon', () => (mesh.current && mesh.current.visible ? { alpha: s.current.alpha, items: [{ id: 'moon', x: s.current.x, y: s.current.y, z: MOON_Z, rWorld: 1.25 }] } : null)), [])
   useFrame((_, dt) => {
     const st = useStore.getState()
     // 依相機可視範圍夾住月亮（側邊面板 / 手機直式時畫布較窄，不能被切掉）
@@ -1281,6 +1315,16 @@ function StationStars() {
   const grp = useRef()
   const cache = useMemo(() => ({ key: '', pts: null, lines: null, n: 0, base: null, ph: null, alpha: 0 }), [])
   useEffect(() => () => { if (cache.pts) { cache.pts.geometry.dispose(); cache.pts.material.dispose() } if (cache.lines) { cache.lines.geometry.dispose(); cache.lines.material.dispose() } }, [cache])
+  // 點物件看資料出處：把「第 i 顆星目前在世界座標的位置」暴露給選取器（按需計算，不在每幀更新）。
+  // alpha＝星座整體的淡入淡出（cache.alpha，AR 時為 0）：太低時選取器不會選，看不見的星不能被點到。
+  useEffect(() => registerPickSource('station', () => {
+    const g = grp.current, list = cache.list
+    if (!g || !list || !cache.n || !g.visible) return null
+    g.updateWorldMatrix(true, false)
+    const items = new Array(list.length)
+    for (let i = 0; i < list.length; i++) { _pk.set(list[i].x * STN_S, list[i].y * STN_S, 0).applyMatrix4(g.matrixWorld); items[i] = { id: i, x: _pk.x, y: _pk.y, z: _pk.z } }
+    return { alpha: arState.on ? 0 : cache.alpha, items }
+  }), [cache])
 
   const build = (list) => {
     if (grp.current) { grp.current.clear() }
@@ -1326,7 +1370,7 @@ function StationStars() {
     const lines = new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }))
     lines.frustumCulled = false; lines.layers.set(BG_LAYER)
     grp.current.add(lines); grp.current.add(pts)
-    Object.assign(cache, { pts, lines, n, base, ph })
+    Object.assign(cache, { pts, lines, n, base, ph, list })
   }
 
   useFrame((state, dt) => {
@@ -1367,6 +1411,10 @@ function BirdFlocks() {
   })), [])
   const flockTarget = useRef(2)
   const acc = useRef(9)
+  // 點物件看資料出處：暴露每群鳥的隊形中心（世界座標）與淡入程度（vis 低 = 還沒飛進來 / 正在散去，選取器不會選）
+  useEffect(() => registerPickSource('bird', () => ({
+    items: flocks.map((f, i) => ({ id: i, x: f.px, y: f.py, z: f.pz, rWorld: 0.55, alpha: f.vis })).filter((it) => Number.isFinite(it.x) && it.alpha > 0.05),
+  })), [flocks])
   useFrame((state, dt) => {
     const t = state.clock.elapsedTime
     bBegin(batch)
@@ -1386,6 +1434,7 @@ function BirdFlocks() {
       const cy = f.y + Math.sin(t * 0.3 + f.ph) * 0.3
       const heading = f.ang + (f.speed > 0 ? Math.PI / 2 : -Math.PI / 2)
       const cs = Math.cos(heading), sn = Math.sin(heading)
+      f.px = cx - 0.055 * f.n * cs; f.py = cy; f.pz = cz - 0.055 * f.n * sn   // 隊形中心（V 字重心在領頭鳥後方約 0.055·n）：給「點鳥群看資料」的選取器用
       for (let k = 0; k < f.n; k++) {
         const side = k % 2 ? 1 : -1, rank = Math.ceil(k / 2)   // V 隊形
         const lx = -rank * 0.22, lz = side * rank * 0.16
@@ -1449,6 +1498,103 @@ function JellyController() {
   return null
 }
 
+// ---- 點物件看資料出處 / 觸控筆壓力與傾斜（選取與卡片邏輯在 lib/inspect.js、lib/pointerExpr.js；這裡只接事件與投影）----
+const _pk = new THREE.Vector3(), _pk2 = new THREE.Vector3()
+const AUDIENCE = (() => { try { return new URLSearchParams(location.search).get('audience') === '1' } catch (e) { return false } })()   // 觀眾視窗畫布不接受輸入：卡片由主視窗鏡像過來
+const PEN_ON = (() => { try { return new URLSearchParams(location.search).get('pen') !== '0' } catch (e) { return true } })()           // ?pen=0 關閉觸控筆的壓力 / 傾斜表現
+const penForce = createPenForce()   // 拖曳球體時：觸控筆壓力 → 浪勁乘數（GlassShell 的 pointermove 讀；非筆 / 無壓力資料 = 1）
+
+// 世界座標 → 畫布內螢幕座標（px，相對畫布左上）+ 該深度每個世界單位的像素數（月亮圓盤 / 鳥群的本體半徑用）
+function projectToCanvas(x, y, z, camera, rect) {
+  _pk2.set(x, y, z).applyMatrix4(camera.matrixWorldInverse)
+  const depth = -_pk2.z
+  if (depth < 0.1) return null   // 在相機後方
+  _pk2.set(x, y, z).project(camera)
+  return {
+    sx: (_pk2.x * 0.5 + 0.5) * rect.width, sy: (-_pk2.y * 0.5 + 0.5) * rect.height,
+    pxPerUnit: rect.height / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * depth),
+  }
+}
+
+// 點背景上的測站星 / 月亮 / 鳥群 → 資料出處卡片。只「輕點」（位移 < 10px 且 < 450ms、單指、非雙擊第二下）才算；
+// 純被動監聽（不 preventDefault、不 stopPropagation），所以拖曳 / 長按 / 兩指縮放 / 果凍壓凹 / 球體上的亮星爆發完全不受影響。
+// 球體上的輕點仍是亮星爆發（不選取）；背景上沒命中任何物件 → 維持現狀（只把已開的卡片收起）。
+function InspectPicker() {
+  const { camera, gl } = useThree()
+  const rc = useMemo(() => new THREE.Raycaster(), [])   // 私有射線器，不動 R3F 事件系統共用的那個
+  useEffect(() => {
+    if (AUDIENCE) return undefined
+    const el = gl.domElement
+    const tracker = createTapTracker()
+    const onSphere = (cx, cy, rect) => {                 // 與 JellyController 同一套判斷：射線離球心最近距離 ≤ 球殼半徑 → 按在球上
+      rc.setFromCamera({ x: (cx / rect.width) * 2 - 1, y: -(cy / rect.height) * 2 + 1 }, camera)
+      const r = rc.ray
+      _pk.copy(r.origin).addScaledVector(r.direction, Math.max(0, -r.direction.dot(r.origin)))
+      return _pk.length() <= SHELL
+    }
+    const onTap = (tap) => {
+      if (tap.dbl) return                                // 雙擊的第二下：留給 App 的雙擊切換演出模式
+      const st = useStore.getState()
+      if (!st.overlays.hud || (tap.meta && tap.meta.onSphere)) { inspectStore.close(); return }   // 資訊面板關閉不彈卡片；球體上的輕點 = 亮星爆發，順便收起卡片
+      const rect = el.getBoundingClientRect()
+      camera.updateMatrixWorld()
+      const cands = collectCandidates(pickSources, (x, y, z) => projectToCanvas(x, y, z, camera, rect))
+      const hit = pickTarget(cands, { x: tap.x - rect.left, y: tap.y - rect.top }, { pointerType: tap.type, bounds: { w: rect.width, h: rect.height } })
+      const data = hit && buildInspectData(hit, { gov: st.gov, opt: st.govOption && st.govOption(), now: new Date(), month: st.surveyMonth, play: playContext(seriesMeta, st.rec) })
+      if (data) inspectStore.open(data, { x: hit.sx / rect.width, y: hit.sy / rect.height })
+      else inspectStore.close()
+    }
+    const down = (e) => {
+      const rect = el.getBoundingClientRect()
+      tracker.down({ id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now(), type: e.pointerType || 'mouse', button: e.button, meta: { onSphere: onSphere(e.clientX - rect.left, e.clientY - rect.top, rect) } })
+    }
+    const move = (e) => tracker.move({ id: e.pointerId, x: e.clientX, y: e.clientY })
+    const up = (e) => { const tap = tracker.up({ id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now() }); if (tap) onTap(tap) }
+    const cancel = (e) => tracker.cancel(e.pointerId)
+    el.addEventListener('pointerdown', down)
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', cancel)
+    return () => {
+      el.removeEventListener('pointerdown', down)
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', cancel)
+      tracker.reset()
+    }
+  }, [gl, camera, rc])
+  return null
+}
+
+// 觸控筆傾斜 → 洋流方向 flowX / flowY：只在「筆按在畫布上」時（球體或背景都算）、節流 ≤ 20 次/秒、筆立著（死區）不動。
+// 只對 pointerType === 'pen' 啟用；滑鼠 / 手指不會觸發（事件到了 createPenFlow 裡就被擋掉）。
+function PenFlow() {
+  const { gl } = useThree()
+  useEffect(() => {
+    if (AUDIENCE || !PEN_ON) return undefined
+    const el = gl.domElement
+    const pen = createPenFlow()
+    const down = (e) => { pen.down(e) }
+    const move = (e) => {
+      const o = pen.move(e, performance.now())
+      if (o) { const st = useStore.getState(); st.input('flowX', o.flowX); st.input('flowY', o.flowY) }
+    }
+    const up = (e) => { pen.up(e) }
+    el.addEventListener('pointerdown', down)
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', up)
+    return () => {
+      el.removeEventListener('pointerdown', down)
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', up)
+      pen.reset()
+    }
+  }, [gl])
+  return null
+}
+
 // 背景模糊 / 清澈（一般畫面）：只作用在背景層（layer 1），球體與生物（layer 0）照常清晰。
 // 管線：背景層畫到螢幕 → 複製畫面成貼圖 → Kawase 雙濾波（多層降採樣 + 升採樣，近似高斯、無稀疏星點被大步距取樣拆成重影的問題）
 //       → 蓋回螢幕（含清澈度：越低越暗、越朦朧）→ 前景層疊上去。全程在螢幕原本的編碼空間運算，所以 blur=0 時與原畫面一致。
@@ -1471,9 +1617,17 @@ function BackdropFX() {
       'varying vec2 vUv; uniform sampler2D t; uniform vec2 uHalf; void main(){ vec2 o = uHalf; vec4 s = texture2D(t, vUv + vec2(-o.x * 2.0, 0.0)); s += texture2D(t, vUv + vec2(-o.x, o.y)) * 2.0; s += texture2D(t, vUv + vec2(0.0, o.y * 2.0)); s += texture2D(t, vUv + vec2(o.x, o.y)) * 2.0; s += texture2D(t, vUv + vec2(o.x * 2.0, 0.0)); s += texture2D(t, vUv + vec2(o.x, -o.y)) * 2.0; s += texture2D(t, vUv + vec2(0.0, -o.y * 2.0)); s += texture2D(t, vUv + vec2(-o.x, -o.y)) * 2.0; gl_FragColor = s / 12.0; }')
     const comp = mk({ tSharp: { value: null }, tBlur: { value: null }, uMix: { value: 1 }, uClarity: { value: 1 }, uHaze: { value: new THREE.Color('#6f86a8') } },
       'varying vec2 vUv; uniform sampler2D tSharp; uniform sampler2D tBlur; uniform float uMix; uniform float uClarity; uniform vec3 uHaze; void main(){ vec3 c = mix(texture2D(tSharp, vUv).rgb, texture2D(tBlur, vUv).rgb, uMix); c = c * (0.22 + 0.78 * uClarity) + uHaze * (1.0 - uClarity) * 0.14; gl_FragColor = vec4(c, 1.0); }')
-    return { postScene, postCam, quad, down, up, comp, fb: null, lv: [], w: 0, h: 0 }
+    // 低畫質的清澈度替代：不複製畫面、不模糊，用一張全螢幕 quad 以混合模式做 dst * uK + uHaze（與 comp 的清澈度公式相同：uK = 0.22 + 0.78 × 清澈度，霧 = 霧色 × (1 − 清澈度) × 0.14；alpha 通道不動）
+    const lite = new THREE.ShaderMaterial({
+      uniforms: { uK: { value: 1 }, uHaze: { value: new THREE.Color() } },
+      vertexShader: vert, fragmentShader: 'uniform float uK; uniform vec3 uHaze; void main(){ gl_FragColor = vec4(uHaze, uK); }',
+      depthTest: false, depthWrite: false, transparent: true,
+      blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.SrcAlphaFactor,
+      blendSrcAlpha: THREE.ZeroFactor, blendDstAlpha: THREE.OneFactor,
+    })
+    return { postScene, postCam, quad, down, up, comp, lite, fb: null, lv: [], w: 0, h: 0 }
   }, [])
-  useEffect(() => () => { fx.fb && fx.fb.dispose(); fx.lv.forEach((r) => r.dispose()); fx.down.dispose(); fx.up.dispose(); fx.comp.dispose() }, [fx])
+  useEffect(() => () => { fx.fb && fx.fb.dispose(); fx.lv.forEach((r) => r.dispose()); fx.down.dispose(); fx.up.dispose(); fx.comp.dispose(); fx.lite.dispose() }, [fx])
 
   const ensure = (w, h) => {
     if (fx.fb && fx.w === w && fx.h === h) return
@@ -1491,11 +1645,37 @@ function BackdropFX() {
   }
 
   const plain = () => { camera.layers.enableAll(); gl.setRenderTarget(null); gl.autoClear = true; gl.render(scene, camera) }
+  // 低畫質（QF.backdropBlur = false）：背景層 → 暗化 / 霧 quad → 前景層。省掉整張畫面複製 + Kawase 多層降採樣；模糊不生效
+  const release = () => { if (fx.fb) { fx.fb.dispose(); fx.lv.forEach((r) => r.dispose()); fx.fb = null; fx.lv = []; fx.w = fx.h = 0 } }   // 進低畫質就釋放模糊用的貼圖（舊機省記憶體）；回到中 / 高時 ensure() 會重建
+  const lite = (clar) => {
+    const bg = scene.background
+    try {
+      camera.layers.set(BG_LAYER)
+      gl.setRenderTarget(null); gl.autoClear = true
+      gl.render(scene, camera)
+      fx.quad.material = fx.lite
+      fx.lite.uniforms.uK.value = 0.22 + 0.78 * clar
+      fx.lite.uniforms.uHaze.value.setHSL(waterHue(), 0.25, 0.55).multiplyScalar((1 - clar) * 0.14)   // 霧色同 comp 的 uHaze（自訂 shader 直出，維持預設 HSL 解讀）
+      gl.autoClear = false
+      gl.render(fx.postScene, fx.postCam)
+      gl.clearDepth()                                       // 前景層從乾淨的深度緩衝開始（與一般管線的行為一致）
+      scene.background = null
+      camera.layers.set(0)
+      gl.render(scene, camera)
+    } catch (e) {
+      fx.broken = true
+      console.warn('BackdropFX 已停用（背景清澈不可用）:', e && e.message)
+    } finally {
+      scene.background = bg; gl.autoClear = true; camera.layers.enableAll(); gl.setRenderTarget(null)
+    }
+    if (fx.broken) plain()
+  }
   useFrame(() => {
     const p = useStore.getState().params
     const blur = p.bgBlur ?? 0, clar = p.bgClarity ?? 1
     const need = !fx.broken && !arState.on && (blur > 0.02 || clar < 0.985)
     if (!need) { plain(); return }
+    if (!QF.backdropBlur) { release(); if (clar < 0.985) lite(clar); else plain(); return }
 
     const bg = scene.background
     try {
@@ -1519,7 +1699,7 @@ function BackdropFX() {
       fx.comp.uniforms.tBlur.value = srcTex
       fx.comp.uniforms.uMix.value = Math.min(1, blur / 0.06)  // 剛離開 0 時由清晰漸入模糊，避免一拉就跳
       fx.comp.uniforms.uClarity.value = clar
-      fx.comp.uniforms.uHaze.value.setHSL(waterHue(), 0.25, 0.55)
+      fx.comp.uniforms.uHaze.value.setHSL(waterHue(), 0.25, 0.55)   // 自訂 shader 直出（畫面本身已是螢幕編碼）：數值即螢幕值，維持預設 HSL 解讀，不傳 SRGB
       gl.setRenderTarget(null); gl.autoClear = true
       gl.render(fx.postScene, fx.postCam)
       // 5) 前景層（球體 / 生物 / 水體…）疊上去：不清畫面、不畫背景色
@@ -1546,8 +1726,10 @@ function CameraRig() {
 }
 
 export default function Scene3D() {
+  const tier = useQualityStore((s) => s.tier)   // 自動畫質：等級決定 dpr 上限（high [1,2] = 現況；medium [1,1.5]；low [1,1]）。Canvas 每次 render 都會依 dpr 重新校正，所以用 prop 而不是一次性的 setDpr
   return (
-    <Canvas camera={{ position: [0, 0.4, 7], fov: 45 }} dpr={[1, 2]} gl={{ preserveDrawingBuffer: true, antialias: true, alpha: true }}>
+    <Canvas camera={{ position: [0, 0.4, 7], fov: 45 }} dpr={dprRange(tier)} gl={{ preserveDrawingBuffer: true, antialias: true, alpha: true }}>
+      <QualityDriver />
       <EnvDriver />
       <FogDriver />
       <Galaxy />
@@ -1565,6 +1747,8 @@ export default function Scene3D() {
       <SpaceNetwork />
       <StarBursts />
       <JellyController />
+      <InspectPicker />
+      <PenFlow />
       <CameraRig />
       <BackdropFX />
     </Canvas>

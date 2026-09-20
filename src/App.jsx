@@ -12,14 +12,18 @@ import TakeoverHint from './ui/TakeoverHint.jsx'
 import DataHUD from './ui/DataHUD.jsx'
 import KioskQR from './ui/KioskQR.jsx'
 import DataBoard from './ui/DataBoard.jsx'
+import InspectCard from './ui/InspectCard.jsx'
 import DevicesModal from './ui/DevicesModal.jsx'
 import Services from './services/Services.jsx'
+import TourCaption from './ui/TourCaption.jsx'
+import { tourIdleTick, toggleTour } from './services/TourService.jsx'
 import { arState, arStart, arStop, arFilter, createLumaSampler, glowForLuma } from './lib/ar.js'
 import { stats } from './store/stats.js'
 import { multiState } from './lib/multiplayer.js'
 import { useMIDI } from './hooks/useMIDI.js'
 import { useStore, seriesMeta } from './store/useStore.js'
-import { decodeParams } from './lib/share.js'
+import { parseShareContext, hasShareContext, applyShareContext } from './lib/share.js'
+import { setLocale, getLocale } from './i18n/index.js'   // 分享連結的 ?lang=（一次性覆蓋；i18n 啟動時本來就會讀 ?lang=，這裡只是保險）
 import { loadOceanData } from './lib/govdata.js'
 import { LS, loadLS, saveLS } from './lib/persist.js'
 import { audioUpdate, audioToggle } from './audio/engine.js'
@@ -183,6 +187,7 @@ export default function App() {
       const k = e.key
       if (k === 'h' || k === 'H') { setStage((s) => !s); return }
       if (k === 'i' || k === 'I') { useStore.getState().toggleOverlays(); return }
+      if ((k === 't' || k === 'T') && !e.ctrlKey && !e.metaKey && !e.altKey) { toggleTour(); return }   // T：開始 / 停止資料導覽
       if (k === '?') { setShowInfo(true); return }
       if (tag === 'BUTTON') return // 按鈕聚焦時交給原生（Enter/Space 觸發該鈕）
       const st = useStore.getState()
@@ -210,11 +215,12 @@ export default function App() {
     window.addEventListener('pointerup', up)
   }
 
-  // 分享網址帶參數：載入時若有 ?s= 則套用
+  // 分享網址帶參數：載入時若有 ?s=（視覺參數）先套用，第一幀就是分享的畫面。
+  // 資料脈絡（?o= 海況選項 / ?m= 月份 / ?sl= 鳥魚連動 / ?lang=）要等海況資料載入才能套用，見下一段 effect。
   useEffect(() => {
     try {
-      const s = new URLSearchParams(location.search).get('s')
-      if (s) { const p = decodeParams(s); if (p) useStore.getState().applyParams(p) }
+      const ctx = parseShareContext(location.search)
+      if (ctx.params) useStore.getState().applyParams(ctx.params)
     } catch (e) {}
   }, [])
 
@@ -225,9 +231,14 @@ export default function App() {
       const st = useStore.getState()
       st.setGov(d)
       const firstVisit = (() => { try { return !localStorage.getItem('ixd2026.seen') } catch (e) { return false } })()
-      const hasShare = (() => { try { return !!new URLSearchParams(location.search).get('s') } catch (e) { return false } })()
-      if (firstVisit && !hasShare) st.applyGov()
-      else if (!hasShare) st.applySurveyLinked()   // 回訪：連動中的鳥 / 魚數量用最新資料（已脫鉤 = 獨立控制的保持不動）
+      const share = (() => { try { return parseShareContext(location.search, { optionIds: new Set((d.options || []).map((o) => o.id)) }) } catch (e) { return null } })()
+      const hasShare = hasShareContext(share)
+      if (hasShare) {
+        // 分享連結：先選海況選項與月份 → 暫時套用鳥魚連動（不寫 localStorage）→ 最後才套分享的視覺參數（海況參數不能蓋掉分享的畫面）；不用今天的海開場
+        const r = applyShareContext(useStore, share, { setLocale, getLocale })
+        if (r.option || r.month || r.link) st.pushLog('out', t('開啟分享連結：套用海況與資料設定'))
+      } else if (firstVisit) st.applyGov()
+      else st.applySurveyLinked()   // 回訪：連動中的鳥 / 魚數量用最新資料（已脫鉤 = 獨立控制的保持不動）
       const o = st.govOption()
       if (o) describeForLog(d, o).forEach((l) => st.pushLog('out', l))   // 輸出顯示資料：目前海況背後的資料列
     })
@@ -248,11 +259,14 @@ export default function App() {
       const st = useStore.getState()
       if (st.rec.mode === 'recording') st.advanceRec(dt)
       else if (st.rec.mode === 'playing') st.tickPlayback(dt)
-      // Attract Mode：閒置 30s → 每 11s 巡演一組場景，任何輸入立即退場
+      // Attract Mode：閒置 30s → 資料導覽（依序巡演水庫 / 潮汐 / 月亮 / 揚塵 / 鳥 / 魚 / 測站，畫面下方字幕說明；任何輸入立即退場並還原，見 services/TourService.jsx）。
+      // 沒有海況資料可導覽時才退回舊的「每 11s 輪播一組色相場景」。
       const a = attract.current
       if (now - activity.last > IDLE && st.rec.mode === 'idle') {
-        if (!a.on) { a.on = true; a.at = now - STEP; a.idx = 0 }
-        if (now - a.at > STEP) { a.at = now; st.applyScene(SCENES[a.idx % SCENES.length].params); a.idx++ }
+        if (tourIdleTick(now) === 'nodata') {
+          if (!a.on) { a.on = true; a.at = now - STEP; a.idx = 0 }
+          if (now - a.at > STEP) { a.at = now; st.applyScene(SCENES[a.idx % SCENES.length].params); a.idx++ }
+        } else if (a.on) a.on = false
       } else if (a.on) a.on = false
       // 資料播放：每換一步就把「現在這筆資料」寫進 OUT 監看（輸出顯示資料）
       if (seriesMeta.active && st.rec.mode === 'playing' && seriesMeta.points.length) {
@@ -303,7 +317,9 @@ export default function App() {
           {overlays.hud && <ParamHUD />}
           {overlays.hud && <TakeoverHint />}
           {overlays.hud && <DataHUD />}
+          <TourCaption />{/* 資料導覽字幕：內部依 overlays.hud 顯示 / 隱藏（hud 關閉時導覽照跑、不顯示字幕） */}
           <DataBoard />
+          <InspectCard />{/* 點測站星 / 月亮 / 鳥群看資料出處：內部依 overlays.hud 顯示 / 隱藏 */}
           {overlays.hud && !audioOn && !stage && loadLS(LS.audio, null) !== 'off' && <div className="audio-hint">{t('點一下畫面即開啟聲音')}</div>}
           {arOn && overlays.hud && (
             <div className="ar-ctrl" aria-label={t('AR 背景調整')}>

@@ -1,6 +1,7 @@
 import { useStore } from '../store/useStore.js'
 import { GROUPS, PARAMS } from '../params/registry.js'
 import DataCard from './DataCard.jsx'
+import TourControls from './TourControls.jsx'
 import { useT } from '../i18n/index.js'
 
 function ccForParam(bindings, pid) {
@@ -63,6 +64,7 @@ export default function ParamPanel({ onVK }) {
       {midi.error && <p className="hint" style={{ color: '#ff7a7a' }}>{t('MIDI：{err}', { err: t(midi.error, midi.errorP) })}</p>}
 
       <DataCard />
+      <TourControls />
 
       <div className="actions">
         <button onClick={spawnWhale}>{t('鯨魚')}</button>

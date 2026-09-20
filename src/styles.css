@@ -554,3 +554,10 @@ html, body { overscroll-behavior: none; }
 /* ---- 遙控頁：標題列 + 語言鈕 ---- */
 .remote-toprow { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .remote-lang { flex: 0 0 auto; min-width: 44px; padding: 4px 10px; font-size: 12px; font-weight: 600; letter-spacing: .02em; }
+
+/* ---- 英文語系：標籤比中文長，放寬固定寬度的欄位 ---- */
+html[lang='en'] .data-board-row { grid-template-columns: 84px 1fr; }
+html[lang='en'] .vk-strip { width: 56px; }
+html[lang='en'] .vk-lab { font-size: 9.5px; height: 27px; overflow-wrap: anywhere; }
+html[lang='en'] .vk-bank { padding: 3px 7px; }
+@media (max-width: 820px) { html[lang='en'] .data-board-row { grid-template-columns: 70px 1fr; } }

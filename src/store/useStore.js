@@ -35,7 +35,8 @@ let overlaysBeforeHide = null // 「全部隱藏」前的組合，再按一次�
 
 export const seriesMeta = { active: false, kind: '', name: '', label: '', unit: '', date: '', step: 1.1, points: [], target: '', extra: {}, lunar: '', lunarLabel: '', range: '', events: [] }
 
-const haptic = (ms) => { try { navigator.vibrate && navigator.vibrate(ms) } catch (e) {} }
+import { pulse as hapticPulse } from '../lib/haptics.js'   // 觸覺回饋（總開關 / 強度 / 手把都在 lib/haptics.js；事件節奏由 services/HapticsService 依 spawns / rec 狀態觸發）
+const haptic = (ms) => { try { hapticPulse(ms) } catch (e) {} }
 
 const clamp01 = (v) => Math.max(0, Math.min(1, v))
 const perfNow = () => { try { return performance.now() / 1000 } catch (e) { return 0 } }
@@ -351,6 +352,14 @@ export const useStore = create((set, get) => ({
     const l = { ...get().surveyLink, [kind]: false }; saveLS(LS.surveyLink, l); set({ surveyLink: l })
   },
   setSurveyMonth: (m) => { set({ surveyMonth: m }); get().applySurveyLinked() },
+  // 分享連結帶來的鳥 / 魚連動狀態（?sl=）：只暫時套用到記憶體，不寫進 localStorage——分享連結不該改掉對方自己的偏好
+  applySharedContext: (ctx) => {
+    const link = ctx && ctx.link
+    if (!link || typeof link !== 'object') return
+    const next = { ...get().surveyLink }
+    for (const k of ['birds', 'fish']) if (typeof link[k] === 'boolean') next[k] = link[k]
+    set({ surveyLink: next })
+  },
 
   // ---- 資料播放：把時間序列（進流量 / 潮汐 / 揚塵歷史 / 魚鳥調查年表 / 月出月沒）轉成自動化事件 → 走既有播放引擎 ----
   // 播放中一樣支援倍速 / 循環 / soft-takeover 即時接手；結束後自動還原使用者原本的錄製。

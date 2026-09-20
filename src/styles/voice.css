@@ -1,0 +1,47 @@
+/* 語音指令：畫布右上角「收音中」徽章與提示（services/VoiceService.jsx）、「裝置」面板一節（ui/devices/VoiceSection.jsx） */
+
+/* ---- 畫布上：收音中徽章（隱私：永遠顯示，不受資訊面板開關控制）---- */
+.voice-badge {
+  position: absolute; top: 10px; right: 12px; z-index: 9;
+  display: inline-flex; align-items: center; gap: 6px; padding: 2px 3px 2px 10px;
+  font-size: 12px; line-height: 1.4; color: var(--text); white-space: nowrap;
+  background: rgba(5, 16, 28, 0.78); border: 1px solid #ff6a6a; border-radius: 16px;
+}
+.voice-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: #ff6a6a; box-shadow: 0 0 6px rgba(255, 106, 106, 0.8); animation: voicePulse 1.4s ease-in-out infinite; }
+@keyframes voicePulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
+.voice-badge-x {
+  flex: none; width: 22px; height: 22px; min-width: 0; min-height: 0; padding: 0; margin: 0; line-height: 20px; text-align: center;
+  font-size: 12px; color: var(--muted); background: transparent; border: none; border-radius: 50%; cursor: pointer;
+}
+.voice-badge-x:hover { color: var(--text); background: rgba(255, 255, 255, 0.14); }
+.app.stagemode .voice-badge { right: 54px; }              /* 演出模式右上角有固定的離開鈕（.stage-exit） */
+@media (max-width: 520px) { .voice-badge { top: 46px; } }  /* 窄螢幕：讓開置中的參數 / 資料 HUD */
+
+/* ---- 畫布上：聽到的指令 / 錯誤提示（在下方，避開 takeover-hint / audio-hint）---- */
+.voice-heard, .voice-error {
+  position: absolute; left: 50%; transform: translateX(-50%); z-index: 8; pointer-events: none;
+  max-width: calc(100% - 24px); text-align: center; border-radius: 16px; padding: 5px 14px;
+  background: rgba(5, 16, 28, 0.72); border: 1px solid var(--line2);
+}
+.voice-heard { bottom: 54px; font-size: 13px; color: var(--accent); animation: voiceIn .18s ease-out; }
+.voice-error { bottom: 94px; font-size: 12px; line-height: 1.6; color: #e6c07a; }
+@keyframes voiceIn { from { opacity: 0; transform: translate(-50%, 6px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-dot { animation: none; }
+  .voice-heard { animation: none; }
+}
+
+/* ---- 「裝置」面板 ---- */
+.voice-sec .voice-toggle { padding: 4px 14px; font-size: 12.5px; }
+.voice-sec .voice-toggle.on { color: #ff8f8f; border-color: #ff6a6a; background: #2a1414; }
+.voice-sec .voice-badge-inline { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); }
+.voice-sec .voice-msg { font-size: 12px; color: var(--accent); }
+.voice-sec .voice-msg.warn { color: #e6c07a; }
+.voice-sec .voice-last { flex: 1 0 100%; font-size: 11.5px; color: var(--muted); overflow-wrap: anywhere; }
+.voice-sec .voice-list-title { margin-top: 4px; }
+.voice-sec .voice-list { flex: 1 0 100%; margin: 0; padding: 0; list-style: none; display: grid; gap: 4px 12px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+.voice-sec .voice-list li { display: flex; align-items: baseline; gap: 6px; font-size: 12px; line-height: 1.6; min-width: 0; }
+.voice-sec .voice-say { color: var(--text); }
+.voice-sec .voice-arrow { color: var(--dim); flex: none; }
+.voice-sec .voice-fx { color: var(--muted); }

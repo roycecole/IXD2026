@@ -1,4 +1,6 @@
+import { useMemo } from 'react'
 import { useStore } from '../store/useStore.js'
+import SurveyTimeline from './SurveyTimeline.jsx'
 import { birdSeasonal } from '../lib/birds.js'
 import { ageFromLunar, moonAge, moonPhaseName } from '../lib/moon.js'
 import { seriesFromOption, seriesFromSurvey, seriesFromDust, seriesFromMoon } from '../lib/series.js'
@@ -15,14 +17,14 @@ const KIND = {
     group: T('鳥群資料：{basin}'), monthly: T('鳥群逐月物種數，點擊預覽該月'),
     hint: T('該流域鳥類調查的物種數越多，球外的鳥群越多。點長條預覽各月份（斜線＝內插）。'),
     slider: T('鳥群數量（獨立控制）'),
-    playTitle: T('依年度播放 {basin} 的鳥群調查：每一步＝一個調查年度，鳥群數量隨當年物種數變化'),
+    playTitle: T('依年度播放 {basin} 的鳥群調查：每一步＝一年，沒有調查的年份以內插補上並標示「無調查」，鳥群數量隨當年物種數變化'),
   },
   fish: {
     name: T('魚群'), count: T('魚群數量'),
     group: T('魚群資料：{basin}'), monthly: T('魚群逐月物種數，點擊預覽該月'),
     hint: T('該流域魚類調查的物種數越多，海裡的魚群越多。點長條預覽各月份（斜線＝內插）。'),
     slider: T('魚群數量（獨立控制）'),
-    playTitle: T('依年度播放 {basin} 的魚群調查：每一步＝一個調查年度，魚群數量隨當年物種數變化'),
+    playTitle: T('依年度播放 {basin} 的魚群調查：每一步＝一年，沒有調查的年份以內插補上並標示「無調查」，魚群數量隨當年物種數變化'),
   },
 }
 
@@ -56,7 +58,7 @@ function SurveyCard({ kind, opt }) {
   const cur = seasons[shown]
   const maxV = Math.max(1, ...seasons.map((s) => (s ? s.value : 0)))
   const sg = useStore.getState().surveySuggest(kind) // 依 surveyMonth / 選項重新渲染（已訂閱 surveyMonth，選項變更時父層重繪）
-  const yearly = seriesFromSurvey(opt, kind)
+  const yearly = useMemo(() => seriesFromSurvey(opt, kind), [opt, kind, loc])   // 逐年序列（含空窗年）；date 文字取建立當下語系，故語系當依賴
   const basin = nameText(d.basin)
   const monthVal = (x) => x.interpolated ? t('{n} 種（內插）', { n: x.value }) : t('{n} 種', { n: x.value })
   const barTitle = (m, x) => {
@@ -102,6 +104,7 @@ function SurveyCard({ kind, opt }) {
                 title={t('連動：換海況 / 換月份時自動更新；手動拖曳滑桿會自動脫鉤（獨立控制）')}>{linked ? t('連動中') : t('連動')}</button>
         {surveyMonth != null && <button type="button" onClick={() => setSurveyMonth(null)}>{t('回到現在')}</button>}
       </div>
+      {yearly && <SurveyTimeline spec={yearly} />}
       {yearly && (
         <button type="button" className="gov-apply gov-series" disabled={recMode !== 'idle'} onClick={() => playSurvey(kind)}
                 title={t(K.playTitle, { basin })}>

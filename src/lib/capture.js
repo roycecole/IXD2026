@@ -1,5 +1,6 @@
 import { arFilter } from './ar.js'
-import { t } from '../i18n/index.js'
+import { shareCaption, fitText } from './share.js'
+import { t, getLocale } from '../i18n/index.js'
 
 export function downloadBlob(blob, name) {
   const a = document.createElement('a')
@@ -74,30 +75,46 @@ export function renderShareCard(opts = {}) {
   const grd = g.createLinearGradient(0, S - gh, 0, S)
   grd.addColorStop(0, 'rgba(5,16,28,0)'); grd.addColorStop(1, 'rgba(5,16,28,0.92)')
   g.fillStyle = grd; g.fillRect(0, S - gh, S, gh)
-  g.fillStyle = 'rgba(160,220,255,0.9)'; g.font = '400 26px system-ui, -apple-system, "Noto Sans TC", sans-serif'
-  lines.forEach((t, i) => { g.fillText(t.length > 40 ? t.slice(0, 39) + '…' : t, 48, S - 150 - (lines.length - 1 - i) * 40 - 8) })
-  g.fillStyle = '#eaf6ff'; g.font = '600 44px system-ui, -apple-system, "Noto Sans TC", sans-serif'
-  g.fillText(t('MidiSea 資料導演台'), 48, S - 96)
-  g.fillStyle = 'rgba(190,228,255,0.75)'; g.font = '400 30px system-ui, -apple-system, "Noto Sans TC", sans-serif'
-  g.fillText(t('midisea.shyetech.com · 台灣政府開放資料的一片海'), 48, S - 44)
+  // 文字排版：英文比中文長 → 塞不下時先縮字級、再截斷（塞得下的文字原樣，中文版面不變）
+  const FONT = 'system-ui, -apple-system, "Noto Sans TC", sans-serif', MAXW = S - 48 * 2
+  const fitDraw = (weight, px, text, y, minPx) => {
+    const r = fitText((s, size) => { g.font = `${weight} ${size}px ${FONT}`; return g.measureText(s).width }, text, px, MAXW, minPx)
+    g.font = `${weight} ${r.px}px ${FONT}`; g.fillText(r.text, 48, y)
+  }
+  const cap = getLocale() === 'en' ? 64 : 40                   // 資料列字數上限（英文字元較窄，放寬；仍受版面寬度限制）
+  g.fillStyle = 'rgba(160,220,255,0.9)'
+  lines.forEach((t, i) => { fitDraw(400, 26, t.length > cap ? t.slice(0, cap - 1) + '…' : t, S - 150 - (lines.length - 1 - i) * 40 - 8, 20) })
+  g.fillStyle = '#eaf6ff'; fitDraw(600, 44, t('MidiSea 資料導演台'), S - 96, 30)
+  g.fillStyle = 'rgba(190,228,255,0.75)'; fitDraw(400, 30, t('midisea.shyetech.com · 台灣政府開放資料的一片海'), S - 44, 22)
   return card
 }
 
+// 複製文字到剪貼簿；不支援 / 被拒絕 / 沒有使用者手勢都靜默回 false（不報錯）
+async function copyText(text) {
+  try { if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(text); return true } } catch (e) { /* 靜默 */ }
+  return false
+}
+
 // 分享星球：擷取當下畫面（實景時連真實背景一起）→ 合成分享卡 → 手機走 Web Share、桌機下載 PNG。
+// opts.url：帶目前視覺狀態與資料脈絡的分享連結；opts.text：完整文案（預設 t('我在 MidiSea 演了一片海 {url}')）。
+// 文案（含網址）放在 navigator.share 的 text（部分平台會丟掉 url 欄位，所以不另傳 url）；
+// 不支援檔案分享而改下載 PNG 時，同一段文案（含網址）複製到剪貼簿（回傳 copied）。
 export async function shareSnapshot(opts = {}) {
   const card = renderShareCard(opts)
   if (!card) return { ok: false, why: t('找不到畫布') }
   const blob = await new Promise((res) => card.toBlob(res, 'image/png'))
   if (!blob) return { ok: false, why: t('截圖失敗') }
   const file = new File([blob], 'midisea-star.png', { type: 'image/png' })
+  const text = shareCaption(opts)
   try {
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      await navigator.share({ files: [file], title: t('MidiSea 資料導演台'), text: t('我在 MidiSea 演了一片海') })
+      await navigator.share({ files: [file], title: t('MidiSea 資料導演台'), text })
       return { ok: true, how: 'share' }
     }
   } catch (e) { if (e && e.name === 'AbortError') return { ok: true, how: 'cancel' } }
   downloadBlob(blob, 'midisea-star.png')
-  return { ok: true, how: 'download', ar: !!opts.ar }
+  const copied = opts.url || opts.text ? await copyText(text) : false   // 舊呼叫端沒給網址 / 文案 → 維持舊行為（不動剪貼簿）
+  return { ok: true, how: 'download', ar: !!opts.ar, copied }
 }
 
 // 錄製 .canvas-wrap 內的 WebGL 畫布 seconds 秒 → 回呼進度與完成的 Blob。

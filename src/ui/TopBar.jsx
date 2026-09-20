@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useStore } from '../store/useStore.js'
 import { SCENES } from '../timeline/scenes.js'
-import { buildShareUrl } from '../lib/share.js'
+import { buildShareUrl, shareContextOf } from '../lib/share.js'
 import { captureCanvas, downloadBlob, shareSnapshot } from '../lib/capture.js'
 import { arContext } from '../lib/ar.js'
 import { audioToggle, audioState } from '../audio/engine.js'
@@ -51,7 +51,8 @@ export default function TopBar({ onConnect, onBle, onInfo, onVK, vkOn, onMulti, 
   const capturing = capPct >= 0
 
   const doShare = async () => {
-    const url = buildShareUrl(useStore.getState().params)
+    const st = useStore.getState()
+    const url = buildShareUrl(st.params, shareContextOf(st, locale))   // 視覺參數 + 資料脈絡（海況選項 / 月份 / 鳥魚連動 / 語系）
     try { await navigator.clipboard.writeText(url); setShareMsg(t('已複製分享連結')) }
     catch (e) { setShareMsg(t('複製失敗（見主控台）')); console.log('share url:', url) }
     pushLog('out', t('產生分享連結'))
@@ -84,9 +85,13 @@ export default function TopBar({ onConnect, onBle, onInfo, onVK, vkOn, onMulti, 
   const doShareImage = async () => {
     const st = useStore.getState()
     const rows = describeBoard(st.gov, st.govOption())          // 分享圖帶上目前海況的資料列
-    const r = await shareSnapshot({ lines: rows.slice(0, 3).map((x) => `${x.k}｜${x.v}`), ar: arContext(st.params) }) // 實景時連真實背景一起輸出
+    const url = buildShareUrl(st.params, shareContextOf(st, locale))   // 文案「我在 MidiSea 演了一片海 [網址]」的網址：帶目前視覺狀態與資料脈絡
+    const r = await shareSnapshot({ lines: rows.slice(0, 3).map((x) => `${x.k}｜${x.v}`), ar: arContext(st.params), url }) // 實景時連真實背景一起輸出
     if (!r.ok) { setShareMsg(t('分享失敗：{why}', { why: r.why })); pushLog('out', t('分享星球失敗：{why}', { why: r.why })) }
-    else if (r.how === 'download') { setShareMsg(t('已下載分享圖')); pushLog('out', t('分享星球 → 下載 PNG')) }
+    else if (r.how === 'download') {
+      setShareMsg(r.copied ? t('圖片已下載，文案與連結已複製') : t('已下載分享圖'))
+      pushLog('out', r.copied ? t('分享星球 → 下載 PNG，文案與連結已複製') : t('分享星球 → 下載 PNG'))
+    }
     else if (r.how === 'share') pushLog('out', t('分享星球 → 系統分享'))
     setTimeout(() => setShareMsg(''), 2200)
   }
