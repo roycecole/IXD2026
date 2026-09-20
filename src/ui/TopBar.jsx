@@ -9,13 +9,16 @@ import { micToggle } from '../audio/mic.js'
 import { bleSupported } from '../lib/blemidi.js'
 import { describeBoard } from '../lib/describe.js'
 import { LS, saveLS } from '../lib/persist.js'
+import { useT, useLocale, toggleLocale } from '../i18n/index.js'
 
 function fmt(t) {
   const m = Math.floor(t / 60), s = Math.floor(t % 60)
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
-export default function TopBar({ onConnect, onBle, onInfo, onVK, vkOn, onMulti, multiOn, onAR, arOn }) {
+export default function TopBar({ onConnect, onBle, onInfo, onVK, vkOn, onMulti, multiOn, onAR, arOn, onDevices, devicesOn }) {
+  const t = useT()
+  const locale = useLocale()
   const rec = useStore((s) => s.rec)
   const midi = useStore((s) => s.midi)
   const startRecording = useStore((s) => s.startRecording)
@@ -111,28 +114,32 @@ export default function TopBar({ onConnect, onBle, onInfo, onVK, vkOn, onMulti, 
 
       <div className="toolstrip">
       <div className="tools">
-        <button onClick={doShare} title="複製分享連結（帶目前參數）">分享</button>
-        <button onClick={doShareImage} title="分享星球：擷取此刻的海 → 分享 / 下載圖片">分享星球</button>
-        <button className={'conn' + (multiOn ? ' on' : '')} onClick={onMulti} title="多人合奏：手機掃 QR 當遙控器">多人</button>
-        <button className={'conn' + (arOn ? ' on' : '')} onClick={onAR} title="AR 實景：相機當背景，球體浮在真實世界；可調背景模糊 / 清澈">實景</button>
-        <button className={'conn' + (overlaysOn ? ' on' : '')} aria-pressed={overlaysOn} onClick={toggleOverlays}
+        <button data-k="share" onClick={doShare} title="複製分享連結（帶目前參數）">分享</button>
+        <button data-k="shareimg" onClick={doShareImage} title="分享星球：擷取此刻的海 → 分享 / 下載圖片">分享星球</button>
+        <button data-k="multi" className={'conn' + (multiOn ? ' on' : '')} onClick={onMulti} title="多人合奏：手機掃 QR 當遙控器">多人</button>
+        <button data-k="ar" className={'conn' + (arOn ? ' on' : '')} onClick={onAR} title="AR 實景：相機當背景，球體浮在真實世界；可調背景模糊 / 清澈">實景</button>
+        <button data-k="overlays" className={'conn' + (overlaysOn ? ' on' : '')} aria-pressed={overlaysOn} onClick={toggleOverlays}
                 title="顯示 / 隱藏畫布上的資訊面板：資料看板、播放與參數提示、QR（快速鍵 I）">資訊</button>
-        <button onClick={doCapture} disabled={capturing} title="錄製球體 10 秒並下載影片">
+        <button data-k="capture" onClick={doCapture} disabled={capturing} title="錄製球體 10 秒並下載影片">
           {capturing ? `錄影 ${capPct}%` : '錄影'}
         </button>
-        <button onClick={doExportLog} title="匯出 IN/OUT LOG 供除錯">匯出LOG</button>
-        <button className={'conn' + (vkOn ? ' on' : '')} onClick={onVK} title="虛擬 nanoKONTROL2：無實體裝置也能用滑鼠 / 鍵盤操作">控制器</button>
-        <button onClick={onInfo} title="操作說明 / 關於本專案">說明</button>
-        <button className={'conn' + (audioOn ? ' on' : '')} data-audio-btn
+        <button data-k="log" onClick={doExportLog} title="匯出 IN/OUT LOG 供除錯">匯出LOG</button>
+        <button data-k="vk" className={'conn' + (vkOn ? ' on' : '')} onClick={onVK} title="虛擬 nanoKONTROL2：無實體裝置也能用滑鼠 / 鍵盤操作">控制器</button>
+        <button data-k="help" onClick={onInfo} title="操作說明 / 關於本專案">說明</button>
+        <button data-k="audio" className={'conn' + (audioOn ? ' on' : '')} data-audio-btn
                 onClick={async () => { const on = await audioToggle(); setAudioOn(on); saveLS(LS.audio, on ? 'on' : 'off'); useStore.getState().pushLog('out', on ? `聲音開啟（根音 ${audioState.rootHz}Hz）` : '聲音靜音（之後不再自動開啟）') }}
                 title="舒適背景音（Tone.js）：海水高度=根音Hz、清澈=明亮度、洋流=浪速、輝光=空間感、垃圾=失諧、打擊墊=音階">
           {audioOn ? `聲音 ${hz || audioState.rootHz}Hz` : '聲音'}
         </button>
-        <button className={'conn' + (micOn ? ' on' : '')}
+        <button data-k="mic" className={'conn' + (micOn ? ' on' : '')}
                 onClick={async () => { const on = await micToggle(); setMicOn(on); useStore.getState().pushLog('out', on ? '麥克風開啟：吹氣＝起風' : '麥克風關閉') }}
                 title="麥克風＝風：對手機吹氣 → 浪變大。只做即時音量偵測，不錄音、不上傳">
           {micOn ? '風·開' : '麥克風'}
         </button>
+        <button data-k="devices" className={'conn' + (devicesOn ? ' on' : '')} onClick={onDevices}
+                title={t('裝置：觀眾視窗、相機手勢、語音、觸覺、畫質、AR 桌面')}>{t('裝置')}</button>
+        <button data-k="lang" className="conn lang-btn" onClick={toggleLocale} lang={locale === 'zh' ? 'en' : 'zh-Hant'}
+                title="Switch language / 切換語言" aria-label={locale === 'zh' ? 'Switch to English' : '切換為中文'}>{locale === 'zh' ? 'EN' : '中文'}</button>
         {shareMsg && <span className="toast">{shareMsg}</span>}
       </div>
 

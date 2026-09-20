@@ -447,18 +447,20 @@ html, body { overscroll-behavior: none; }
   .toolstrip .tools { display: contents; }
   .toolstrip button, .toolstrip .conn { flex: 0 0 auto; white-space: nowrap; min-height: 40px; padding: 0 14px; font-size: 13px; scroll-snap-align: start; }
   .toolstrip .toast { flex: 0 0 auto; white-space: nowrap; }
-  /* 手機上的按鈕優先序：聲音（預設開啟、最常要靜音）→ 分享 → 多人 → 實景 → 資訊 → 分享星球 → 錄影 → 麥克風 → 說明 → 控制器 → 匯出LOG → MIDI / 藍牙 */
-  .toolstrip [data-audio-btn] { order: -10; }
-  .toolstrip .tools > button:nth-child(1) { order: -9; }   /* 分享 */
-  .toolstrip .tools > button:nth-child(3) { order: -8; }   /* 多人 */
-  .toolstrip .tools > button:nth-child(4) { order: -7; }   /* 實景 */
-  .toolstrip .tools > button:nth-child(5) { order: -6; }   /* 資訊（畫布上的面板顯示 / 隱藏） */
-  .toolstrip .tools > button:nth-child(2) { order: -5; }   /* 分享星球 */
-  .toolstrip .tools > button:nth-child(6) { order: -4; }   /* 錄影 */
-  .toolstrip .tools > button:nth-child(11) { order: -3; }  /* 麥克風 */
-  .toolstrip .tools > button:nth-child(9) { order: -2; }   /* 說明 */
-  .toolstrip .tools > button:nth-child(8) { order: -1; }   /* 控制器 */
-  .toolstrip .tools > button:nth-child(7) { order: 0; }    /* 匯出LOG（與 MIDI / 藍牙同序，DOM 順序在前） */
+  /* 手機上的按鈕優先序（用 data-k，新增按鈕不必重排索引）：聲音 → 語言 → 分享 → 多人 → 實景 → 資訊 → 分享星球 → 錄影 → 裝置 → 麥克風 → 說明 → 控制器 → 匯出LOG → MIDI / 藍牙 */
+  .toolstrip [data-k='audio'] { order: -12; }
+  .toolstrip [data-k='lang'] { order: -11; }
+  .toolstrip [data-k='share'] { order: -10; }
+  .toolstrip [data-k='multi'] { order: -9; }
+  .toolstrip [data-k='ar'] { order: -8; }
+  .toolstrip [data-k='overlays'] { order: -7; }    /* 資訊（畫布上的面板顯示 / 隱藏） */
+  .toolstrip [data-k='shareimg'] { order: -6; }
+  .toolstrip [data-k='capture'] { order: -5; }
+  .toolstrip [data-k='devices'] { order: -4; }
+  .toolstrip [data-k='mic'] { order: -3; }
+  .toolstrip [data-k='help'] { order: -2; }
+  .toolstrip [data-k='vk'] { order: -1; }
+  .toolstrip [data-k='log'] { order: 0; }          /* 匯出LOG（與 MIDI / 藍牙同序，DOM 順序在前） */
 
   /* 主區：畫布在上、面板在下（可拖把手拉高） */
   .stage { flex-direction: column; }
@@ -534,3 +536,17 @@ html, body { overscroll-behavior: none; }
   .toolstrip { gap: 4px; }
   .toolstrip button { padding: 6px 8px; font-size: 12px; }
 }
+
+/* ---- 語言鈕 / 「裝置」面板 ---- */
+.lang-btn { min-width: 44px; font-weight: 600; letter-spacing: .02em; }
+.devices-modal { max-width: 560px; }
+.dev-lead { font-size: 12.5px; color: var(--muted); margin: 8px 0 4px; }
+.dev-sec { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line2); }
+.dev-sec:first-of-type { border-top: none; }
+.dev-sec-title { margin: 0 0 4px; font-size: 14px; color: var(--accent); font-weight: 600; }
+.dev-sec-desc { margin: 0 0 8px; font-size: 12.5px; line-height: 1.7; color: #c8cbd8; }
+.dev-sec-body { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.dev-sec-body label { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+.dev-sec-body input[type='checkbox'] { width: auto; accent-color: var(--accent); }
+.dev-sec-hint { flex: 1 0 100%; margin: 0; font-size: 11.5px; line-height: 1.6; color: var(--muted); }
+.dev-sec-hint.warn { color: #e6c07a; }

@@ -12,6 +12,8 @@ import TakeoverHint from './ui/TakeoverHint.jsx'
 import DataHUD from './ui/DataHUD.jsx'
 import KioskQR from './ui/KioskQR.jsx'
 import DataBoard from './ui/DataBoard.jsx'
+import DevicesModal from './ui/DevicesModal.jsx'
+import Services from './services/Services.jsx'
 import { arState, arStart, arStop, arFilter, createLumaSampler, glowForLuma } from './lib/ar.js'
 import { stats } from './store/stats.js'
 import { multiState } from './lib/multiplayer.js'
@@ -74,6 +76,7 @@ export default function App() {
   const [showInfo, setShowInfo] = useState(() => { if (KIOSK) return false; try { return !localStorage.getItem('ixd2026.seen') } catch (e) { return true } })
   const closeInfo = () => { setShowInfo(false); try { localStorage.setItem('ixd2026.seen', '1') } catch (e) {} }
   const [showMulti, setShowMulti] = useState(false)     // 多人合奏 QR
+  const [showDevices, setShowDevices] = useState(false)   // 「裝置」面板（觀眾視窗 / 手勢 / 語音 / 觸覺 / 畫質 / AR 桌面）
   const [installEvt, setInstallEvt] = useState(null)    // PWA 加入主畫面
   const [updReady, setUpdReady] = useState(false)       // 部署新版 → 提示重新整理
 
@@ -288,7 +291,8 @@ export default function App() {
     <div className={'app' + (stage ? ' stagemode' : '')} style={{ '--panel-w': panelW + 'px', '--monitor-h': monitorH + 'px', '--canvas-vh': canvasVh }}>
       {stage && <button className="stage-exit" onClick={() => setStage(false)} title="離開演出模式（或按 H）">✕</button>}
       <TopBar onConnect={connect} onBle={connectBle} onInfo={() => setShowInfo(true)} onVK={() => setShowVK((v) => !v)} vkOn={showVK}
-              onMulti={() => setShowMulti((v) => !v)} multiOn={showMulti} onAR={toggleAR} arOn={arOn} />
+              onMulti={() => setShowMulti((v) => !v)} multiOn={showMulti} onAR={toggleAR} arOn={arOn}
+              onDevices={() => setShowDevices((v) => !v)} devicesOn={showDevices} />
       <main className="stage">
         <div className={'canvas-wrap' + (arOn ? ' ar-on' : '')} onDoubleClick={() => setStage((s) => !s)} onWheel={onWheel} title="雙擊演出模式 · 滾輪縮放">
           <video ref={videoRef} className="ar-video" playsInline muted aria-hidden="true" />
@@ -322,6 +326,8 @@ export default function App() {
       {showVK && <VirtualController onClose={() => setShowVK(false)} />}
       {showInfo && <InfoModal onClose={closeInfo} />}
       {showMulti && <MultiModal onClose={() => setShowMulti(false)} />}
+      {showDevices && <DevicesModal onClose={() => setShowDevices(false)} />}
+      <Services />
       {updReady && (
         <button className="upd-toast" onClick={() => location.reload()} title="部署了新版本">
           有新版本 · 點此更新

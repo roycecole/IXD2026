@@ -10,6 +10,7 @@ export const LS = {
   board: 'ixd2026.board',         // （舊）資料看板顯示開關，遷移到 overlays
   overlays: 'ixd2026.overlays',   // 畫布上的資訊面板顯示開關 { board, hud, qr }
   audio: 'ixd2026.audio',         // 聲音偏好：'off' = 使用者靜音過，不再自動開啟
+  lang: 'ixd2026.lang',           // 語系：'zh' | 'en'（沒存過 → 依瀏覽器語言）
 }
 export const SS = {
   log: 'ixd2026.log',             // IN/OUT log（本 session）
