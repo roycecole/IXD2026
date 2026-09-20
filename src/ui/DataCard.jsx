@@ -10,7 +10,7 @@ const PID = { birds: 'birdCount', fish: 'fishCount' }
 
 function optionLabel(o) {
   if (o.kind === 'tide') return `${o.name}（潮汐）`
-  if (o.kind === 'dust') return `${o.name}（PM10 ${o.level || '—'}）`
+  if (o.kind === 'dust') return `${o.name}（${o.level > 0 ? 'PM10 ' + o.level : 'PM10 無效 · 看風速'}）`   // level=0：來源 PM10 感測器回報無效值
   if (o.kind === 'moon') return `${o.name}（月出月沒）`
   return `${o.name}（水位 ${o.level}%）`
 }

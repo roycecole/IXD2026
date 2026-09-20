@@ -108,11 +108,17 @@ export function captureCanvas({ seconds = 10, onProgress, onDone, getAr } = {}) 
   // 實景時：WebGL 畫布背景是透明的 → 每幀把（相機畫面 + 濾鏡 + 畫布）合成到離屏 2D canvas，錄這張合成畫布
   let source = canvas, comp = null, rafId = 0
   if (getAr && getAr()) {
-    comp = document.createElement('canvas'); comp.width = canvas.width; comp.height = canvas.height
+    // 手機上每幀做全解析度的模糊 + 合成很吃力：長邊限制在 1280、合成頻率壓在約 30fps（錄影本身就是 30fps，相機也不會更快）
+    const sc = Math.min(1, 1280 / Math.max(canvas.width, canvas.height))
+    comp = document.createElement('canvas'); comp.width = Math.max(2, Math.round(canvas.width * sc)); comp.height = Math.max(2, Math.round(canvas.height * sc))
     const cg = comp.getContext('2d')
-    const draw = () => {
-      cg.fillStyle = '#05101c'; cg.fillRect(0, 0, comp.width, comp.height)
-      paintScene(cg, canvas, getAr(), null, comp.width, comp.height)
+    let lastT = -1e9
+    const draw = (t = 0) => {
+      if (t - lastT >= 30) {
+        lastT = t
+        cg.fillStyle = '#05101c'; cg.fillRect(0, 0, comp.width, comp.height)
+        paintScene(cg, canvas, getAr(), null, comp.width, comp.height)
+      }
       rafId = requestAnimationFrame(draw)
     }
     draw()
