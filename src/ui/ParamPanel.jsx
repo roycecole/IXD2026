@@ -44,6 +44,10 @@ export default function ParamPanel({ onVK }) {
   const applyGov = useStore((s) => s.applyGov)
   const playGovSeries = useStore((s) => s.playGovSeries)
   const recMode = useStore((s) => s.rec.mode)
+  const recSpeed = useStore((s) => s.rec.speed)
+  const recLoop = useStore((s) => s.rec.loop)
+  const setRecSpeed = useStore((s) => s.setRecSpeed)
+  const toggleRecLoop = useStore((s) => s.toggleRecLoop)
   const learn = useStore((s) => s.learn)
   const startSeqLearn = useStore((s) => s.startSeqLearn)
   const cancelLearn = useStore((s) => s.cancelLearn)
@@ -71,14 +75,24 @@ export default function ParamPanel({ onVK }) {
           <div className="gov-title">今日海況 <span className="dim">· {gov.sourceShort}</span></div>
           {gov.weather && <div className="gov-metrics">{gov.weather.weather} · {gov.weather.airTemp}°C · 風 {gov.weather.windSpeed} m/s</div>}
           <select className="gov-select" value={govOptionId || ''} onChange={(e) => setGovOption(e.target.value)}>
-            {gov.options.map((o) => <option key={o.id} value={o.id}>{o.name}（水位 {o.level}%）</option>)}
+            {gov.options.map((o) => <option key={o.id} value={o.id}>{o.kind === 'tide' ? `${o.name}（潮汐）` : `${o.name}（水位 ${o.level}%）`}</option>)}
           </select>
           <button className="gov-apply" onClick={applyGov}>套用此海況</button>
           {hasSeries && (
-            <button className="gov-apply gov-series" onClick={playGovSeries} disabled={recMode !== 'idle'}
-                    title={`把 ${opt.name} ${opt.series.date || ''} 的每小時${opt.series.label}轉成自動化播放：進流大 → 水流急、魚群聚`}>
-              ▶ 播放 24h {opt.series.label}資料
-            </button>
+            <>
+              <button className="gov-apply gov-series" onClick={playGovSeries} disabled={recMode !== 'idle'}
+                      title={`把 ${opt.name} ${opt.series.date || ''} 的${opt.series.label}時間序列轉成自動化播放`}>
+                ▶ 播放 24h {opt.series.label}資料
+              </button>
+              <div className="gov-playctl" aria-label="資料播放設定">
+                {[0.5, 1, 2, 4].map((v) => (
+                  <button key={v} className={'gov-spd' + (recSpeed === v ? ' on' : '')} aria-pressed={recSpeed === v}
+                          onClick={() => setRecSpeed(v)} title={`播放倍速 ×${v}`}>×{v}</button>
+                ))}
+                <button className={'gov-spd' + (recLoop ? ' on' : '')} aria-pressed={recLoop}
+                        onClick={toggleRecLoop} title="播完自動從頭循環">循環</button>
+              </div>
+            </>
           )}
         </div>
       )}

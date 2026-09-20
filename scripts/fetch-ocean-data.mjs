@@ -80,6 +80,8 @@ async function main() {
   const base = (cur?.options && cur.options.length ? cur.options : FALLBACK)
   const options = base.map((o) => {
     const next = { id: o.id, name: o.name, region: o.region, level: o.level, params: optionParams(w, o.level) }
+    if (o.kind) next.kind = o.kind     // 潮汐等特殊海況
+    if (o.birds) next.birds = o.birds  // 鳥類調查（球外鳥群）
     if (o.series) next.series = o.series // 保留時間序列（資料播放用）
     return next
   })
@@ -91,6 +93,9 @@ async function main() {
     defaultOption: cur?.defaultOption || options[0].id, options,
     mapping: cur?.mapping || '水庫水位%→海水高度（滿庫=滿球、溢流）· 風速→洋流 · 晴雨→清澈 · 氣溫→水母 · 進流量時序→資料播放',
   }
+  if (cur?.rivers) { out.rivers = cur.rivers; out.riversNote = cur.riversNote }   // 河川水位（銀河濃度）
+  if (cur?.birdsNote) out.birdsNote = cur.birdsNote
+  // TODO: 可加 WRA opendata 25768 即時水位刷新 rivers（公開、免金鑰；limit>=373 才涵蓋東南部站）
   await writeFile(url, JSON.stringify(out, null, 2) + '\n')
   console.log('refreshed', options.length, 'options @', w.time)
 }

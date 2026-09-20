@@ -58,4 +58,10 @@ export const ACTION_BINDINGS = {
   42: 'transportStop',   // ■ 停止（錄製或播放）
   45: 'transportRecord', // ● 錄製開始/結束切換
   46: 'clearRec',        // Cycle 清除錄製
+  // Track / Marker 鍵 → 場景導演：上下一場景、把當下狀態存成快照並巡回
+  58: 'scenePrev',       // Track ◀ 上一場景
+  59: 'sceneNext',       // Track ▶ 下一場景
+  60: 'markerSet',       // Marker Set 存目前參數為快照（最多 8 組）
+  61: 'markerPrev',      // Marker ◀ 上一快照
+  62: 'markerNext',      // Marker ▶ 下一快照
 }

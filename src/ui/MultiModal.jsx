@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { startHost, remoteUrl, multiState } from '../lib/multiplayer.js'
+import { stats } from '../store/stats.js'
 
 // 多人合奏：開 host + 顯示 QR。手機掃碼開遙控頁，一人演奏變一群人合奏。
 export default function MultiModal({ onClose }) {
@@ -46,9 +47,10 @@ export default function MultiModal({ onClose }) {
             <>
               <p className="multi-count">{state.count > 0 ? `已有 ${state.count} 支手機連線 — 正在合奏` : '等待手機掃碼加入…'}</p>
               <button className="multi-copy" onClick={copy}>{copied ? '已複製連結' : '複製遙控連結'}</button>
+              {stats.joins > 0 && <p className="hint">本機累計 {stats.joins} 人掃碼 · 演出 {stats.plays + stats.recs} 次</p>}
             </>
           )}
-          <p className="hint">每支手機的滑桿 / 打擊墊都走同一條輸入路徑：可被錄製、可被 soft-takeover 接管 —— 一個人演奏，變一群人合奏一片海。</p>
+          <p className="hint">每支手機會分到一個「聲部」（海 / 生態 / 氛圍 / 自由），滑桿即時跟著主畫面同步；所有輸入可被錄製、可被 soft-takeover 接管 —— 一個人演奏，變一群人合奏一片海。</p>
         </div>
       </div>
     </div>

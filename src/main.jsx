@@ -13,6 +13,11 @@ if (import.meta.env.PROD && 'serviceWorker' in navigator) {
 
 // #remote=<hostId> → 手機遙控頁（輕量，不載 three / 主畫面）；否則載入完整導演台
 const remoteMatch = (location.hash || '').match(/^#remote=(.+)$/)
+// 已開的分頁換 hash（切遙控模式、或掃到「新的 host id」）→ 一律重載重建連線
+const initialHash = location.hash || ''
+window.addEventListener('hashchange', () => {
+  if ((location.hash || '') !== initialHash) location.reload()
+})
 const App = lazy(() => import('./App.jsx'))
 const RemoteApp = lazy(() => import('./remote/RemoteApp.jsx'))
 

@@ -5,6 +5,11 @@ import { noteQueue } from '../audio/bus.js'
 import { padEvents } from './events.js'
 import { setHud } from './hud.js'
 import { touch } from './activity.js'
+import { bumpStat } from './stats.js'
+import { SCENES } from '../timeline/scenes.js'
+
+// 資料播放中的「資料時刻」資訊（DataHUD 每幀讀取，非反應式）
+export const seriesMeta = { active: false, name: '', label: '', unit: '', date: '', step: 1.1, points: [] }
 
 const haptic = (ms) => { try { navigator.vibrate && navigator.vibrate(ms) } catch (e) {} }
 
@@ -16,6 +21,20 @@ let recBuffer = []           // 錄製事件 { t, pid, value }（依 playhead �
 let recParamSet = new Set()  // 播放時「真的被自動化驅動」的參數（t>0 事件），供 soft-takeover 判斷
 let takeover = {}            // pid -> { caught:boolean, last:number|null }
 let fullLog = loadSS(SS.log, []) // 完整 IN/OUT log（本 session），供匯出除錯
+let loopSkip = 0             // 循環 wrap 時跳過 t=0 全參數快照（否則手動調整每圈被打回）
+let bufferKind = 'user'      // recBuffer 目前裝的是使用者錄製還是資料 series
+let stashedRec = null        // 資料播放前暫存的使用者錄製，播完自動還原
+
+// 資料播放結束 → 還原使用者錄製（若有）。回傳要合併進 rec state 的欄位，或 null。
+function restoreUserRec() {
+  if (bufferKind !== 'series') return null
+  bufferKind = 'user'
+  const st2 = stashedRec
+  stashedRec = null
+  recBuffer = st2 ? st2.events : []
+  recParamSet = new Set()
+  return { duration: st2 ? st2.duration : 0, count: recBuffer.length }
+}
 
 // ---- 載入上次保存 ----
 const savedRec = loadLS(LS.recording, null)
@@ -36,7 +55,7 @@ export const useStore = create((set, get) => ({
   learn: { active: false, target: null, seq: -1 },
   midi: { connected: false, inputs: [], error: null },
   log: [],
-  rec: { mode: 'idle', playhead: 0, duration: (savedRec && savedRec.duration) || 0, playIndex: 0, count: recBuffer.length },
+  rec: { mode: 'idle', playhead: 0, duration: (savedRec && savedRec.duration) || 0, playIndex: 0, count: recBuffer.length, speed: 1, loop: false },
   spawns: { whale: 0, dolphin: 0, turtle: 0, purify: 0 },   // 按鈕觸發計數（場景讀取後生成訪客 / 淨化波）
   gov: null,                                     // 真實海況資料快照（public/data/ocean.json）
   govOptionId: null,                             // 目前選擇的水庫海況
@@ -160,7 +179,10 @@ export const useStore = create((set, get) => ({
   startRecording: () => {
     if (get().rec.mode === 'playing') return // 防禦：播放中不可開錄，避免摧毀既有錄製
     recBuffer = PARAM_ORDER.map((pid) => ({ t: 0, pid, value: get().params[pid] })) // t=0 快照全部
-    set({ rec: { mode: 'recording', playhead: 0, duration: 0, playIndex: 0, count: recBuffer.length } })
+    bufferKind = 'user'; stashedRec = null
+    seriesMeta.active = false
+    bumpStat('recs')
+    set((s) => ({ rec: { ...s.rec, mode: 'recording', playhead: 0, duration: 0, playIndex: 0, count: recBuffer.length } }))
     get().pushLog('out', '● 開始錄製')
   },
   stopRecording: () => {
@@ -176,12 +198,17 @@ export const useStore = create((set, get) => ({
     // 只把「錄製過程中真的被改動」的參數列入自動化集合（t>0），soft-takeover 才不會誤鎖靜態參數
     recParamSet = new Set(recBuffer.filter((e) => e.t > 0).map((e) => e.pid))
     takeover = {}
+    loopSkip = recBuffer.findIndex((e) => e.t > 0)
+    if (loopSkip < 0) loopSkip = recBuffer.length
+    bumpStat('plays')
     set((s) => ({ rec: { ...s.rec, mode: 'playing', playhead: 0, playIndex: 0 } }))
     get().pushLog('out', '▶ 播放錄製')
   },
+  setRecSpeed: (v) => set((s) => ({ rec: { ...s.rec, speed: v } })),
+  toggleRecLoop: () => set((s) => ({ rec: { ...s.rec, loop: !s.rec.loop } })),
   tickPlayback: (dt) => set((s) => {
     const r = s.rec
-    const ph = r.playhead + dt
+    const ph = r.playhead + dt * (r.speed || 1)
     let i = r.playIndex
     const params = { ...s.params }
     while (i < recBuffer.length && recBuffer[i].t <= ph) {
@@ -190,20 +217,32 @@ export const useStore = create((set, get) => ({
       if (!(takeover[e.pid] && takeover[e.pid].caught)) params[e.pid] = clamp01(e.value)
       i++
     }
-    if (ph >= r.duration) { takeover = {}; return { params, rec: { ...r, mode: 'idle', playhead: r.duration, playIndex: i } } }
+    if (ph >= r.duration) {
+      // 循環：跳過 t=0 全參數快照重播（手動調整才不會每圈被打回），接管狀態保留
+      if (r.loop && recBuffer.length) return { params, rec: { ...r, playhead: 0, playIndex: loopSkip } }
+      takeover = {}; seriesMeta.active = false
+      const rest = restoreUserRec() // 資料播放結束 → 還原使用者錄製
+      if (rest) return { params, rec: { ...r, mode: 'idle', playhead: 0, playIndex: 0, ...rest } }
+      return { params, rec: { ...r, mode: 'idle', playhead: r.duration, playIndex: i } }
+    }
     return { params, rec: { ...r, playhead: ph, playIndex: i } }
   }),
-  stopPlayback: () => { takeover = {}; set((s) => ({ rec: { ...s.rec, mode: 'idle' } })) },
+  stopPlayback: () => {
+    takeover = {}; seriesMeta.active = false
+    const rest = restoreUserRec()
+    set((s) => ({ rec: { ...s.rec, mode: 'idle', ...(rest ? { playhead: 0, playIndex: 0, ...rest } : {}) } }))
+  },
   clearRec: () => {
-    recBuffer = []; recParamSet = new Set(); takeover = {}; removeLS(LS.recording)
-    set({ rec: { mode: 'idle', playhead: 0, duration: 0, playIndex: 0, count: 0 } })
+    recBuffer = []; recParamSet = new Set(); takeover = {}; bufferKind = 'user'; stashedRec = null; removeLS(LS.recording)
+    set((s) => ({ rec: { ...s.rec, mode: 'idle', playhead: 0, duration: 0, playIndex: 0, count: 0 } }))
     get().pushLog('out', '⟲ 已清除錄製')
   },
 
-  // 場景預設（即時套用一組參數）。錄製中改走 input 以便被錄進去。
+  // 場景預設（即時套用一組參數）。錄製中走 input 以便被錄進去；
+  // 播放中也走 input → 對自動化參數立即登記接管（場景/Marker 鍵才不會被下一批事件蓋回）。
   applyScene: (partial) => {
     const st = get()
-    if (st.rec.mode === 'recording') { for (const k in partial) st.input(k, partial[k]) }
+    if (st.rec.mode !== 'idle') { for (const k in partial) st.input(k, partial[k]) }
     else st.applyParams(partial)
   },
 
@@ -233,21 +272,46 @@ export const useStore = create((set, get) => ({
     const pts = o && o.series && o.series.points
     if (!pts || !pts.length) return
     if (o.params) st.applyParams(o.params) // 先落在該海況基準
+    if (bufferKind === 'user' && recBuffer.length) stashedRec = { events: recBuffer, duration: st.rec.duration } // 暫存使用者錄製，播完還原
+    bufferKind = 'series'
     const STEP = 1.1
     const vmax = Math.max(...pts.map((p) => p.v)) || 1
+    const vmin = Math.min(...pts.map((p) => p.v))
     recBuffer = PARAM_ORDER.map((pid) => ({ t: 0, pid, value: get().params[pid] }))
     pts.forEach((p, i) => {
       const t = i * STEP + 0.001
-      const n = clamp01(p.v / vmax)
-      recBuffer.push({ t, pid: 'current', value: clamp01(0.15 + n * 0.8) })
-      recBuffer.push({ t, pid: 'fishCount', value: clamp01(0.3 + n * 0.6) })
-      recBuffer.push({ t, pid: 'swimSpeed', value: clamp01(0.35 + n * 0.5) })
+      if (o.series.target === 'seaLevel') {
+        // 潮汐：潮高 → 海水高度（滿潮映到 1.0 → 觸發外緣溢流），並帶一點浪
+        const n = vmax > vmin ? (p.v - vmin) / (vmax - vmin) : 0.5
+        recBuffer.push({ t, pid: 'seaLevel', value: clamp01(0.45 + n * 0.55) })
+        recBuffer.push({ t, pid: 'current', value: clamp01(0.25 + n * 0.35) })
+      } else {
+        const n = clamp01(p.v / vmax)
+        recBuffer.push({ t, pid: 'current', value: clamp01(0.15 + n * 0.8) })
+        recBuffer.push({ t, pid: 'fishCount', value: clamp01(0.3 + n * 0.6) })
+        recBuffer.push({ t, pid: 'swimSpeed', value: clamp01(0.35 + n * 0.5) })
+      }
     })
     const dur = pts.length * STEP
+    Object.assign(seriesMeta, { active: true, name: o.name, label: o.series.label, unit: o.series.unit || '', date: o.series.date || '', step: STEP, points: pts })
     set((s) => ({ rec: { ...s.rec, mode: 'idle', playhead: 0, playIndex: 0, duration: dur, count: recBuffer.length } }))
     get().startPlayback()
     get().pushLog('out', `▶ 資料播放：${o.name} ${o.series.date || ''} ${o.series.label}（${pts.length} 筆，${o.series.unit}）`)
   },
+
+  // ---- 場景切換 / Marker 快照（nanoKONTROL2 Track ◀▶ / Marker 鍵）----
+  sceneIdx: 0,
+  markers: loadLS(LS.markers, []),
+  markerIdx: -1,
+  scenePrev: () => { const i = (get().sceneIdx - 1 + SCENES.length) % SCENES.length; set({ sceneIdx: i }); get().applyScene(SCENES[i].params); get().pushLog('out', `場景 ◀ ${SCENES[i].label}`) },
+  sceneNext: () => { const i = (get().sceneIdx + 1) % SCENES.length; set({ sceneIdx: i }); get().applyScene(SCENES[i].params); get().pushLog('out', `場景 ▶ ${SCENES[i].label}`) },
+  markerSet: () => {
+    const m = [...get().markers, { ...get().params }].slice(-8) // 最多 8 組
+    saveLS(LS.markers, m); set({ markers: m, markerIdx: m.length - 1 })
+    touch(); get().pushLog('out', `Marker 快照 #${m.length}（共 ${m.length} 組）`)
+  },
+  markerPrev: () => { const m = get().markers; if (!m.length) return; const i = (get().markerIdx - 1 + m.length) % m.length; set({ markerIdx: i }); get().applyScene(m[i]); get().pushLog('out', `Marker ◀ 快照 #${i + 1}`) },
+  markerNext: () => { const m = get().markers; if (!m.length) return; const i = (get().markerIdx + 1) % m.length; set({ markerIdx: i }); get().applyScene(m[i]); get().pushLog('out', `Marker ▶ 快照 #${i + 1}`) },
 }))
 
 // LED 回饋用：目前「播放中且待接管（soft-takeover 尚未咬合）」的 CC 清單

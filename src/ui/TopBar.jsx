@@ -11,7 +11,7 @@ function fmt(t) {
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
-export default function TopBar({ onConnect, onInfo, onVK, vkOn, onMulti, multiOn }) {
+export default function TopBar({ onConnect, onInfo, onVK, vkOn, onMulti, multiOn, onAR, arOn }) {
   const rec = useStore((s) => s.rec)
   const midi = useStore((s) => s.midi)
   const startRecording = useStore((s) => s.startRecording)
@@ -103,6 +103,7 @@ export default function TopBar({ onConnect, onInfo, onVK, vkOn, onMulti, multiOn
         <button onClick={doShare} title="複製分享連結（帶目前參數）">分享</button>
         <button onClick={doShareImage} title="分享星球：擷取此刻的海 → 分享 / 下載圖片">分享星球</button>
         <button className={'conn' + (multiOn ? ' on' : '')} onClick={onMulti} title="多人合奏：手機掃 QR 當遙控器">多人</button>
+        <button className={'conn' + (arOn ? ' on' : '')} onClick={onAR} title="AR 實景：相機當背景，球體浮在真實世界；可調背景模糊 / 清澈">實景</button>
         <button onClick={doCapture} disabled={capturing} title="錄製球體 10 秒並下載影片">
           {capturing ? `錄影 ${capPct}%` : '錄影'}
         </button>

@@ -1,6 +1,8 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { useRef, useMemo, useEffect } from 'react'
 import * as THREE from 'three'
+import * as CANNON from 'cannon-es'
+import { arState } from '../lib/ar.js'
 import { useStore } from '../store/useStore.js'
 import { chime, setCreaturePan } from '../audio/engine.js'
 import { micState } from '../audio/mic.js'
@@ -220,8 +222,12 @@ function WaterLines() {
       }
     }
     // 內壁弧線：由水線接觸點沿球壁收攏到球底（上端隨浪連續變形；頂部淡入避免波浪區出現垂直線）
+    // 高水位時弧線貫穿整球會有「縱籠」感 → 遞減密度與透明度
+    const hiWater = Math.max(0, Math.min(1, (yw - 0.8) / 0.9))
+    const arcStep = yw > 1.2 ? 2 : 1
+    const arcFade = 1 - hiWater * 0.55
     let pcx = 0, pcy = 0, pcz = 0
-    for (let k = 0; k <= VIS.wallArcs; k++) {
+    for (let k = 0; k <= VIS.wallArcs; k += arcStep) {
       const phi = (k / VIS.wallArcs) * Math.PI * 2
       const r0 = Math.sqrt(Math.max(0.001, WR * WR - yw * yw))
       const cx0 = Math.cos(phi) * r0, cz0 = Math.sin(phi) * r0
@@ -243,7 +249,7 @@ function WaterLines() {
         y += waveH(Math.cos(phi) * 0.5, Math.sin(phi) * 0.5) * (1 - s) * (1 - s) * 0.5 // 連續銜接
         const r = Math.sqrt(Math.max(0.0005, WR * WR - y * y))
         const x = Math.cos(phi) * r, z = Math.sin(phi) * r
-        bSeg(batch, ax, ay, az, x, y, z, wcol.r, wcol.g, wcol.b, murkA * (1 - s * 0.55) * Math.min(1, 0.08 + s * 2.4))
+        bSeg(batch, ax, ay, az, x, y, z, wcol.r, wcol.g, wcol.b, murkA * (1 - s * 0.55) * Math.min(1, 0.08 + s * 2.4) * arcFade)
         ax = x; ay = y; az = z
       }
     }
@@ -451,6 +457,23 @@ function LineCreatures() {
   const guests = useMemo(() => Array.from({ length: 5 }, () => ({ active: false, type: null, born: 0, dir: 1, x: 0, y: 0, z: 0, heading: 0, alpha: 0, size: 1, ph: 0 })), [])
   const lastSpawns = useRef({ whale: 0, dolphin: 0, turtle: 0 })
   const lastClaps = useRef(0)
+  const lastPurifyLC = useRef(0)
+  // 垃圾剛體物理（cannon-es）：浮力 + 洋流 + 互相碰撞 + 球壁向內約束；淨化波施加向外衝量
+  const phys = useMemo(() => {
+    const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -2.0, 0) })
+    const mat = new CANNON.Material('trash')
+    world.addContactMaterial(new CANNON.ContactMaterial(mat, mat, { restitution: 0.55, friction: 0.2 }))
+    const bodies = trash.map((o) => {
+      const b = new CANNON.Body({
+        mass: 0.4, material: mat, shape: new CANNON.Sphere(0.1 + o.size * 0.14),
+        position: new CANNON.Vec3(o.x, o.y, o.z), linearDamping: 0.55, angularDamping: 0.5,
+      })
+      b.angularVelocity.set(0, o.rotSp, 0)
+      world.addBody(b)
+      return b
+    })
+    return { world, bodies, f: new CANNON.Vec3() }
+  }, [trash])
 
   useFrame((state, dt) => {
     const t = state.clock.elapsedTime
@@ -508,17 +531,53 @@ function LineCreatures() {
       clamp01v(f)
       if (f.vis > 0.03) drawFish(batch, f, t)
     })
-    // 垃圾（瓶 / 袋：漂移、慢旋、袋變形）
+    // 垃圾（瓶 / 袋）：cannon-es 剛體 — 浮在水面互相碰撞、被洋流推、被淨化波推開
+    // 注意：applyForce/applyImpulse 不傳第二參數（施力點在質心），否則會注入假力矩瘋轉
     const trashActive = Math.round(env.trash * VIS.trash)
+    const sp0 = useStore.getState().spawns
+    if (sp0.purify > lastPurifyLC.current) {           // 淨化波：向外+向上衝量把垃圾推散
+      lastPurifyLC.current = sp0.purify
+      phys.bodies.forEach((b, i) => {
+        if (i >= trashActive) return
+        const l = Math.hypot(b.position.x, b.position.z) || 1
+        b.applyImpulse(phys.f.set((b.position.x / l) * 0.9, 0.35, (b.position.z / l) * 0.9))
+      })
+    }
+    const ywT = seaY()
+    const rcap = WR * 0.92
+    phys.bodies.forEach((b, i) => {
+      const o = trash[i]
+      const act = i < trashActive
+      b.collisionResponse = act                        // 隱形垃圾不參與碰撞（沉底待命）
+      if (act) {
+        const depth = ywT - b.position.y               // 吃水深度 → 浮力
+        phys.f.set(
+          (flow.x * 0.55 + Math.cos(t * 0.4 + o.ph) * 0.1) * b.mass,
+          depth > -0.06 ? Math.min(1.4, Math.max(0, depth + 0.1)) * 5.5 * b.mass : 0,
+          (flow.z * 0.55 + Math.sin(t * 0.5 + o.ph) * 0.09) * b.mass,
+        )
+        b.applyForce(phys.f)
+      }
+      const len = b.position.length()                  // 球壁向內彈簧
+      const rmax = WR * 0.9
+      if (len > rmax) {
+        const kf = ((len - rmax) * 14 * b.mass) / len
+        b.applyForce(phys.f.set(-b.position.x * kf, -b.position.y * kf, -b.position.z * kf))
+      }
+    })
+    phys.world.step(1 / 60, Math.min(dt, 0.05), 2)
     trash.forEach((o, i) => {
       o.vis += ((i < trashActive ? 1 : 0) - o.vis) * Math.min(1, dt * 2)
-      o.rot += dt * o.rotSp * (0.4 + env.current)
-      o.x += dt * (0.045 * (0.3 + env.current) * Math.cos(o.ph) + flow.x * 0.12)
-      o.z += dt * (0.038 * (0.3 + env.current) * Math.sin(o.ph * 1.3) + flow.z * 0.12)
-      o.y += Math.sin(t * 0.4 + o.ph) * 0.0012
-      const rr = Math.sqrt(o.x * o.x + o.z * o.z)
-      if (rr > WR * 0.9) { o.x *= -0.95; o.z *= -0.95 }
-      clamp01v(o)
+      const b = phys.bodies[i]
+      const len2 = b.position.length()                 // 硬邊界：衝量再大也不打穿玻璃殼
+      if (len2 > rcap) {
+        b.position.scale(rcap / len2, b.position)
+        const nx = b.position.x / rcap, ny = b.position.y / rcap, nz = b.position.z / rcap
+        const vr = b.velocity.x * nx + b.velocity.y * ny + b.velocity.z * nz
+        if (vr > 0) { b.velocity.x -= vr * nx; b.velocity.y -= vr * ny; b.velocity.z -= vr * nz }
+      }
+      o.x = b.position.x; o.y = b.position.y; o.z = b.position.z
+      o.rot += dt * (o.rotSp * 0.4 + b.angularVelocity.y * 0.4)
       if (o.vis > 0.03) (o.kind === 'bag' ? drawBag : drawBottle)(batch, o, t)
     })
     // 訪客（鯨 / 豚 / 龜）
@@ -877,8 +936,9 @@ function SpaceNetwork() {
     const pa = pts.geometry.attributes.position.array
     nodes.forEach((n, i) => { pa[i * 3] = n.p.x; pa[i * 3 + 1] = n.p.y; pa[i * 3 + 2] = n.p.z })
     pts.geometry.attributes.position.needsUpdate = true
-    lines.material.opacity = 0.35 + env.glow * 0.35
-    pts.material.opacity = 0.55 + env.glow * 0.3
+    const arF = arState.on ? 0 : 1 // AR 實景時收掉太空網絡
+    lines.material.opacity = (0.35 + env.glow * 0.35) * arF
+    pts.material.opacity = (0.55 + env.glow * 0.3) * arF
   })
   return <group><primitive object={lines} /><primitive object={pts} /></group>
 }
@@ -912,6 +972,7 @@ function Stars() {
       col[i * 3] = 0.75 * tw; col[i * 3 + 1] = 0.88 * tw; col[i * 3 + 2] = tw
     }
     pts.geometry.attributes.color.needsUpdate = true
+    pts.material.opacity += ((arState.on ? 0 : 0.9) - pts.material.opacity) * Math.min(1, dt * 3) // AR 收星空
   })
   return <group ref={grp}><primitive object={pts} /></group>
 }
@@ -924,6 +985,7 @@ function ShootingStars() {
   })), [])
   useFrame((_, dt) => {
     bBegin(batch)
+    if (arState.on) { bEnd(batch); return } // AR 實景不放流星
     slots.forEach((s) => {
       if (!s.active) {
         s.next -= dt
@@ -974,27 +1036,36 @@ function ScanHalo() {
 }
 
 function FogDriver() {
-  const { scene } = useThree()
+  const { scene, gl } = useThree()
   const fog = useMemo(() => new THREE.Fog('#05121f', 5, 12), [])
-  useEffect(() => { scene.fog = fog; return () => { scene.fog = null } }, [scene, fog])
+  const bgc = useMemo(() => new THREE.Color('#05101c'), [])
+  useEffect(() => { scene.fog = fog; scene.background = bgc; return () => { scene.fog = null; scene.background = null } }, [scene, fog, bgc])
   useFrame((_, dt) => {
     dayT += dt
+    if (arState.on) {                       // AR 實景：背景透明、關霧，讓相機畫面透出
+      if (scene.background) scene.background = null
+      if (scene.fog) scene.fog = null
+      gl.setClearAlpha(0)
+      return
+    }
+    if (!scene.background) { scene.background = bgc; scene.fog = fog; gl.setClearAlpha(1) }
     const day = 0.5 + 0.5 * Math.sin((dayT / 240) * Math.PI * 2) // 生態敘事：極慢晝夜（4 分鐘一輪）
     const clar = effClarity()
     const hw = waterHue() + 0.05
     fog.color.setHSL(hw, 0.5, 0.04 + clar * 0.06 + day * 0.012)
     fog.near = 3.5 - (1 - clar) * 1.5; fog.far = 9 + clar * 6
-    const bg = scene.background
-    if (bg && bg.isColor) bg.setHSL(hw + 0.02, 0.42, 0.045 + day * 0.028) // 背景隨晝夜 / 場景配色微變
+    bgc.setHSL(hw + 0.02, 0.42, 0.045 + day * 0.028)             // 背景隨晝夜 / 場景配色微變
   })
   return null
 }
 
 // 滿水位溢流：海水高度 >97% 時，液體不斷從水線沿「球體外緣」滑落（資料超標的視覺警示）
+// 液滴抵達球底 → 積成小水痕（擴散淡出的水漬環）
 function OverflowFx() {
   const N = 46
-  const batch = useMemo(() => makeBatch(N), [])
+  const batch = useMemo(() => makeBatch(N + 6 * 29), [])
   const drops = useMemo(() => Array.from({ length: N }, () => ({ active: false, phi: 0, pol: 0, pol0: 0, vel: 0, t: 0 })), [])
+  const puddles = useMemo(() => Array.from({ length: 6 }, () => ({ active: false, t: 0, x: 0, z: 0 })), [])
   const acc = useRef(0)
   useFrame((_, dt) => {
     const over = Math.max(0, (env.seaLevel - 0.97) / 0.03) // 0..1（100% 滿）
@@ -1016,13 +1087,106 @@ function OverflowFx() {
       d.t += dt
       d.vel += dt * 0.55                       // 沿球面往下加速滑落
       d.pol += d.vel * dt
-      if (d.pol > Math.PI * 0.96) { d.active = false; return }
+      if (d.pol > Math.PI * 0.96) {            // 到球底 → 積水痕
+        d.active = false
+        const p = puddles.find((q) => !q.active)
+        if (p) { p.active = true; p.t = 0; p.x = Math.cos(d.phi) * Math.sin(d.pol) * SO * 0.6; p.z = Math.sin(d.phi) * Math.sin(d.pol) * SO * 0.6 }
+        return
+      }
       const y1 = Math.cos(d.pol) * SO, r1 = Math.sin(d.pol) * SO
       const p2 = Math.max(d.pol0, d.pol - 0.05 - d.vel * 0.06) // 拖尾（短線段 = 液滴流痕）
       const y2 = Math.cos(p2) * SO, r2 = Math.sin(p2) * SO
       const cs = Math.cos(d.phi), sn = Math.sin(d.phi)
       const a = Math.min(1, d.t * 4) * Math.max(0.15, 1 - (d.pol - d.pol0) / 2.4) * 0.85
       bSeg(batch, cs * r1, y1, sn * r1, cs * r2, y2, sn * r2, wcol.r + 0.2, wcol.g + 0.15, wcol.b, a)
+    })
+    puddles.forEach((p) => {                     // 球底水痕：小水漬環擴散淡出
+      if (!p.active) return
+      p.t += dt
+      if (p.t > 1.1) { p.active = false; return }
+      drawRing(batch, p.x, -SO * 0.985, p.z, 0.05 + p.t * 0.3, Math.max(0, 1 - p.t / 1.1) * 0.35)
+    })
+    bEnd(batch)
+  })
+  return <primitive object={batch.lines} />
+}
+
+// 背景銀河：傾斜帶狀星雲塵（成簇），濃度由「河川即時水位資料」驅動（水豐 → 銀河更亮）
+function Galaxy() {
+  const N = REDUCED ? 400 : 1300
+  const pts = useMemo(() => {
+    const a = new Float32Array(N * 3), c = new Float32Array(N * 3)
+    const tilt = 0.49
+    for (let i = 0; i < N; i++) {
+      const th = Math.random() * Math.PI * 2
+      const spread = (Math.random() + Math.random() + Math.random() - 1.5) / 1.5 // 近似高斯
+      const r = 16 + Math.random() * 26
+      const y0 = spread * 3.2 * (0.4 + 0.6 * Math.abs(Math.sin(th * 2.3)))       // 沿帶成簇
+      const x = Math.cos(th) * r, z = Math.sin(th) * r
+      a[i * 3] = x
+      a[i * 3 + 1] = y0 * Math.cos(tilt) + z * Math.sin(tilt) * 0.35
+      a[i * 3 + 2] = z * Math.cos(tilt) * 0.9 - y0 * Math.sin(tilt)
+      const warm = Math.random() < 0.18
+      const base = 0.3 + Math.random() * 0.55
+      c[i * 3] = base * (warm ? 1 : 0.78); c[i * 3 + 1] = base * 0.87; c[i * 3 + 2] = base * (warm ? 0.72 : 1)
+    }
+    const g = new THREE.BufferGeometry()
+    g.setAttribute('position', new THREE.BufferAttribute(a, 3))
+    g.setAttribute('color', new THREE.BufferAttribute(c, 3))
+    const m = new THREE.Points(g, new THREE.PointsMaterial({ map: dotTex(), size: 0.3, sizeAttenuation: true, transparent: true, opacity: 0, depthWrite: false, fog: false, blending: THREE.AdditiveBlending, vertexColors: true }))
+    m.frustumCulled = false; return m
+  }, [])
+  const grp = useRef()
+  useFrame((_, dt) => {
+    if (grp.current) grp.current.rotation.y += dt * 0.004
+    let inten = 0.55                                        // 河川資料 → 銀河濃度
+    const gov = useStore.getState().gov
+    if (gov && gov.rivers && gov.rivers.length) {
+      let s2 = 0, n2 = 0
+      gov.rivers.forEach((rv) => { if (typeof rv.pct === 'number') { s2 += Math.max(0, Math.min(1, rv.pct)); n2++ } })
+      if (n2) inten = 0.35 + (s2 / n2) * 0.65
+    }
+    const target = arState.on ? 0 : (0.22 + inten * 0.5) * (0.5 + env.glow * 0.6)
+    pts.material.opacity += (target - pts.material.opacity) * Math.min(1, dt * 2)
+  })
+  return <group ref={grp} rotation={[0.18, 0, 0.35]}><primitive object={pts} /></group>
+}
+
+// 球外生態：鳥群線稿（V 隊形、拍翅）繞球飛行；群數由鳥類調查資料（該海況流域鳥種數）驅動
+function BirdFlocks() {
+  const batch = useMemo(() => makeBatch(240), [])
+  const flocks = useMemo(() => Array.from({ length: 5 }, (_, i) => ({
+    ang: i * 1.9, r: 3.1 + (i % 3) * 0.7, y: 1.0 + (i % 4) * 0.55,
+    speed: (0.05 + (i % 3) * 0.03) * (i % 2 ? 1 : -1), ph: i * 2.3, n: 5 + (i % 3) * 2, vis: 0,
+  })), [])
+  useFrame((state, dt) => {
+    const t = state.clock.elapsedTime
+    bBegin(batch)
+    const st = useStore.getState()
+    const o = st.govOption && st.govOption()
+    const bd = (o && o.birds) || (st.gov && st.gov.birds) || null
+    const flockActive = bd ? Math.max(1, Math.min(5, Math.round((bd.species || 80) / 40))) : 2
+    flocks.forEach((f, i) => {
+      f.vis += ((i < flockActive ? 1 : 0) - f.vis) * Math.min(1, dt * 1.5)
+      if (f.vis < 0.03) return
+      f.ang += dt * f.speed * (0.6 + env.swim * 0.6)
+      const cx = Math.cos(f.ang) * f.r, cz = Math.sin(f.ang) * f.r
+      const cy = f.y + Math.sin(t * 0.3 + f.ph) * 0.3
+      const heading = f.ang + (f.speed > 0 ? Math.PI / 2 : -Math.PI / 2)
+      const cs = Math.cos(heading), sn = Math.sin(heading)
+      for (let k = 0; k < f.n; k++) {
+        const side = k % 2 ? 1 : -1, rank = Math.ceil(k / 2)   // V 隊形
+        const lx = -rank * 0.22, lz = side * rank * 0.16
+        const bx = cx + lx * cs - lz * sn
+        const bz = cz + lx * sn + lz * cs
+        const by = cy + Math.sin(t * 2 + k) * 0.04
+        const flap = Math.sin(t * 7 + f.ph + k * 0.7) * 0.09   // 拍翅
+        const a = f.vis * 0.5
+        const wx = -0.1 * cs, wz = -0.1 * sn                    // 後掠
+        const px = -0.11 * sn, pz2 = 0.11 * cs                  // 側向
+        bSeg(batch, bx, by, bz, bx + wx + px, by + flap, bz + wz + pz2, 0.92, 0.95, 1.0, a)
+        bSeg(batch, bx, by, bz, bx + wx - px, by + flap, bz + wz - pz2, 0.92, 0.95, 1.0, a)
+      }
     })
     bEnd(batch)
   })
@@ -1082,12 +1246,13 @@ function CameraRig() {
 
 export default function Scene3D() {
   return (
-    <Canvas camera={{ position: [0, 0.4, 7], fov: 45 }} dpr={[1, 2]} gl={{ preserveDrawingBuffer: true, antialias: true }}>
-      <color attach="background" args={['#05101c']} />
+    <Canvas camera={{ position: [0, 0.4, 7], fov: 45 }} dpr={[1, 2]} gl={{ preserveDrawingBuffer: true, antialias: true, alpha: true }}>
       <EnvDriver />
       <FogDriver />
+      <Galaxy />
       <Stars />
       <ShootingStars />
+      <BirdFlocks />
       <ambientLight intensity={0.6} />
       <Ocean />
       <GlassShell />

@@ -9,6 +9,9 @@ import MultiModal from './ui/MultiModal.jsx'
 import VirtualController from './ui/VirtualController.jsx'
 import ParamHUD from './ui/ParamHUD.jsx'
 import TakeoverHint from './ui/TakeoverHint.jsx'
+import DataHUD from './ui/DataHUD.jsx'
+import { arState, arStart, arStop, arFilter } from './lib/ar.js'
+import { stats } from './store/stats.js'
 import { useMIDI } from './hooks/useMIDI.js'
 import { useStore } from './store/useStore.js'
 import { decodeParams } from './lib/share.js'
@@ -42,6 +45,15 @@ function pollGamepad(st) {
   }
 }
 
+// 展場統計（kiosk / 演出模式角落）：掃碼加入人數 + 演出次數
+function StageStats() {
+  const [, force] = useState(0)
+  useEffect(() => { const iv = setInterval(() => force((x) => x + 1), 2000); return () => clearInterval(iv) }, [])
+  return <div className="stage-stats">合奏 {stats.joins} 人 · 演出 {stats.plays + stats.recs} 次</div>
+}
+
+const KIOSK = (() => { try { return new URLSearchParams(location.search).has('kiosk') } catch (e) { return false } })()
+
 export default function App() {
   const { connect } = useMIDI()
   const raf = useRef(0)
@@ -51,9 +63,9 @@ export default function App() {
   const [panelW, setPanelW] = useState(savedSizes.panelW || 340)
   const [monitorH, setMonitorH] = useState(savedSizes.monitorH || 84)
   const [canvasVh, setCanvasVh] = useState(savedSizes.canvasVh || 46) // 手機：畫布高度(vh)，面板可拉高
-  const [stage, setStage] = useState(false) // 演出模式：隱藏全部 UI，只留球體
+  const [stage, setStage] = useState(KIOSK) // 演出模式：隱藏全部 UI，只留球體；?kiosk=1 直接進場
   const [showVK, setShowVK] = useState(false) // 虛擬控制器
-  const [showInfo, setShowInfo] = useState(() => { try { return !localStorage.getItem('ixd2026.seen') } catch (e) { return true } })
+  const [showInfo, setShowInfo] = useState(() => { if (KIOSK) return false; try { return !localStorage.getItem('ixd2026.seen') } catch (e) { return true } })
   const closeInfo = () => { setShowInfo(false); try { localStorage.setItem('ixd2026.seen', '1') } catch (e) {} }
   const [showMulti, setShowMulti] = useState(false)     // 多人合奏 QR
   const [installEvt, setInstallEvt] = useState(null)    // PWA 加入主畫面
@@ -79,6 +91,24 @@ export default function App() {
     const e = installEvt; if (!e) return
     setInstallEvt(null)
     try { await e.prompt() } catch (err) {}
+  }
+
+  // AR 實景背景：相機鋪在畫布後，模糊/清澈只影響背景
+  const videoRef = useRef(null)
+  const [arOn, setArOn] = useState(false)
+  const toggleAR = async () => {
+    const st = useStore.getState()
+    if (arOn) { arStop(videoRef.current); setArOn(false); st.pushLog('out', 'AR 實景關閉') }
+    else {
+      const ok = await arStart(videoRef.current, () => setArOn(false))
+      setArOn(ok)
+      if (ok) { if (videoRef.current) videoRef.current.style.filter = arFilter(); st.pushLog('out', 'AR 實景開啟（背景=相機）') }
+      else st.pushLog('out', 'AR 相機開啟失敗：' + (arState.err || '不支援'))
+    }
+  }
+  const onArTune = (key, v) => {
+    arState[key] = v
+    if (videoRef.current) videoRef.current.style.filter = arFilter()
   }
 
   // 全域鍵盤：H 演出模式、空白鍵播放、R 錄製、1-4 召喚生物、? 說明（輸入/按鈕聚焦時放行原生行為）
@@ -187,12 +217,23 @@ export default function App() {
     <div className={'app' + (stage ? ' stagemode' : '')} style={{ '--panel-w': panelW + 'px', '--monitor-h': monitorH + 'px', '--canvas-vh': canvasVh }}>
       {stage && <button className="stage-exit" onClick={() => setStage(false)} title="離開演出模式（或按 H）">✕</button>}
       <TopBar onConnect={connect} onInfo={() => setShowInfo(true)} onVK={() => setShowVK((v) => !v)} vkOn={showVK}
-              onMulti={() => setShowMulti((v) => !v)} multiOn={showMulti} />
+              onMulti={() => setShowMulti((v) => !v)} multiOn={showMulti} onAR={toggleAR} arOn={arOn} />
       <main className="stage">
-        <div className="canvas-wrap" onDoubleClick={() => setStage((s) => !s)} onWheel={onWheel} title="雙擊演出模式 · 滾輪縮放">
+        <div className={'canvas-wrap' + (arOn ? ' ar-on' : '')} onDoubleClick={() => setStage((s) => !s)} onWheel={onWheel} title="雙擊演出模式 · 滾輪縮放">
+          <video ref={videoRef} className="ar-video" playsInline muted aria-hidden="true" />
           <Suspense fallback={<div className="canvas-loading">載入海洋…</div>}><Scene3D /></Suspense>
           <ParamHUD />
           <TakeoverHint />
+          <DataHUD />
+          {arOn && (
+            <div className="ar-ctrl" aria-label="AR 背景調整">
+              <label>模糊<input type="range" min="0" max="22" step="1" defaultValue={arState.blur}
+                     onInput={(e) => onArTune('blur', parseFloat(e.target.value))} /></label>
+              <label>清澈<input type="range" min="0" max="1" step="0.01" defaultValue={arState.clarity}
+                     onInput={(e) => onArTune('clarity', parseFloat(e.target.value))} /></label>
+            </div>
+          )}
+          {stage && <StageStats />}
         </div>
         <Splitter axis="x" onDelta={(dx) => setPanelW((w) => clamp(w - dx, 260, 640))} />
         <div className="sheet-handle" onPointerDown={sheetDrag} title="拖曳調整面板高度"><span /></div>

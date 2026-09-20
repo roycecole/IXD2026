@@ -4,6 +4,8 @@ export const LS = {
   params: 'ixd2026.params',       // 目前參數（視覺狀態）
   sizes: 'ixd2026.sizes',         // 面板 / 監看尺寸
   recording: 'ixd2026.recording', // 上次錄製
+  markers: 'ixd2026.markers',     // Marker 場景快照（實體 Marker 鍵存的參數組）
+  stats: 'ixd2026.stats',         // 展場統計（掃碼人數 / 演出次數）
 }
 export const SS = {
   log: 'ixd2026.log',             // IN/OUT log（本 session）
