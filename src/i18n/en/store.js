@@ -74,6 +74,7 @@ export default {
   '{basin} {m} 月 {v} 種': ({ basin, m, v }) => `${basin} · ${MON[m - 1] || m}: ${v} species`,
   '{basin} {m} 月 {v} 種（內插）': ({ basin, m, v }) => `${basin} · ${MON[m - 1] || m}: ${v} species (interpolated)`,
   '調查 {span}': 'survey {span}',
+  '調查 {span}（空窗 {gaps}）': 'survey {span} (no survey {gaps})',
   '{n} 站即時水位': ({ n }) => `${n} live water-level ${plural(n, 'gauge', 'gauges')}`,
   '平均警戒比 {v}': 'avg. alert ratio {v}',
   '銀河濃度': 'Milky Way density',

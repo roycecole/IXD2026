@@ -150,13 +150,22 @@ export function createXrController(env = {}) {
   const guardMs = env.guardMs ?? XR_PLACE.guardMs
   const readyTimeoutMs = env.readyTimeoutMs ?? XR_PLACE.readyTimeoutMs
 
+  // XR 進出時廣播一個全域事件（{ active }）：不相依的模組（例如自動畫質）可以據此暫停——immersive session 期間 window 的
+  // requestAnimationFrame 會停，結束後第一個超大 dt 會被誤判成效能不足而降畫質。沒有 window（node）時什麼都不做。
+  const announce = env.announce || ((active) => {
+    const g = globalThis
+    if (g && typeof g.dispatchEvent === 'function' && typeof g.CustomEvent === 'function') g.dispatchEvent(new g.CustomEvent('midisea:xr', { detail: { active } }))
+  })
   const initial = () => ({ status: 'idle', session: null, error: null, reason: null, tracking: false, hit: false, placement: null })
   let state = initial()
   const subs = new Set()
   let session = null, onEnd = null, seq = 0, endRequested = false, guardUntil = 0, readyTimer = null
 
   const set = (patch) => {
+    const was = isActiveStatus(state.status)
     state = { ...state, ...patch }
+    const is = isActiveStatus(state.status)
+    if (was !== is) { try { announce(is) } catch (e) { /* 廣播失敗不能拖垮狀態機 */ } }
     for (const f of [...subs]) { try { f(state) } catch (e) { /* 訂閱者的錯誤不能拖垮狀態機 */ } }
   }
   const clearReady = () => { if (readyTimer != null) { clrTo(readyTimer); readyTimer = null } }

@@ -188,7 +188,11 @@ export function createDripAccumulator() {
 //   store = { getState(), subscribe(fn(state, prev)) → unsubscribe }（zustand store 即符合）
 //   回傳 dispose()：取消訂閱、停計時器、停止進行中的震動。
 // 每次 store 變動（資料播放時每幀）都會進到訂閱函式，所以先用參考比較快速略過與觸覺無關的變動。
-export function attachHapticsSource({ store, haptics, getPurifyV, setIntervalFn, clearIntervalFn, now, isHidden, tickMs = 150 }) {
+//   isSuppressed()：回傳 true 時，「導覽自己引起的」事件不震（錄製 / 播放起訖、溢流，以及溢流的滴水節奏）——
+//     資料導覽每站都會開始 / 結束播放、滿庫時溢流；沒人碰的手機放在桌上會每隔幾秒震一次（耗電、也不知道從哪來）。
+//     鯨魚 / 海豚 / 海龜 / 淨化不是導覽會做的事，是使用者（或語音 / 遙控）在導覽中叫的 → 照震。
+export const TOUR_QUIET_EVENTS = new Set(['record', 'recordStop', 'playStart', 'playStop', 'overflow'])
+export function attachHapticsSource({ store, haptics, getPurifyV, setIntervalFn, clearIntervalFn, now, isHidden, isSuppressed, tickMs = 150 }) {
   const setI = setIntervalFn || ((fn, ms) => setInterval(fn, ms))
   const clearI = clearIntervalFn || ((id) => clearInterval(id))
   const nowMs = now || (() => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now()))
@@ -199,6 +203,7 @@ export function attachHapticsSource({ store, haptics, getPurifyV, setIntervalFn,
     const n = nowMs(), dt = n - lastT
     lastT = n
     if (isHidden && isHidden()) return
+    if (isSuppressed && isSuppressed()) return
     if (!haptics.getState().enabled) return
     if (acc.tick(dt)) haptics.trigger('drip', 0.7 + 0.5 * acc.depth)   // 越滿越用力一點
   }
@@ -215,8 +220,12 @@ export function attachHapticsSource({ store, haptics, getPurifyV, setIntervalFn,
   const unsub = store.subscribe((s, prev) => {
     if (disposed || !prev) return
     if (s.spawns === prev.spawns && s.rec.mode === prev.rec.mode && s.params.seaLevel === prev.params.seaLevel) return
-    for (const ev of diffEvents(prev, s, { purifyV: getPurifyV ? getPurifyV() : 1 })) haptics.trigger(ev.name, ev.scale)
-    if (s.params.seaLevel !== prev.params.seaLevel) setDepth(overflowDepth(s.params.seaLevel))
+    const quiet = !!(isSuppressed && isSuppressed())
+    for (const ev of diffEvents(prev, s, { purifyV: getPurifyV ? getPurifyV() : 1 })) {
+      if (quiet && TOUR_QUIET_EVENTS.has(ev.name)) continue
+      haptics.trigger(ev.name, ev.scale)
+    }
+    if (s.params.seaLevel !== prev.params.seaLevel) setDepth(overflowDepth(s.params.seaLevel))   // 深度照常追蹤（靜音期間也要，導覽結束後滴水節奏才對）
   })
 
   return function dispose() {

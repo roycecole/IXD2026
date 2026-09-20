@@ -4,7 +4,9 @@
 //   · MediaPipe（@mediapipe/tasks-vision）只在使用者打開手勢時「動態 import」，不進主 bundle。
 //   · 相機：AR 實景已開 → 直接重用 arState.video（不開第二個相機）；否則自己開隱藏的 <video>（前鏡頭、640x480）。
 //     AR 開關中途切換會自動換來源；關閉手勢 / 離開時停掉自己開的所有 track（AR 的串流不是我們的，不碰）。
-//   · 偵測 ≤ 15 fps（requestVideoFrameCallback + 最小間隔節流；沒有 rVFC 時退回計時器）；頁面隱藏時暫停。
+//   · 偵測 ≤ 15 fps（requestVideoFrameCallback + 最小間隔節流；沒有 rVFC 時退回計時器）；推論在主執行緒同步執行，
+//     所以節流也看「推論花了多久」：慢的裝置（舊手機 / 舊 iPad）會拉長間隔，讓主執行緒有時間畫 React / three（見 restAfter）。
+//   · 頁面隱藏時暫停偵測「並放掉自己開的相機」（與語音一致：切走分頁後相機指示燈要熄）；回到前景再重開。AR 共用的相機不是我們的，不碰。
 //   · 所有瀏覽器相依（getUserMedia、計時器、可見性、動態 import）都可注入（createHandsRuntime 的 opts.env），
 //     gestures.test.mjs 用假相機 / 假 landmarker 測生命週期。
 import { create } from 'zustand'
@@ -17,6 +19,10 @@ export const WASM_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@$
 export const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task'
 export const DETECT_INTERVAL_MS = 66      // 名目間隔（≈15 fps）：沒有 rVFC 時的輪詢週期，也是 rVFC 路徑的保底計時
 const MIN_GAP_MS = DETECT_INTERVAL_MS - 2  // 兩次偵測的最小間隔；容許計時器提早醒來與影像幀時間抖動（30fps 相機 → 每隔一幀偵測＝15fps）
+const REST_FACTOR = 2                     // 推論花了 d 毫秒 → 至少讓主執行緒喘 2d 毫秒（佔用率 ≤ 1/3）
+const MAX_REST_MS = 100                   // 上限：再慢也不把偵測間隔拉到手勢狀態機的容忍（openGraceMs≈150ms）以外太多
+// 推論結束後至少要休息多久（純函式，可測）：快的裝置（d 小）= 0，行為與只看名目間隔完全相同
+export const restAfter = (durationMs) => (durationMs > 0 ? Math.min(MAX_REST_MS, REST_FACTOR * durationMs) : 0)
 const LOAD_TIMEOUT_MS = 60000             // 模型 / WASM 載入的逾時（約 8MB + 11MB WASM；慢網路給足時間）
 const MAX_DETECT_FAILS = 8
 
@@ -117,7 +123,7 @@ export function createHandsRuntime(opts = {}) {
   let own = null                     // { video, stream }
   let srcKind = null                 // 'ar' | 'own' | null（相機還沒準備好）
   let cancelNext = noop, offVis = noop
-  let lastDetectAt = -Infinity, lastTs = 0, lastVideoTime = -1, failStreak = 0
+  let nextDetectAt = -Infinity, lastTs = 0, lastVideoTime = -1, failStreak = 0   // nextDetectAt：最早可以再偵測的時間（名目間隔 + 推論後的休息）
 
   const currentVideo = () => (srcKind === 'ar' ? E.getArVideo() : srcKind === 'own' && own ? own.video : null)
 
@@ -229,14 +235,18 @@ export function createHandsRuntime(opts = {}) {
     if (stopped || paused) return
     if (E.isHidden()) { pause(); return }
     const now = E.now()
-    if (now - lastDetectAt < MIN_GAP_MS) { scheduleNext(currentVideo()); return }   // 節流：≈15 fps
+    if (now < nextDetectAt) { scheduleNext(currentVideo()); return }   // 節流：≈15 fps，且推論慢時讓出主執行緒
 
     // 來源自適應：AR 開 → 共用它的相機並放掉自己的；AR 關 → 改開自己的
     const ar = E.getArVideo()
     if (ar && srcKind !== 'ar') { closeOwn(); srcKind = 'ar'; lastVideoTime = -1; onStatus({ camera: 'shared' }) }
     else if (!ar && srcKind === 'ar') {
       srcKind = null; onStatus({ camera: null }); safeFrame(null, now, { reset: true })
-      openOwn().then((ok) => { if (ok && !stopped && !paused) scheduleNext(currentVideo()) })
+      openOwn().then((ok) => {
+        if (!ok || stopped) return
+        if (paused) { releaseOwnCamera(); return }            // 重開的期間頁面被藏起來：不留相機開著
+        scheduleNext(currentVideo())
+      })
       return
     }
     if (srcKind == null) return       // 相機準備中：openOwn 完成後會重新排程
@@ -244,7 +254,7 @@ export function createHandsRuntime(opts = {}) {
     const video = currentVideo()
     if (!landmarker || rebuilding || !video || video.readyState < 2 || !(video.videoWidth > 0) || video.currentTime === lastVideoTime) { scheduleNext(video); return }
     lastVideoTime = video.currentTime
-    lastDetectAt = now
+    nextDetectAt = now + MIN_GAP_MS
     let lm = null
     try {
       const ts = Math.max(now, lastTs + 1)            // MediaPipe VIDEO 模式要求時間戳嚴格遞增
@@ -253,6 +263,10 @@ export function createHandsRuntime(opts = {}) {
       lm = (res && res.landmarks && res.landmarks[0]) || null
       failStreak = 0
     } catch (e) { onDetectError(e); return }
+    // 推論是主執行緒上的同步呼叫：舊手機 / 舊 iPad 上一次要數十毫秒，光靠名目間隔會讓它幾乎一直在算（React 與 three 的 rAF 被餓到、FPS 掉，
+    // 而自動畫質降級並不會減少推論成本 → 永遠升不回來）。量這次花了多久，下一次至少等到「推論結束後再休息 restAfter(d)」。
+    const rest = restAfter(E.now() - now)
+    if (rest > 0) nextDetectAt = Math.max(nextDetectAt, E.now() + rest)
     safeFrame(lm, now, { aspect: video.videoWidth / video.videoHeight })
     scheduleNext(video)
   }
@@ -272,16 +286,32 @@ export function createHandsRuntime(opts = {}) {
   }
 
   // ---- 頁面隱藏時暫停 ----
+  // 暫停偵測並放掉「自己開的」相機（桌面 Chrome / Edge 在分頁隱藏時仍會持續擷取，指示燈一直亮）；AR 共用的相機不是我們的，不碰。
+  function releaseOwnCamera() {
+    if (srcKind !== 'own') return
+    closeOwn(); srcKind = null; lastVideoTime = -1
+    onStatus({ camera: null })
+  }
   function pause() {
     if (paused) return
     paused = true
     cancelNext(); cancelNext = noop
+    releaseOwnCamera()
     safeFrame(null, E.now(), { reset: true })
   }
   function onVisibility() {
     if (stopped) return
     if (E.isHidden()) pause()
-    else if (paused) { paused = false; lastVideoTime = -1; scheduleNext(currentVideo()) }
+    else if (paused) {
+      paused = false; lastVideoTime = -1
+      if (srcKind == null && !E.getArVideo()) {          // 隱藏期間放掉了自己的相機 → 重開（權限已授予，通常不會再跳提示）
+        openOwn().then((ok) => {
+          if (!ok || stopped) return                       // 失敗 → openOwn 內已 fail()（顯示原因）
+          if (paused) { releaseOwnCamera(); return }       // 重開的期間又被藏起來（快速切分頁）→ 立刻放掉，不留相機開著
+          scheduleNext(currentVideo())
+        })
+      } else scheduleNext(currentVideo())
+    }
   }
 
   async function start() {

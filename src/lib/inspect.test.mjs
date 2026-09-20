@@ -8,7 +8,7 @@ import { registerEn, setLocale } from '../i18n/index.js'
 import {
   THRESHOLD_PX, MIN_ALPHA, PRIORITY, thresholdFor, pickSources, registerPickSource, collectCandidates, pickTarget,
   createTapTracker, placeCard, DOCK_W, playContext, stationData, moonData, birdData, buildInspectData, describeInspect,
-  sanitizeInspectState, createInspectStore, IDLE_MS, FAILSAFE_MS,
+  sanitizeInspectState, createInspectStore, idleMsFor, IDLE_MS, IDLE_MAX_MS, FAILSAFE_MS,
 } from './inspect.js'
 
 const { dict } = await loadEnDict()
@@ -412,9 +412,9 @@ test('store：開 / 關；seq 每次開卡 +1；訂閱通知；壞資料不開',
   const before = n; off(); s.open(DATA); assert.equal(n, before, '取消訂閱後不再通知')
   assert.equal(tm.pending(), 1); s.dispose(); assert.equal(tm.pending(), 0)
 })
-test('store：6 秒無操作自動關；操作（touch）重新計時；游標停在卡片上暫停、離開後重新計 6 秒', () => {
+test('store：固定 idleMs（6 秒）時，無操作自動關；操作（touch）重新計時；游標停在卡片上暫停、離開後重新計 6 秒', () => {
   assert.equal(IDLE_MS, 6000)
-  const tm = makeTimers(); const s = createInspectStore(tm)
+  const tm = makeTimers(); const s = createInspectStore({ ...tm, idleMs: IDLE_MS })
   s.open(DATA)
   tm.advance(5900); assert.equal(s.get().open, true)
   s.touch(); tm.advance(5900); assert.equal(s.get().open, true, 'touch 後重新計時')
@@ -425,11 +425,30 @@ test('store：6 秒無操作自動關；操作（touch）重新計時；游標�
   s.close(); assert.equal(tm.pending(), 0, '關閉後不留計時器')
 })
 test('store：游標停在卡片上時卡片被關掉（Esc / 點空白，pointerleave 可能不會來）→ 下一張新卡片仍會自動關', () => {
-  const tm = makeTimers(); const s = createInspectStore(tm)
+  const tm = makeTimers(); const s = createInspectStore({ ...tm, idleMs: IDLE_MS })
   s.open(DATA); s.hold(true); s.close()
   s.open(DATA); tm.advance(6100)
   assert.equal(s.get().open, false)
 })
+test('停留時間依卡片內容：測站卡（中 / 英）要讀完資料出處那一行，至少 9 秒（固定 6 秒在觸控裝置上讀不到最後一行）；夾在 [6, 25] 秒；失敗保險比最長停留更長', () => {
+  const zh = idleMsFor(DATA), en = inEn(() => idleMsFor(DATA))
+  assert.ok(zh >= 9000 && zh <= IDLE_MAX_MS, `中文 ${zh}`)
+  assert.ok(en >= 9000 && en <= IDLE_MAX_MS, `英文 ${en}`)
+  assert.equal(idleMsFor(null), IDLE_MS); assert.equal(idleMsFor({ kind: 'ufo' }), IDLE_MS)
+  assert.ok(idleMsFor({ kind: 'bird', basin: '淡水河流域', month: 8, value: 79, interpolated: true, from: 2004, to: 2015, years: 12, flocks: 3 }) > idleMsFor({ kind: 'bird', none: true }), '內容越多停越久')
+  assert.ok(FAILSAFE_MS > IDLE_MAX_MS, '觀眾視窗的保險計時不能比主視窗的最長停留更早')
+})
+test('store（預設）：停留依內容——6 秒時卡片還在（以前 6 秒就關），到時間才關；操作 / 離開卡片都以同一個時間重新計', () => {
+  const tm = makeTimers(); const s = createInspectStore(tm)
+  s.open(DATA)
+  const ms = idleMsFor(DATA)
+  tm.advance(IDLE_MS + 100); assert.equal(s.get().open, true, '6 秒時還沒讀完')
+  tm.advance(ms - IDLE_MS - 100 - 1); assert.equal(s.get().open, true)
+  tm.advance(2); assert.equal(s.get().open, false)
+  s.open(DATA); tm.advance(ms - 100); s.touch(); tm.advance(ms - 100); assert.equal(s.get().open, true, 'touch 重新計一整段')
+  s.hold(true); tm.advance(60000); assert.equal(s.get().open, true); s.hold(false); tm.advance(ms - 100); assert.equal(s.get().open, true); tm.advance(200); assert.equal(s.get().open, false)
+})
+
 test('store：觀眾視窗 applyMirror 只設定狀態（位置為 0..1）；壞值忽略；主視窗失聯時保險計時關閉', () => {
   assert.equal(FAILSAFE_MS > IDLE_MS, true)
   const tm = makeTimers(); const s = createInspectStore(tm)

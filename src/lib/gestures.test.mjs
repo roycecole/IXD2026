@@ -454,7 +454,7 @@ test('hands.js 的 MediaPipe 版本 = package.json 的 @mediapipe/tasks-vision�
 // =====================================================================
 import {
   createHandsRuntime, gestureSupport, setGestureEnabled, useHandsStore, errorKey, stateLabel,
-  DETECT_INTERVAL_MS, WASM_BASE, MODEL_URL,
+  DETECT_INTERVAL_MS, WASM_BASE, MODEL_URL, restAfter,
 } from './hands.js'
 
 const flush = () => new Promise((r) => setImmediate(r))
@@ -464,6 +464,7 @@ function fakeClock() {
   const timers = new Map()
   return {
     now: () => now,
+    bump: (ms) => { now += ms },   // 模擬「同步的長時間運算」：時間流逝但不觸發任何計時器（例如主執行緒上的推論）
     setTimeout: (f, ms) => { const i = ++id; timers.set(i, { at: now + ms, f }); return i },
     clearTimeout: (i) => { timers.delete(i) },
     pending: () => timers.size,
@@ -484,7 +485,7 @@ function fakeClock() {
 const fakeStream = () => { const tracks = [{ stopped: false, onended: null, stop() { this.stopped = true } }]; return { tracks, getTracks: () => tracks, getVideoTracks: () => tracks } }
 const fakeVideo = (clock, over = {}) => ({ readyState: 4, videoWidth: 640, videoHeight: 480, srcObject: null, removed: false, play: async () => {}, pause() {}, remove() { this.removed = true }, get currentTime() { return clock.now() / 1000 }, ...over })
 
-function fakeVision({ gpuFails = false, gpuDetectThrows = false, result } = {}) {
+function fakeVision({ gpuFails = false, gpuDetectThrows = false, result, onDetect } = {}) {
   const created = []
   return {
     created,
@@ -497,6 +498,7 @@ function fakeVision({ gpuFails = false, gpuDetectThrows = false, result } = {}) 
           close() { this.closed = true },
           detectForVideo(v, ts) {
             this.calls.push(ts)
+            if (onDetect) onDetect()
             if (gpuDetectThrows && o.baseOptions.delegate === 'GPU') throw new Error('gl lost')
             return { landmarks: result === null ? [] : [result || place(POSES.openPalm())] }
           },
@@ -767,6 +769,103 @@ test('頁面隱藏 → 暫停偵測並通知重置；回到前景 → 繼續', a
   assert.ok(lm.calls.length > n, '回到前景後恢復')
   h.rt.stop()
   assert.equal(h.visCbs.size, 0, '可見性監聽要取消')
+})
+
+test('頁面隱藏 → 放掉自己開的相機（桌面瀏覽器隱藏時仍會擷取、指示燈一直亮）；回到前景重開並繼續偵測', async () => {
+  const h = harness()
+  await h.rt.start(); await h.clock.advance(500)
+  assert.equal(h.last('camera'), 'own'); assert.equal(h.gum.length, 1)
+  const lm = h.lm()
+  await h.setHidden(true)
+  assert.ok(h.streams[0].tracks.every((tr) => tr.stopped), '隱藏後相機 track 全部停掉')
+  assert.equal(h.videos[0].removed, true); assert.equal(h.videos[0].srcObject, null)
+  assert.equal(h.last('camera'), null, '狀態回報相機已放掉（徽章 / 面板不再顯示使用中）')
+  assert.equal(h.last('phase'), 'running', '功能仍是開著的（只是暫停）')
+  const n = lm.calls.length
+  await h.clock.advance(2000)
+  assert.equal(lm.calls.length, n); assert.equal(h.clock.pending(), 0)
+  await h.setHidden(false); await h.clock.advance(500)
+  assert.equal(h.gum.length, 2, '回到前景重開相機'); assert.equal(h.last('camera'), 'own')
+  assert.ok(h.streams[1].tracks.every((tr) => !tr.stopped))
+  assert.ok(lm.calls.length > n, '偵測恢復')
+  h.rt.stop()
+  assert.ok(h.streams.every((s) => s.tracks.every((tr) => tr.stopped)), 'stop 後全部放掉')
+  assert.equal(h.visCbs.size, 0)
+})
+
+test('頁面隱藏：AR 共用的相機不是我們的，不碰、也不另外開相機', async () => {
+  const h = harness()
+  const arStream = fakeStream()
+  h.ar = fakeVideo(h.clock, { srcObject: arStream })
+  await h.rt.start(); await h.clock.advance(300)
+  assert.equal(h.last('camera'), 'shared'); assert.equal(h.gum.length, 0)
+  await h.setHidden(true); await h.clock.advance(1000)
+  assert.ok(arStream.tracks.every((tr) => !tr.stopped), 'AR 的串流保持')
+  await h.setHidden(false); await h.clock.advance(300)
+  assert.equal(h.gum.length, 0, '沒有另外開相機'); assert.equal(h.last('camera'), 'shared')
+  h.rt.stop()
+})
+
+test('快速切分頁：重開相機的期間又被藏起來 → 相機開好後立刻放掉，不會在隱藏狀態留下開著的相機', async () => {
+  let gate = false; const waiting = []; const made = []
+  const h = harness({ env: { getUserMedia: (c) => (gate ? new Promise((res) => waiting.push(() => { const s = fakeStream(); made.push(s); res(s) })) : Promise.resolve().then(() => { const s = fakeStream(); made.push(s); return s })) } })
+  await h.rt.start(); await h.clock.advance(300)
+  assert.equal(made.length, 1)
+  gate = true
+  await h.setHidden(true)                       // 放掉第一條
+  await h.setHidden(false)                      // 回前景 → 開始重開（getUserMedia 還沒回來）
+  await h.setHidden(true)                       // 又被藏起來
+  waiting.shift()(); await flush(); await flush()   // 相機這時才回來
+  assert.equal(made.length, 2)
+  assert.ok(made.every((s) => s.tracks.every((tr) => tr.stopped)), '隱藏中不能有開著的相機')
+  assert.equal(h.last('camera'), null)
+  h.rt.stop()
+})
+
+test('回前景重開相機被拒絕 / 被占用 → 明確的錯誤狀態並釋放（不留下半開的相機）', async () => {
+  let fail = null
+  const h = harness({ env: { getUserMedia: async () => { if (fail) throw fail; const s = fakeStream(); h.streams.push(s); return s } } })
+  await h.rt.start(); await h.clock.advance(300)
+  await h.setHidden(true)
+  fail = Object.assign(new Error('busy'), { name: 'NotReadableError' })
+  await h.setHidden(false); await h.clock.advance(100)
+  assert.equal(h.last('phase'), 'error'); assert.equal(h.last('error').code, 'busy')
+  assert.ok(h.streams.every((s) => s.tracks.every((tr) => tr.stopped)))
+  assert.equal(h.lm().closed, true)
+})
+
+test('推論很慢（舊手機 / 舊 iPad）：偵測間隔跟著拉長，主執行緒佔用率被壓在約 1/3~1/2；推論很快時行為不變', async () => {
+  const run = async (detectMs) => {
+    let h
+    h = harness({
+      vision: fakeVision({ onDetect: () => h.clock.bump(detectMs) }),
+      env: { createVideo: () => { const v = rvfcVideo(h.clock, 30); h.videos.push(v); return v } },
+    })
+    await h.rt.start(); await h.clock.advance(100)
+    const lm = h.lm(); const n0 = lm.calls.length
+    await h.clock.advance(6000)
+    const calls = lm.calls.length - n0
+    h.rt.stop()
+    return { rate: calls / 6, busy: (calls * detectMs) / 6000 }
+  }
+  const fast = await run(0), light = await run(10), heavy = await run(60), worst = await run(100)
+  assert.ok(fast.rate >= 14 && fast.rate <= 15.6, `推論即時：仍約 15fps，實際 ${fast.rate.toFixed(1)}`)
+  assert.ok(light.rate >= 12, `10ms 推論：幾乎不受影響 ${light.rate.toFixed(1)}/s`)
+  assert.ok(heavy.busy <= 0.42, `60ms 推論：主執行緒佔用 ${(heavy.busy * 100).toFixed(0)}%（沒有退讓時約 89%）`)
+  assert.ok(worst.busy <= 0.55, `100ms 推論：主執行緒佔用 ${(worst.busy * 100).toFixed(0)}%`)
+  assert.ok(heavy.rate >= 4 && worst.rate >= 3, `仍持續偵測，不會停掉：${heavy.rate.toFixed(1)} / ${worst.rate.toFixed(1)}`)
+})
+
+test('隱私文案與行為一致：說明「切到背景」也會停止相機（中英文）', () => {
+  const zh = readFileSync(new URL('../ui/devices/GestureSection.jsx', import.meta.url), 'utf8')
+  assert.match(zh, /關閉開關、離開頁面或切到背景，都會立刻停止相機/)
+  const en = readFileSync(new URL('../i18n/en/gestures.js', import.meta.url), 'utf8')
+  assert.match(en, /switch to another tab \(it reopens when you come back\)/)
+})
+
+test('restAfter：即時 = 0；d 毫秒 → 休息 2d，上限 100ms', () => {
+  assert.equal(restAfter(0), 0); assert.equal(restAfter(-5), 0); assert.equal(restAfter(NaN), 0)
+  assert.equal(restAfter(10), 20); assert.equal(restAfter(30), 60); assert.equal(restAfter(200), 100)
 })
 
 test('相機 track 中途結束（被系統收走）→ error lost 並釋放', async () => {

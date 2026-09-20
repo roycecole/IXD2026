@@ -11,6 +11,8 @@ import { padEvents, purifyMeta } from '../store/events.js'
 import { registerPickSource, collectCandidates, pickSources, pickTarget, createTapTracker, buildInspectData, playContext, inspectStore } from '../lib/inspect.js'   // 點物件看資料出處（螢幕空間選取 + 卡片狀態）
 import { createPenForce, createPenFlow } from '../lib/pointerExpr.js'   // 觸控筆：壓力 → 浪勁、傾斜 → 洋流方向
 import { useQualityStore } from '../lib/qualityStore.js'
+import { flagOn } from '../lib/urlFlags.js'
+import { trigger as hapticTrigger } from '../lib/haptics.js'   // 點擊亮星的輕觸感（受總開關 / 節流管理）
 import { tierFx, dprRange } from '../lib/quality.js'
 
 // 線稿海洋球：細線輪廓 + 微光 + 通透。程序化波浪（非流體模擬）、簡化弧形反光（非折射）。
@@ -868,7 +870,7 @@ function GlassShell() {
         if (p.gathering) gather = null                    // 放開 → 魚群解散回巡游
         else if (p.moved < 10 && performance.now() - p.t0 < 450 && p.point) {
           const now = performance.now()
-          if (now - lastTapAt > 320) { burstQueue.push(p.point); chime() } // 點擊 → 亮星爆發 + 鈴音（第二擊留給雙擊切換）
+          if (now - lastTapAt > 320) { burstQueue.push(p.point); chime(); hapticTrigger('tap') } // 點擊 → 亮星爆發 + 鈴音 + 輕觸感（第二擊留給雙擊切換）
           lastTapAt = now
         }
         ptrs.current.delete(e.pointerId)
@@ -1500,7 +1502,7 @@ function JellyController() {
 
 // ---- 點物件看資料出處 / 觸控筆壓力與傾斜（選取與卡片邏輯在 lib/inspect.js、lib/pointerExpr.js；這裡只接事件與投影）----
 const _pk = new THREE.Vector3(), _pk2 = new THREE.Vector3()
-const AUDIENCE = (() => { try { return new URLSearchParams(location.search).get('audience') === '1' } catch (e) { return false } })()   // 觀眾視窗畫布不接受輸入：卡片由主視窗鏡像過來
+const AUDIENCE = flagOn(typeof location !== 'undefined' ? location.search : '', 'audience')   // 觀眾視窗畫布不接受輸入：卡片由主視窗鏡像過來
 const PEN_ON = (() => { try { return new URLSearchParams(location.search).get('pen') !== '0' } catch (e) { return true } })()           // ?pen=0 關閉觸控筆的壓力 / 傾斜表現
 const penForce = createPenForce()   // 拖曳球體時：觸控筆壓力 → 浪勁乘數（GlassShell 的 pointermove 讀；非筆 / 無壓力資料 = 1）
 

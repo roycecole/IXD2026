@@ -29,24 +29,40 @@ export function glowForLuma(luma, clarity) {
 }
 
 let stream = null
+let starting = null   // 進行中的 arStart（等 getUserMedia / video.play）：再呼叫一次回傳同一個 promise，不開第二條串流
+let gen = 0           // arStop 的世代：等相機的期間被 arStop 取消 → 串流一到就放掉（不會在「已關閉」之後又亮起）
 
-export async function arStart(video, onEnd) {
-  if (arState.on) return true
+export function arStart(video, onEnd) {
+  if (arState.on) return Promise.resolve(true)
+  if (starting) return starting   // 相機授權 / 開機要 0.5–2 秒、畫面沒有回饋 → 使用者常常再點一次；第二條串流會蓋掉第一條的 stream 變數，變成關不掉的孤兒
+  starting = doStart(video, onEnd).finally(() => { starting = null })
+  return starting
+}
+
+async function doStart(video, onEnd) {
+  const myGen = gen
+  let s = null
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
+    s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
+    if (myGen !== gen) { s.getTracks().forEach((tr) => tr.stop()); return false }   // 等待期間被 arStop 取消
+    stream = s
     // 相機被系統/其他分頁收走時自動退出 AR（否則場景卡在透明背景）
-    stream.getVideoTracks().forEach((tr) => { tr.onended = () => { arStop(video); onEnd && onEnd() } })
-    if (video) { video.srcObject = stream; await video.play().catch(() => {}) }
+    s.getVideoTracks().forEach((tr) => { tr.onended = () => { arStop(video); onEnd && onEnd() } })
+    if (video) { video.srcObject = s; await video.play().catch(() => {}) }
+    if (myGen !== gen) { arStop(video); return false }                              // video.play 期間被 arStop 取消（arStop 已把串流放掉，這裡再收尾一次）
     arState.video = video || null                  // 分享圖 / 錄影要合成相機畫面，需要這個元素
     arState.on = true; arState.err = null
     return true
   } catch (e) {
+    try { s && s.getTracks().forEach((tr) => tr.stop()) } catch (e2) {}          // getUserMedia 已成功但後面失敗：不留下開著的相機
+    if (stream === s) stream = null
     arState.err = (e && (e.name === 'NotAllowedError' ? t('未授權相機') : e.message)) || String(e)
     return false
   }
 }
 
 export function arStop(video) {
+  gen++
   try { stream && stream.getTracks().forEach((t) => t.stop()) } catch (e) {}
   stream = null
   if (video) video.srcObject = null

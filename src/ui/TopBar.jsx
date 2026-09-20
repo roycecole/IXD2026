@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useStore } from '../store/useStore.js'
 import { SCENES } from '../timeline/scenes.js'
 import { buildShareUrl, shareContextOf } from '../lib/share.js'
 import { captureCanvas, downloadBlob, shareSnapshot } from '../lib/capture.js'
 import { arContext } from '../lib/ar.js'
+import { copyText } from '../lib/shareLink.js'
 import { audioToggle, audioState } from '../audio/engine.js'
 import { micToggle } from '../audio/mic.js'
 import { bleSupported } from '../lib/blemidi.js'
@@ -34,6 +35,7 @@ export default function TopBar({ onConnect, onBle, onInfo, onVK, vkOn, onMulti, 
   const audioOn = useStore((s) => s.audioOn)
   const setAudioOn = useStore((s) => s.setAudioOn)
   const [micOn, setMicOn] = useState(false)
+  const micBusy = useRef(false)   // 等麥克風授權期間再點一次：忽略（audio/mic.js 也擋了第二條串流，這裡避免狀態與日誌跑兩次）
   const overlaysOn = useStore((s) => s.overlays.board || s.overlays.hud || s.overlays.qr)
   const toggleOverlays = useStore((s) => s.toggleOverlays)
   const [hz, setHz] = useState(0)
@@ -50,13 +52,22 @@ export default function TopBar({ onConnect, onBle, onInfo, onVK, vkOn, onMulti, 
   const hasRec = rec.count > 0
   const capturing = capPct >= 0
 
+  // 分享結果訊息：顯示 2.2 秒；連按兩次時，前一次的計時器不能提早把新訊息關掉
+  const toastTimer = useRef(0)
+  const flash = (msg) => {
+    setShareMsg(msg)
+    clearTimeout(toastTimer.current)
+    toastTimer.current = setTimeout(() => setShareMsg(''), 2200)
+  }
+  useEffect(() => () => clearTimeout(toastTimer.current), [])
+
   const doShare = async () => {
     const st = useStore.getState()
     const url = buildShareUrl(st.params, shareContextOf(st, locale))   // 視覺參數 + 資料脈絡（海況選項 / 月份 / 鳥魚連動 / 語系）
-    try { await navigator.clipboard.writeText(url); setShareMsg(t('已複製分享連結')) }
-    catch (e) { setShareMsg(t('複製失敗（見主控台）')); console.log('share url:', url) }
-    pushLog('out', t('產生分享連結'))
-    setTimeout(() => setShareMsg(''), 2200)
+    const how = await copyText(url, { promptLabel: t('複製此連結') })   // 剪貼簿不可用（內嵌瀏覽器 / 非 HTTPS）→ 跳出輸入框讓使用者手動複製，不再只 console.log
+    if (how === 'copied') { flash(t('已複製分享連結')); pushLog('out', t('產生分享連結')) }
+    else if (how === 'manual') pushLog('out', t('產生分享連結'))
+    else { flash(t('複製失敗（見主控台）')); console.log('share url:', url); pushLog('out', t('分享連結複製失敗')) }   // 以前無論成敗都寫「產生分享連結」
   }
 
   const doCapture = () => {
@@ -87,13 +98,12 @@ export default function TopBar({ onConnect, onBle, onInfo, onVK, vkOn, onMulti, 
     const rows = describeBoard(st.gov, st.govOption())          // 分享圖帶上目前海況的資料列
     const url = buildShareUrl(st.params, shareContextOf(st, locale))   // 文案「我在 MidiSea 演了一片海 [網址]」的網址：帶目前視覺狀態與資料脈絡
     const r = await shareSnapshot({ lines: rows.slice(0, 3).map((x) => `${x.k}｜${x.v}`), ar: arContext(st.params), url }) // 實景時連真實背景一起輸出
-    if (!r.ok) { setShareMsg(t('分享失敗：{why}', { why: r.why })); pushLog('out', t('分享星球失敗：{why}', { why: r.why })) }
+    if (!r.ok) { flash(t('分享失敗：{why}', { why: r.why })); pushLog('out', t('分享星球失敗：{why}', { why: r.why })) }
     else if (r.how === 'download') {
-      setShareMsg(r.copied ? t('圖片已下載，文案與連結已複製') : t('已下載分享圖'))
+      flash(r.copied ? t('圖片已下載，文案與連結已複製') : t('已下載分享圖'))
       pushLog('out', r.copied ? t('分享星球 → 下載 PNG，文案與連結已複製') : t('分享星球 → 下載 PNG'))
     }
     else if (r.how === 'share') pushLog('out', t('分享星球 → 系統分享'))
-    setTimeout(() => setShareMsg(''), 2200)
   }
 
   return (
@@ -137,7 +147,11 @@ export default function TopBar({ onConnect, onBle, onInfo, onVK, vkOn, onMulti, 
           {audioOn ? t('聲音 {hz}Hz', { hz: hz || audioState.rootHz }) : t('聲音')}
         </button>
         <button data-k="mic" className={'conn' + (micOn ? ' on' : '')}
-                onClick={async () => { const on = await micToggle(); setMicOn(on); useStore.getState().pushLog('out', on ? t('麥克風開啟：吹氣＝起風') : t('麥克風關閉')) }}
+                onClick={async () => {
+                  if (micBusy.current) return
+                  micBusy.current = true
+                  try { const on = await micToggle(); setMicOn(on); useStore.getState().pushLog('out', on ? t('麥克風開啟：吹氣＝起風') : t('麥克風關閉')) } finally { micBusy.current = false }
+                }}
                 title={t('麥克風＝風：對手機吹氣 → 浪變大。只做即時音量偵測，不錄音、不上傳')}>
           {micOn ? t('風·開') : t('麥克風')}
         </button>
@@ -145,7 +159,6 @@ export default function TopBar({ onConnect, onBle, onInfo, onVK, vkOn, onMulti, 
                 title={t('裝置：觀眾視窗、相機手勢、語音、觸覺、畫質、AR 桌面')}>{t('裝置')}</button>
         <button data-k="lang" className="conn lang-btn" onClick={toggleLocale} lang={locale === 'zh' ? 'en' : 'zh-Hant'}
                 title={'Switch language / ' + translate('zh', '切換語言')} aria-label={locale === 'zh' ? 'Switch to English' : translate('zh', '切換為中文')}>{locale === 'zh' ? 'EN' : translate('zh', '中文')}</button>
-        {shareMsg && <span className="toast">{shareMsg}</span>}
       </div>
 
       <button className={'conn' + (midi.connected ? ' on' : '')} onClick={onConnect}>
@@ -158,6 +171,9 @@ export default function TopBar({ onConnect, onBle, onInfo, onVK, vkOn, onMulti, 
         </button>
       )}
       </div>
+      {/* 分享結果：放在 .toolstrip 外面。手機上 .toolstrip 是橫向捲動的，放在裡面會被排到最右邊、畫面外，成功 / 失敗都看不到。
+          常駐的 live region（內容變了才會被螢幕閱讀器唸出來）；空的時候由 CSS 隱藏。 */}
+      <span className="toast" role="status" aria-live="polite">{shareMsg}</span>
     </header>
   )
 }

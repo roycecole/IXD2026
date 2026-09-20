@@ -6,6 +6,7 @@
 //   createTourRunner(deps)     → 導覽執行器：start / tick / stop；負責套用海況、播放序列、偵測中斷、還原導覽前的狀態
 //   useTourStore               → 字幕狀態（zustand）；registerMirror('tour') 讓觀眾視窗顯示同一份字幕
 // 導覽用既有引擎：useStore 的 setGovOption / playGovSeries / playDust / playMoon / playSurvey / stopPlayback / setRecSpeed。
+import { flagOn } from './urlFlags.js'
 import { create } from 'zustand'
 import { seriesFromOption, seriesFromSurvey, seriesFromDust, seriesFromMoon } from './series.js'
 import { dustSummary } from './describe.js'
@@ -243,7 +244,7 @@ export function resolveAutoIdle({ saved = null, search = '' } = {}) {
   const u = String(q.get('tour') || '').toLowerCase()
   if (u === '0' || u === 'off') return false
   if (u === '1' || u === 'on') return true
-  if (q.has('kiosk')) return true
+  if (flagOn(search, 'kiosk')) return true                 // ?kiosk=0 明確關閉不算
   if (typeof saved === 'boolean') return saved
   return AUTO_IDLE_DEFAULT
 }
@@ -252,7 +253,7 @@ export function resolveAutoIdle({ saved = null, search = '' } = {}) {
 export function isAudienceSearch(search) {
   try {
     const q = new URLSearchParams(search || '')
-    if (q.has('audience')) return true
+    if (flagOn(search, 'audience')) return true
     return ['audience', 'viewer', 'spectator'].includes(String(q.get('view') || q.get('mode') || q.get('role') || '').toLowerCase())
   } catch (e) { return false }
 }
@@ -326,6 +327,7 @@ export function createTourRunner(deps) {
   const afterPlay = deps.afterPlay || (() => {})   // 每次「導覽自己開始播放序列」後呼叫（讓外層把 store 記的「演出次數」扣回去：導覽不是使用者的演出）
   const st = () => store.getState()
   let run = null
+  let stopping = false   // stop() 進行中（還原海況時的 playStop / overflow 等副作用事件，是「導覽收尾」引起的，不是使用者引起的）
   let seq = 0
   const api = { lastFail: '' }
 
@@ -362,20 +364,23 @@ export function createTourRunner(deps) {
   function stop(reason = 'user') {
     if (!run) return false
     const r = run
-    run = null
-    const takeover = reason === 'rec' || reason === 'external' || reason === 'option'
-    let s = st()
-    if (s.rec.mode === 'playing' && (r.own || !takeover)) s.stopPlayback()   // 我們的序列 → 停（並還原使用者暫存的錄製）
-    s = st()
-    if (!takeover && s.rec.mode === 'idle') {
-      s.setGovOption(r.snap.optionId)                      // 導覽前的海況選項（同時套用該選項的參數）
-      s.applyParams(r.snap.params)                         // 再蓋回導覽前的參數（保留使用者微調過的值）
-      s.setRecSpeed(r.snap.speed)
-      if (s.persistParams) s.persistParams()               // 導覽期間主迴圈可能已把「導覽中的參數」寫進偏好，這裡寫回還原後的
-    }
-    touch()
-    emit({ running: false, caption: null, index: 0, total: 0, stopMs: 0 })
-    log(reason === 'done' ? t('■ 資料導覽結束，已還原原本的海') : takeover ? t('■ 資料導覽中止（改由你接手）') : t('■ 資料導覽中止，已還原原本的海'))
+    run = null   // 先標成「已結束」：下面的 touch() 會觸發活動掛鉤（→ 再呼叫 stop），重入時在這裡直接回傳
+    stopping = true
+    try {
+      const takeover = reason === 'rec' || reason === 'external' || reason === 'option'
+      let s = st()
+      if (s.rec.mode === 'playing' && (r.own || !takeover)) s.stopPlayback()   // 我們的序列 → 停（並還原使用者暫存的錄製）
+      s = st()
+      if (!takeover && s.rec.mode === 'idle') {
+        s.setGovOption(r.snap.optionId)                      // 導覽前的海況選項（同時套用該選項的參數）
+        s.applyParams(r.snap.params)                         // 再蓋回導覽前的參數（保留使用者微調過的值）
+        s.setRecSpeed(r.snap.speed)
+        if (s.persistParams) s.persistParams()               // 導覽期間主迴圈可能已把「導覽中的參數」寫進偏好，這裡寫回還原後的
+      }
+      touch()
+      emit({ running: false, caption: null, index: 0, total: 0, stopMs: 0 })
+      log(reason === 'done' ? t('■ 資料導覽結束，已還原原本的海') : takeover ? t('■ 資料導覽中止（改由你接手）') : t('■ 資料導覽中止，已還原原本的海'))
+    } finally { stopping = false }
     return true
   }
 
@@ -410,6 +415,7 @@ export function createTourRunner(deps) {
   return Object.assign(api, {
     start, stop, tick,
     isRunning: () => !!run,
+    isActive: () => !!run || stopping,   // 導覽進行中「或正在收尾」：觸覺回饋據此靜音（導覽自己的換站 / 播放 / 還原不是使用者的事件）
     current: () => (run ? { index: run.i, total: run.stops.length, stop: run.stops[run.i], auto: run.auto } : null),
   })
 }

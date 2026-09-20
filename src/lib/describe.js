@@ -2,8 +2,9 @@
 // 資料看板（畫布上）與 OUT 監看（底部日誌）共用，讓使用者看得到「這個畫面是哪筆資料、映射成什麼」。
 import { birdSeasonal, flockCount } from './birds.js'
 import { ageFromLunar, moonAge, moonAltAz, moonPhaseName } from './moon.js'
-import { t } from '../i18n/index.js'
+import { t, getLocale } from '../i18n/index.js'
 import { nameText, weatherText, lunarDayText, tideRangeText } from '../i18n/data.js'
+import { seriesFromSurvey, gapRangeText } from './series.js'
 
 const num = (v, d = 1) => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v * 10 ** d) / 10 ** d : null)
 const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -18,6 +19,12 @@ export function dustSummary(dust) {
 }
 
 const fmtSpan = (d) => (d && d.yearly && d.yearly.length ? `${d.yearly[0].y}–${d.yearly[d.yearly.length - 1].y}` : '')
+// 調查年表中間的空窗年（沒有調查的年份區間，與年表時間軸 / 導覽字幕同一份：series.js 的 extra.gaps）：'2007–2013' / '2007–2013、2016'；沒有空窗 → ''
+function surveyGapText(opt, kind) {
+  let gaps = []
+  try { const spec = seriesFromSurvey(opt, kind); gaps = (spec && spec.extra && spec.extra.gaps) || [] } catch (e) { gaps = [] }
+  return gaps.map(gapRangeText).join(getLocale() === 'en' ? ', ' : '、')
+}
 
 // 鳥 / 魚調查「某月」的一段文字（資料看板與套用日誌共用）：'淡水河流域 9 月 79 種（內插）'
 // month0：0..11；season：birdSeasonal() 的回傳（可為 null）
@@ -88,7 +95,10 @@ export function describeBoard(gov, opt, ctx = {}) {
     const s = birdSeasonal(d.monthly, mo)
     let v = surveyMonthText(d.basin, mo, s)
     if (kind === 'birds' && s) v += ' → ' + t('{n} 群', { n: flockCount(d.species, s.rel) })
-    if (fmtSpan(d)) v += ' · ' + t('調查 {span}', { span: fmtSpan(d) })
+    if (fmtSpan(d)) {
+      const gaps = surveyGapText(opt, kind)   // 「調查 2004–2015」只寫首尾年，看不出中間有空窗（曾文溪的魚：2004–2006、2014–2015）→ 有空窗就補上
+      v += ' · ' + (gaps ? t('調查 {span}（空窗 {gaps}）', { span: fmtSpan(d), gaps }) : t('調查 {span}', { span: fmtSpan(d) }))
+    }
     rows.push({ k: kind === 'birds' ? t('鳥群') : t('魚群'), v })
   }
   if (gov.rivers && gov.rivers.length) {

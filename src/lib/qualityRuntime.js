@@ -6,6 +6,7 @@
 //   rec      錄製（app store 的 rec.mode === 'recording'）
 //   capture  錄影（TopBar 沒有共用旗標，讀它的錄影鈕 [data-k="capture"]：錄影期間 disabled；找不到按鈕 → 視為沒有錄影）
 //   drag     使用者拖曳：任何指標按住超過 dragMs（單擊 / 輕點不打斷取樣）
+//   xr       WebXR 桌面放置進行中（lib/xr.js 進出時廣播 window 的 'midisea:xr' 事件；immersive 期間 window rAF 會停，結束後第一幀 dt 很大，會被誤判成慢）
 import { createQualityController } from './quality.js'
 
 export const DRAG_MS = 300          // 按住超過這麼久才算「拖曳」
@@ -38,6 +39,8 @@ export function startQualityRuntime(opts = {}) {
   const onVis = () => setPause('hidden', !!doc.hidden)
   doc.addEventListener('visibilitychange', onVis)
   onVis()
+  const onXr = (e) => setPause('xr', !!(e && e.detail && e.detail.active))
+  win.addEventListener('midisea:xr', onXr)
 
   const recOf = (s) => !!(s && s.rec && s.rec.mode === 'recording')
   let unsubRec = () => {}
@@ -96,6 +99,7 @@ export function startQualityRuntime(opts = {}) {
       clrIv(ivPub); clrIv(ivPoll)
       if (dragTimer != null) { clrTo(dragTimer); dragTimer = null }
       doc.removeEventListener('visibilitychange', onVis)
+      win.removeEventListener('midisea:xr', onXr)
       win.removeEventListener('pointerdown', onDown, true)
       win.removeEventListener('pointerup', onUp, true)
       win.removeEventListener('pointercancel', onUp, true)

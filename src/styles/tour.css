@@ -42,6 +42,10 @@
   .tour-dot { width: 6px; height: 6px; }
   .tour-dot.cur { width: 20px; }
   .app.stagemode .tour-caption { max-width: calc(100% - 20px); }
+  /* 展場（?kiosk=1）iPad 直放 / 手機：字幕整條寬度（上一條把側邊預留拿掉了），會蓋住左下角的掃碼 QR（英文字幕更長、更寬，蓋得更多；
+     半透明模糊層一蓋，QR 的模組糊掉就掃不到）。有 QR 時把字幕抬到 QR 上方：QR 盒高 ≈ 104px 畫布 + 說明字 + 邊距 ≈ 170px。
+     :has 不支援（Safari < 15.4）時這條被忽略，維持原樣。 */
+  .app.stagemode .canvas-wrap:has(.kiosk-qr) .tour-caption { bottom: 176px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .tour-caption { transition: opacity .2s linear; }

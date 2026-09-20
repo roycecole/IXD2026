@@ -9,12 +9,15 @@ import { getMirror } from './lib/mirror.js'
 import { useT } from './i18n/index.js'
 import { AUDIENCE_CHANNEL, createAudience, pickGovOptionId } from './lib/audience.js'
 import { registerCoreMirrors } from './services/AudienceService.jsx'
+import { keepAwake } from './lib/wakeLock.js'
+import { useQualityStore } from './lib/qualityStore.js'
+import { startQualityRuntime } from './lib/qualityRuntime.js'
 import './styles/audience.css'
 
 const Scene3D = lazy(() => import('./scene/Scene3D.jsx'))   // 與主視窗同一個場景元件
 
 // 觀眾視窗（?audience=1）：全螢幕顯示同一片海 + 資料看板 / 資料 HUD。
-// 只「顯示」不「驅動」：沒有控制 UI、沒有聲音、不跑吸引模式 / 導覽 / Services / AR，也不跑 tickPlayback——
+// 只「顯示」不「驅動」：沒有控制 UI、沒有聲音、不跑吸引模式 / 導覽 / Services / AR，也不跑 tickPlayback（只跑自己的自動畫質與螢幕喚醒）——
 // 參數、資料播放進度、觸發事件全部由主視窗經 BroadcastChannel 推過來（見 lib/audience.js）。
 export default function AudienceApp() {
   const t = useT()
@@ -56,6 +59,18 @@ export default function AudienceApp() {
   }, [])
 
   useEffect(() => { document.title = t('MidiSea 觀眾視窗') }, [t])
+
+  // 螢幕保持喚醒：投影機上的這個視窗永遠是「看得見」的那個，它自己持有 wake lock（主視窗可能被縮小 / 蓋住，鎖會跟著放掉；
+  // 導覽期間沒有任何鍵盤滑鼠輸入，OS 的顯示器休眠計時器照跑 → 投影機會黑屏）。系統層級：也一併擋住筆電螢幕的休眠。
+  useEffect(() => keepAwake(), [])
+
+  // 自動畫質：觀眾視窗是像素負擔最大的畫面（投影機常是 4K / 高 DPR），要用「自己」的 FPS 判斷。
+  // 這個視窗的 store 不寫偏好（見 qualityStore 的 audience 判斷），才不會和主視窗搶同一份 localStorage。
+  // 主視窗的畫質「模式」經 'quality' 鏡像切片送過來（qualityStore.js）：操作員手動選一級 → 這個視窗鎖定同一級；選自動 → 用自己的 FPS。網址帶 ?quality= 也可鎖定。
+  useEffect(() => {
+    const rt = startQualityRuntime({ store: useQualityStore, appStore: useStore })
+    return () => rt.stop()
+  }, [])
 
   useEffect(() => {
     if (status.state === 'live') { setSlow(false); return undefined }

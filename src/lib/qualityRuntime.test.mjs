@@ -199,3 +199,106 @@ test('沒有瀏覽器環境（node / SSR）：安全 no-op', () => {
   assert.equal(rt.controller, null)
   rt.stop()
 })
+
+// ---- 觀眾視窗（?audience=1）：自己量 FPS 自己降級，但不寫共用偏好 ----
+import { readFileSync } from 'node:fs'
+import { LS_KEY } from './quality.js'
+
+function audienceSetup({ search = '?audience=1', prefs } = {}) {
+  const env = makeEnv()
+  const storage = memStorage()
+  if (prefs) storage.mem.set(LS_KEY, JSON.stringify(prefs))
+  const store = createQualityStore({ storage, search })
+  const rt = startQualityRuntime({ store, win: env.win, doc: env.doc, now: env.now, raf: env.raf, caf: env.caf, setInterval: env.setInterval, clearInterval: env.clearInterval, setTimeout: env.setTimeout, clearTimeout: env.clearTimeout })
+  return { env, store, storage, rt }
+}
+
+test('觀眾視窗：投影機自己的 FPS 低 → 自己降級；偏好（與主視窗共用的 localStorage）不被覆寫', () => {
+  const { env, store, storage, rt } = audienceSetup({ prefs: { mode: 'auto', tier: 'high' } })
+  const before = storage.mem.get(LS_KEY)
+  env.run(4, 60)
+  env.run(30, 20)                                   // 主視窗順暢、投影機 20fps：只有這個視窗量得到
+  assert.equal(store.getState().tier, 'low')
+  assert.equal(storage.mem.get(LS_KEY), before, '觀眾視窗不寫偏好')
+  store.getState().setMode('medium')
+  assert.equal(storage.mem.get(LS_KEY), before, 'setMode 也不寫')
+  rt.stop()
+})
+
+test('對照：一般（主）視窗降級會寫偏好；觀眾視窗仍會「讀」偏好當起跳等級', () => {
+  const { env, store, storage, rt } = audienceSetup({ search: '' })
+  env.run(4, 60); env.run(30, 20)
+  assert.equal(store.getState().tier, 'low')
+  assert.equal(JSON.parse(storage.mem.get(LS_KEY)).tier, 'low')
+  rt.stop()
+  const aud = createQualityStore({ storage, search: '?audience=1' })
+  assert.equal(aud.getState().tier, 'low', '觀眾視窗以主視窗記住的等級起跳')
+})
+
+test('觀眾視窗網址帶 ?quality= → 鎖定該級，不隨 FPS 降級', () => {
+  const { env, store, rt } = audienceSetup({ search: '?audience=1&quality=high' })
+  env.run(4, 60); env.run(30, 20)
+  assert.equal(store.getState().tier, 'high')
+  assert.equal(store.getState().mode, 'high')
+  rt.stop()
+})
+
+test('接線：AudienceApp 掛載自己的畫質執行期（先前只有主視窗的 Services 有）', () => {
+  const src = readFileSync(new URL('../AudienceApp.jsx', import.meta.url), 'utf8')
+  assert.match(src, /startQualityRuntime\(/)
+})
+
+// ---- 主視窗的畫質模式鏡像到觀眾視窗（已經開著的觀眾視窗也要跟著操作員的選擇）----
+import { createQualityMirror } from './qualityStore.js'
+import { getMirror } from './mirror.js'
+
+test('鏡像：操作員在主視窗手動選「低」→ 已開著的觀眾視窗鎖定「低」（狀態機也被通知）；改回自動 → 觀眾視窗改用自己的 FPS', () => {
+  const host = createQualityStore({ storage: memStorage(), search: '' })
+  const hostSlice = createQualityMirror(host)
+  const { env, store: aud, storage, rt } = audienceSetup({ prefs: { mode: 'auto', tier: 'high' } })
+  const audSlice = createQualityMirror(aud)
+  const before = storage.mem.get(LS_KEY)
+  let notified = 0; const off = hostSlice.subscribe(() => notified++)
+  env.run(4, 60)
+  assert.equal(aud.getState().tier, 'high')
+  host.getState().setMode('low')                                        // 操作員在「裝置 → 畫質」選低
+  assert.equal(notified, 1); assert.deepEqual(hostSlice.get(), { mode: 'low' })
+  audSlice.apply(hostSlice.get())                                        // BroadcastChannel 送過去
+  assert.equal(aud.getState().mode, 'low'); assert.equal(aud.getState().tier, 'low')
+  env.run(30, 60)
+  assert.equal(aud.getState().tier, 'low', '鎖定：FPS 再高也不自動升級')
+  assert.equal(storage.mem.get(LS_KEY), before, '觀眾視窗不寫偏好')
+  host.getState().setMode('auto'); audSlice.apply(hostSlice.get())
+  assert.equal(aud.getState().mode, 'auto'); assert.equal(aud.getState().tier, 'low', '改回自動：由目前等級接手')
+  env.run(4, 60); env.run(30, 60)
+  assert.equal(aud.getState().tier, 'high', '自動模式下觀眾視窗自己量 FPS 升回來（不是被主視窗鎖住）')
+  off(); rt.stop()
+})
+
+test('鏡像：壞值 / 相同模式 / 空值都不動；已註冊到鏡像註冊表（quality）', () => {
+  const s = createQualityStore({ storage: memStorage(), search: '?audience=1' })
+  const slice = createQualityMirror(s)
+  const ref = s.getState()
+  for (const bad of [null, undefined, 'low', {}, { mode: 'ultra' }, { mode: 5 }, { mode: 'auto' }]) slice.apply(bad)
+  assert.equal(s.getState(), ref, '狀態物件沒被換掉')
+  assert.ok(getMirror('quality'), 'qualityStore 載入時註冊 quality 切片')
+})
+
+test('WebXR 期間暫停調整（window 的 midisea:xr 事件），結束後恢復；stop() 會移除這個監聽', () => {
+  const { env, rt } = setup()
+  const before = env.counts().win
+  assert.ok(before >= 1)
+  assert.deepEqual(rt.controller.getState(env.now()).pauseReasons, [])
+  env.win.emit('midisea:xr', { detail: { active: true } })
+  const paused = rt.controller.getState(env.now())
+  assert.equal(paused.paused, true)
+  assert.deepEqual(paused.pauseReasons, ['xr'])
+  env.win.emit('midisea:xr', { detail: { active: false } })
+  const resumed = rt.controller.getState(env.now())
+  assert.equal(resumed.paused, false)
+  assert.deepEqual(resumed.pauseReasons, [])
+  env.win.emit('midisea:xr', {})                          // 壞事件（沒有 detail）不炸、視為結束
+  assert.equal(rt.controller.getState(env.now()).paused, false)
+  rt.stop()
+  assert.equal(env.counts().win, 0)
+})

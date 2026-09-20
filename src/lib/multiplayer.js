@@ -3,7 +3,7 @@
 // 滑鼠同一條路徑，因此 Learn、錄製、soft-takeover、HUD 對多人來源一樣生效。
 // 展場常駐：ID 為短碼（QR 更小）、與訊號伺服器斷線自動用同一 ID 重連、ID 被占用自動換號重建。
 import { useStore } from '../store/useStore.js'
-import { PARAM_ORDER } from '../params/registry.js'
+import { dispatch } from './remoteDispatch.js'
 import { PEER_CONFIG } from './ice.js'
 import { bumpStat } from '../store/stats.js'
 import { t, T } from '../i18n/index.js'
@@ -32,33 +32,8 @@ const listeners = new Set()
 const notify = () => listeners.forEach((f) => { try { f() } catch (e) {} })
 export function onHostChange(fn) { listeners.add(fn); return () => listeners.delete(fn) }
 
-const ALLOWED_P = new Set(PARAM_ORDER)
-const ALLOWED_A = new Set(['spawnWhale', 'spawnDolphin', 'spawnTurtle', 'clearTrash', 'transportPlay', 'transportStop', 'transportRecord'])
-
-// 洋流方向是「兩軸拼成的向量」：多支手機同時傾斜時各寫一軸 → 拼出無人的向量、洋流抖動。
-// 以連線為單位做擁有權：最近有動的那支手機擁有洋流向量，其他手機在其靜止 1.5 秒內的 flowX/flowY 一律忽略。
-const flowOwner = { src: null, t: 0 }
-const FLOW_HOLD_MS = 1500
-
-// 匯出供測試 / 未來其他傳輸層（WebSocket 等）重用。src = 來源連線識別（無則不做擁有權判斷）
-export function dispatch(m, src) {
-  try {
-    if (!m || typeof m !== 'object') return
-    const st = useStore.getState()
-    if (m.t === 'p' && ALLOWED_P.has(m.pid) && typeof m.v === 'number') {
-      if (src != null && (m.pid === 'flowX' || m.pid === 'flowY')) {
-        const now = Date.now()
-        if (flowOwner.src != null && flowOwner.src !== src && now - flowOwner.t < FLOW_HOLD_MS) return
-        flowOwner.src = src; flowOwner.t = now
-      }
-      st.input(m.pid, Math.max(0, Math.min(1, m.v)))
-    } else if (m.t === 'a' && ALLOWED_A.has(m.a)) {
-      st[m.a]()
-    } else if (m.t === 'n' && typeof m.note === 'number') {
-      st.handleNote(m.note | 0, Math.max(0.05, Math.min(1, +m.vel || 0.8)))
-    }
-  } catch (e) {}
-}
+// 遙控訊息 → store 的派送（dispatch）在 lib/remoteDispatch.js（不含 PeerJS / import.meta.env，Node 測得到）；這裡保留匯出以維持原本的 API。
+export { dispatch }
 
 // 短 ID：'ms' + 8 碼 base36（≈ 2.8e12 種）→ URL 短、QR 版本低、小尺寸也好掃
 function makeId() {

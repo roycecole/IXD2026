@@ -288,10 +288,25 @@ export function describeInspect(data) {
 
 // ───────────────────────────── 卡片狀態 store ─────────────────────────────
 // 狀態：{ open, data, x, y, seq }：x / y 是物件在畫布內的相對位置（0..1，觀眾視窗畫布大小不同也能對上）；seq 每次開卡 +1（同一物件再點也會重新廣播）。
-// 自動關：開卡 / 使用者在卡片上操作後 idleMs（6 秒）無操作就關；游標停在卡片上（hold）暫停計時。
-// 觀眾視窗：applyMirror 只設定狀態；為了主視窗斷線時卡片不會卡住，另有 failsafeMs 的保險計時。
-export const IDLE_MS = 6000
-export const FAILSAFE_MS = 12000
+// 自動關：開卡 / 使用者在卡片上操作後 idleMs 無操作就關；游標停在卡片上（hold）暫停計時。
+//   idleMs 預設依卡片內容長度算（idleMsFor）：資料出處在卡片「最後一行」，固定 6 秒在觸控裝置（沒有 hover 可暫停）根本讀不到那一行——
+//   一張測站卡英文約 9–15 秒、中文約 13–19 秒才讀得完。傳入數字則固定（測試用）。
+// 觀眾視窗：applyMirror 只設定狀態；為了主視窗斷線時卡片不會卡住，另有 failsafeMs 的保險計時（必須比任何卡片的停留時間都長，否則觀眾視窗會比主視窗早關）。
+export const IDLE_MS = 6000          // 最短停留（很短的卡片也至少這麼久）
+export const IDLE_MAX_MS = 25000     // 最長停留
+export const FAILSAFE_MS = 30000     // > IDLE_MAX_MS
+const CJK = /[㐀-鿿豈-﫿]/g
+
+// 依「當下語系」的卡片文字長度估閱讀時間：3 秒起跳 + 每個中文字 0.16 秒 + 每個英文單字 0.28 秒，夾在 [IDLE_MS, IDLE_MAX_MS]
+export function idleMsFor(data) {
+  let view = null
+  try { view = describeInspect(data) } catch (e) { view = null }
+  if (!view) return IDLE_MS
+  const text = [view.eyebrow, view.title, ...(view.rows || []).flatMap((r) => [r.k, r.v]), view.note, view.source].filter(Boolean).join(' ')
+  const cjk = (text.match(CJK) || []).length
+  const words = text.replace(CJK, ' ').split(/\s+/).filter((w) => /[A-Za-z0-9]/.test(w)).length
+  return clamp(Math.round(3000 + cjk * 160 + words * 280), IDLE_MS, IDLE_MAX_MS)
+}
 
 export function sanitizeInspectState(v) {
   if (!v || typeof v !== 'object') return null
@@ -300,9 +315,10 @@ export function sanitizeInspectState(v) {
   return { open, data: open ? data : null, x: clamp01(fin(v.x) ? v.x : 0.5), y: clamp01(fin(v.y) ? v.y : 0.5), seq: fin(v.seq) ? Math.max(0, Math.floor(v.seq)) : 0 }
 }
 
-export function createInspectStore({ setTimeoutFn = (f, ms) => setTimeout(f, ms), clearTimeoutFn = (id) => clearTimeout(id), idleMs = IDLE_MS, failsafeMs = FAILSAFE_MS } = {}) {
+export function createInspectStore({ setTimeoutFn = (f, ms) => setTimeout(f, ms), clearTimeoutFn = (id) => clearTimeout(id), idleMs = null, failsafeMs = FAILSAFE_MS } = {}) {
   let state = { open: false, data: null, x: 0.5, y: 0.5, seq: 0 }
   const subs = new Set()
+  const idle = () => (typeof idleMs === 'number' ? idleMs : idleMsFor(state.data))   // 數字 = 固定；否則依卡片內容
   let timer = null, held = false
   const emit = () => subs.forEach((f) => { try { f() } catch (e) { /* 訂閱者出錯不影響其他人 */ } })
   const stop = () => { if (timer != null) { clearTimeoutFn(timer); timer = null } }
@@ -314,7 +330,7 @@ export function createInspectStore({ setTimeoutFn = (f, ms) => setTimeout(f, ms)
       if (!data || !KINDS.includes(data.kind)) return false
       state = { open: true, data, x: clamp01(fin(pos.x) ? pos.x : 0.5), y: clamp01(fin(pos.y) ? pos.y : 0.5), seq: state.seq + 1 }
       held = false                                               // 舊卡片被移除時 pointerleave 不一定會來：新卡片一律重新計時
-      emit(); arm(idleMs)
+      emit(); arm(idle())
       return true
     },
     close() {
@@ -323,8 +339,8 @@ export function createInspectStore({ setTimeoutFn = (f, ms) => setTimeout(f, ms)
       state = { ...state, open: false, data: null }
       emit()
     },
-    touch() { arm(idleMs) },                                     // 使用者在卡片上操作 → 重新計時
-    hold(on) { held = !!on; if (held) stop(); else arm(idleMs) },  // 游標停在卡片上：不自動關
+    touch() { arm(idle()) },                                     // 使用者在卡片上操作 → 重新計時
+    hold(on) { held = !!on; if (held) stop(); else arm(idle()) },  // 游標停在卡片上：不自動關
     applyMirror(v) {                                             // 觀眾視窗：套用主視窗送來的狀態
       const s = sanitizeInspectState(v)
       if (!s) return

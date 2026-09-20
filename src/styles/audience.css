@@ -23,6 +23,17 @@ html[lang='en'] .audience-app .data-board-row { grid-template-columns: 7.4em 1fr
   white-space: normal; text-align: center;
 }
 
+/* 導覽字幕（說明「球為什麼長這樣」的主要內容）：跟資料看板同一個 clamp，依視窗寬度放大——先前沒放大，1080p / 4K 投影上反而比左上角的資料看板還小，數公尺外看不清。
+   容器設 font-size，其餘全用 em；每條都以 .audience-app 開頭（2 個 class）壓過 tour.css 的固定 px 與 ≤820px 的 media query。
+   行數上限 3 行：-webkit-line-clamp 與 line-clamp 都要寫（tour.css 用的是前者，只寫後者在 Chromium / Safari 蓋不掉）。放在畫面下方偏上，避開「點一下進入全螢幕」提示。 */
+.audience-app .tour-caption { font-size: clamp(14px, 1.05vw, 30px); bottom: 8vh; max-width: min(70vw, 1600px); }
+.audience-app .tour-cap { padding: 0.55em 1.1em 0.5em; gap: 0.3em; border-radius: 0.8em; }
+.audience-app .tour-cap-title { font-size: 1.5em; }
+.audience-app .tour-cap-body { font-size: 1.05em; -webkit-line-clamp: 3; line-clamp: 3; }
+.audience-app .tour-dots { gap: 0.4em; margin-top: 0.2em; }
+.audience-app .tour-dot { width: 0.5em; height: 0.5em; }
+.audience-app .tour-dot.cur { width: 1.8em; }
+
 /* 狀態提示（等待主視窗 / 不支援 / 關不掉）與「點一下進入全螢幕」：小而不搶戲 */
 .aud-status {
   position: absolute; left: 1.4vw; bottom: 1.4vw; z-index: 6; display: flex; flex-direction: column; gap: 4px;

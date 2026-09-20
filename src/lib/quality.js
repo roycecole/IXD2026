@@ -199,6 +199,10 @@ export const initialTier = (prefs) => (prefs.mode === 'auto' ? normalizeTier(pre
 export function parseQueryMode(search) {
   try { const v = new URLSearchParams(search || '').get('quality'); return v && MODES.includes(v.toLowerCase()) ? v.toLowerCase() : null } catch (e) { return null }
 }
+// 觀眾視窗（?audience=1，與 main.jsx 的判斷一致）：它是第二個 WebGL 視窗，畫質狀態機只在該視窗內運作、不寫共用的偏好（見 qualityStore）
+export function isAudienceQuery(search) {
+  try { return new URLSearchParams(search || '').get('audience') === '1' } catch (e) { return false }
+}
 export function isFpsDebug(search) {
   try { return new URLSearchParams(search || '').get('fps') === '1' } catch (e) { return false }
 }

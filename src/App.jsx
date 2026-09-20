@@ -1,3 +1,4 @@
+import { flagOn } from './lib/urlFlags.js'
 import { useEffect, useRef, useState, Suspense, lazy } from 'react'
 import ParamPanel from './ui/ParamPanel.jsx'
 import TopBar from './ui/TopBar.jsx'
@@ -29,7 +30,9 @@ import { LS, loadLS, saveLS } from './lib/persist.js'
 import { audioUpdate, audioToggle } from './audio/engine.js'
 import { formatHud } from './lib/series.js'
 import { describeForLog } from './lib/describe.js'
-import { activity } from './store/activity.js'
+import { activity, touch } from './store/activity.js'
+import { keepAwake } from './lib/wakeLock.js'
+import { isInModal } from './lib/modalFocus.js'
 import { SCENES } from './timeline/scenes.js'
 import { t, useLocale } from './i18n/index.js'   // 頂層元件用 useLocale() 訂閱語系 + 模組層 t()（事件 / effect 閉包內取「呼叫當下」的語系）
 
@@ -45,14 +48,16 @@ function pollGamepad(st) {
   if (!pad) return
   const dz = (v) => (Math.abs(v) > 0.18 ? v : 0)
   const ax0 = dz(pad.axes[0] || 0), ax1 = dz(pad.axes[1] || 0)
+  const ax2 = dz(pad.axes[2] || 0), ax3 = dz(pad.axes[3] || 0)
+  // 搖桿有動：先 touch()（資料導覽在這裡同步中止並還原），再重讀 store——下面「目前值 + 增量」的基準才是還原後的值，不是導覽的
+  if (ax0 || ax1 || ax2 || ax3) { touch(); st = useStore.getState() }
   if (ax0) st.input('flowX', 0.5 + ax0 * 0.5)
   if (ax1) st.input('flowY', 0.5 - ax1 * 0.5)
-  const ax2 = dz(pad.axes[2] || 0), ax3 = dz(pad.axes[3] || 0)
   if (ax2) st.input('spin', (st.params.spin ?? 0.3) + ax2 * 0.012)
   if (ax3) st.input('seaLevel', (st.params.seaLevel ?? 0.5) - ax3 * 0.008)
   for (const [i, a] of [[0, 'spawnDolphin'], [1, 'spawnWhale'], [2, 'spawnTurtle'], [3, 'clearTrash'], [9, 'transportPlay'], [8, 'transportRecord']]) {
     const pr = !!(pad.buttons[i] && pad.buttons[i].pressed)
-    if (pr && !gpPrev[i]) { const fn = st[a]; if (fn) fn() }
+    if (pr && !gpPrev[i]) { touch(); const fn = useStore.getState()[a]; if (fn) fn() }   // 走帶鍵不經 input()，要自己 touch()（先中止導覽再執行）
     gpPrev[i] = pr
   }
 }
@@ -65,7 +70,7 @@ function StageStats() {
   return <div className="stage-stats">{t('合奏 {joins} 人 · 演出 {plays} 次', { joins: stats.joins, plays: stats.plays + stats.recs })}</div>
 }
 
-const KIOSK = (() => { try { return new URLSearchParams(location.search).has('kiosk') } catch (e) { return false } })()
+const KIOSK = flagOn(typeof location !== 'undefined' ? location.search : '', 'kiosk')   // ?kiosk / ?kiosk=1 開；?kiosk=0 關
 
 export default function App() {
   useLocale()   // 語系切換 → 重繪（本檔的文字用模組層 t()）
@@ -115,7 +120,13 @@ export default function App() {
   const arPrev = useRef(null)
   const bgBlur = useStore((s) => s.params.bgBlur)
   const bgClarity = useStore((s) => s.params.bgClarity)
+  const arBusy = useRef(false)   // 相機授權 / 開機要 0.5–2 秒：期間再點一次要忽略（lib/ar.js 也擋了第二條串流，這裡避免「開啟」的後續動作與日誌跑兩次）
   const toggleAR = async () => {
+    if (arBusy.current) return
+    arBusy.current = true
+    try { await toggleARInner() } finally { arBusy.current = false }
+  }
+  const toggleARInner = async () => {
     const st = useStore.getState()
     if (arOn) {
       arStop(videoRef.current); setArOn(false); st.pushLog('out', t('AR 實景關閉'))
@@ -184,6 +195,7 @@ export default function App() {
     const onKey = (e) => {
       const tag = e.target.tagName || ''
       if (/INPUT|TEXTAREA|SELECT/.test(tag)) return
+      if (isInModal(e.target)) return   // 「裝置」彈窗開著（焦點在彈窗內）：T / H / I / 空白鍵等不該在背後動作（例如在彈窗後面開始導覽）
       const k = e.key
       if (k === 'h' || k === 'H') { setStage((s) => !s); return }
       if (k === 'i' || k === 'I') { useStore.getState().toggleOverlays(); return }
@@ -291,14 +303,9 @@ export default function App() {
 
   // Kiosk 沉浸：演出模式 → 全螢幕 + 螢幕不休眠（wakeLock）+ 藏游標
   useEffect(() => {
-    let wl = null, released = false
     if (stage) {
       try { document.documentElement.requestFullscreen && document.documentElement.requestFullscreen().catch(() => {}) } catch (e) {}
-      const acquire = () => { if (navigator.wakeLock && !released) navigator.wakeLock.request('screen').then((l) => { wl = l }).catch(() => {}) }
-      acquire()
-      const onVis = () => { if (document.visibilityState === 'visible') acquire() }
-      document.addEventListener('visibilitychange', onVis)
-      return () => { released = true; document.removeEventListener('visibilitychange', onVis); try { wl && wl.release() } catch (e) {} }
+      return keepAwake()   // lib/wakeLock.js：請求完成前就 cleanup（StrictMode 雙跑）也不會洩漏 lock；回前景會重新申請
     } else {
       try { if (document.fullscreenElement) document.exitFullscreen && document.exitFullscreen().catch(() => {}) } catch (e) {}
     }

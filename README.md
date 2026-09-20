@@ -207,6 +207,8 @@ https://midisea.shyetech.com/?quality=low&fps=1            低階裝置除錯
 
 **中斷與還原**：導覽前的參數、海況選項與播放倍速會被記下。碰螢幕、動旋鈕 / 滑桿，或按 `T` `H` `I` `?`、修飾鍵、`Tab` 以外的任何鍵，導覽立即停止並還原成導覽前的海（`Esc` 或再按 `T` 也可停止）。語言切換、分享、分享星球、錄影、資訊、說明、聲音、匯出 LOG 不算中斷。若你是開始錄製、自己按播放或換海況，則只停導覽、不還原。你暫存的錄製會保留；導覽不會灌水展場角落的「演出 N 次」。
 
+**先還原、再動作**：DOM 事件（點螢幕 / 按鍵）在 capture 階段先中止導覽；非 DOM 的輸入——MIDI 旋鈕與按鈕、語音指令、手機遙控（含走帶鍵）、手把、相機手勢、滾輪——也一律先呼叫 `activity.touch()`，它的同步掛鉤（`onActivity`）會在動作**之前**中止導覽並還原，所以你的第一個動作（清垃圾、安靜、● 錄製、▶ 播放、旋鈕）落在還原後的海上，不會被 100ms 後的還原蓋掉。分頁被隱藏 / 最小化 / 被完全蓋住時導覽中止並還原（背景時 `requestAnimationFrame` 停了，導覽卻照時間換站、字幕照換，會變成靜止的海配上會動的說明）。只按面板、關彈窗、看資料卡，或播完自己的序列，也算一次活動（30 秒後才會被導覽接手）；自動導覽開始時會收掉開著的資料卡。導覽自己的換站 / 播放 / 溢流不會讓手機或手把震動（你叫出的鯨魚 / 海豚 / 海龜 / 淨化照震）。
+
 **循環**：手動開始的導覽播完一輪自動結束並還原；閒置自動啟動的會一直循環到有人操作。有彈窗（說明 / 裝置 / 多人）開著時不會自動開始；沒有海況資料時退回舊的色相輪播。
 
 **隱私與權限**：只用已載入的開放資料，不需要任何權限、不上傳任何東西。觀眾視窗會同步顯示導覽字幕（導覽只在主視窗執行，觀眾視窗不會自己啟動）。
@@ -264,6 +266,8 @@ https://midisea.shyetech.com/?quality=low&fps=1            低階裝置除錯
 - **怎麼開**：「裝置」→「觀眾視窗（雙螢幕）」→「開啟觀眾視窗」；「關閉觀眾視窗」會請該視窗自己關閉。面板顯示連線中的觀眾視窗數與偵測到的螢幕數。
 - **能做什麼**：筆電操作、投影機給觀眾看。開一個沒有控制介面、不出聲音的視窗（網址 `?audience=1`），全螢幕顯示同一片海，含資料看板、資料播放 HUD、導覽字幕與資料出處卡片。主視窗的參數、資料播放（倍速 / 循環）、鯨魚 / 海豚 / 海龜 / 淨化波、打擊墊效果、語系、資訊面板開關都即時同步。
 - **權限與支援**：Chrome / Edge 在 HTTPS 或 localhost 下會詢問「視窗管理」權限（`getScreenDetails`），允許後視窗自動放到外接螢幕，在該視窗點一下即進入全螢幕。**Safari / Firefox、只有一個螢幕、拒絕權限、非安全來源**時退回開一般視窗，請手動拖到投影機畫面再點一下進入全螢幕。首次授權可能讓使用者手勢過期而被彈窗封鎖器擋下，面板會提示「請再按一次」。
+- **螢幕不休眠**：觀眾視窗自己持有 Screen Wake Lock（系統層級：投影機與筆電螢幕都不會因為沒人碰鍵盤滑鼠而休眠，導覽跑很久也一樣）；回到前景會重新申請，不支援的瀏覽器靜默略過。
+- **畫質**：投影機常是 4K / 高 DPR，是像素負擔最大的畫面，所以觀眾視窗**用自己的 FPS**自動調整畫質（它的畫質不寫共用偏好，不會和主視窗互相覆寫）；主視窗在「裝置 → 畫質」手動選一級時，已開著的觀眾視窗會跟著鎖定同一級（選回自動就改用自己的 FPS）。投影機若被限制在 30 Hz，自動模式會誤判成效能不足而降級——請在主視窗手動選一級。
 - **隱私**：資料只在同一個瀏覽器的兩個視窗之間以 BroadcastChannel（`midisea-audience`）傳遞，不上傳；沒有觀眾視窗連著時主視窗不做任何額外工作。
 - **限制**：觀眾視窗是「同參數、同事件」的**複本，不是像素級鏡像**——水母 / 魚群位置、垃圾物理、球體自轉與果凍壓凹不同步。兩個視窗必須同源（同一個網址）。同一瀏覽器開兩個控制台分頁時，觀眾視窗鎖定第一個回應的主視窗。主視窗分頁被切到背景時（瀏覽器降頻計時器）觀眾視窗可能短暫顯示「等待主視窗…」，回到前景後自動恢復。手動開啟的分頁（不是腳本開的）可能無法被「關閉觀眾視窗」關掉。
 
@@ -275,9 +279,9 @@ https://midisea.shyetech.com/?quality=low&fps=1            低階裝置除錯
   - **捏合**：拇指與食指捏在一起，召喚一隻鯨魚（每 3 秒最多一次，捏著不放不會重複）。
   - 其他手勢（握拳、比讚、比耶、手指併攏）一律忽略；手離開鏡頭超過 1 秒回到閒置。分類只用距離比值與夾角，左右手、鏡像前鏡頭、任意旋轉都適用。
 - **畫面**：畫布右上角顯示「相機使用中」紅點（**永遠顯示**，不受 `I` 控制）與「手勢 · 偵測到：張手 / 捏合 / —」（跟著資訊面板開關）。
-- **權限與隱私**：相機。影像只在這台裝置上處理，**不上傳、不錄下來**；關閉開關或離開頁面就停止相機。AR 實景開著時共用同一個相機串流，否則開一個隱藏的前鏡頭 640×480 `<video>`。
+- **權限與隱私**：相機。影像只在這台裝置上處理，**不上傳、不錄下來**；關閉開關、離開頁面或切到背景就立刻停止相機（回到這一頁時自動重新開啟）。AR 實景開著時共用同一個相機串流，否則開一個隱藏的前鏡頭 640×480 `<video>`。
 - **需要下載的東西**：第一次啟用會下載手部模型（約 8 MB，來自 Google 儲存空間）與 WebAssembly 運算程式（未壓縮約 11.7 MB，來自 jsDelivr CDN、傳輸時經壓縮；兩者由瀏覽器快取）。MediaPipe（`@mediapipe/tasks-vision`，版本釘死 1.0.1）只在開啟時動態載入，是獨立的 chunk，不進主 bundle。這兩個網路請求會讓 CDN 看到你的 IP，但不會傳送任何影像。Service Worker 不快取跨來源資源，所以**離線的第一次使用會失敗**（面板有明確訊息）。
-- **支援與限制**：需要 HTTPS 或 localhost、`getUserMedia`、WebAssembly。偵測約 15 fps、跑在主執行緒（GPU delegate，失敗退回 CPU），舊手機 / iPad 開啟時可能掉幀（畫質自動降級不會暫停它）；分頁進背景時暫停偵測。AR 用後鏡頭、手勢用前鏡頭，部分 Android 裝置無法同時開兩個相機。**分類門檻是在合成手部模型上調校的，未用真實相機調過**（見〈驗證狀態〉）。
+- **支援與限制**：需要 HTTPS 或 localhost、`getUserMedia`、WebAssembly。偵測約 15 fps、跑在主執行緒（GPU delegate，失敗退回 CPU）；推論慢的裝置（舊手機 / iPad）會量每次推論花的時間並拉長偵測間隔（推論後至少休息 2 倍時間、上限 100ms，主執行緒佔用率壓在約 1/3 ~ 1/2），代價是手勢反應變慢；畫質自動降級不會減少推論成本，也不會暫停它。分頁進背景時暫停偵測並放掉自己開的相機。AR 用後鏡頭、手勢用前鏡頭，部分 Android 裝置無法同時開兩個相機。**分類門檻是在合成手部模型上調校的，未用真實相機調過**（見〈驗證狀態〉）。
 
 ### 語音指令
 
@@ -365,7 +369,7 @@ https://midisea.shyetech.com/?quality=low&fps=1            低階裝置除錯
 
 | 功能 | 已做的驗證 | 尚未在真實硬體 / 環境驗證 |
 |---|---|---|
-| 相機手勢 | 49 項單元測試（分類、遲滯、冷卻、平滑、鏡像與左右手、丟手回閒置、以假相機 / 假 landmark 測的執行期生命週期）；設定區塊以伺服器端渲染檢查中英文 | 真實相機 + 真實 MediaPipe 輸出。**分類門檻（`THRESH`，`src/lib/gestures.js`）是在合成的手部模型上調校的**，實機很可能需要調整；GPU / CPU delegate 的實際效能 |
+| 相機手勢 | 56 項單元測試（分類、遲滯、冷卻、平滑、鏡像與左右手、丟手回閒置、以假相機 / 假 landmark 測的執行期生命週期）；設定區塊以伺服器端渲染檢查中英文 | 真實相機 + 真實 MediaPipe 輸出。**分類門檻（`THRESH`，`src/lib/gestures.js`）是在合成的手部模型上調校的**，實機很可能需要調整；GPU / CPU delegate 的實際效能 |
 | 語音辨識 | 79 項單元測試（假辨識器、指令比對含誤辨與簡體、去重冷卻、重啟退避、語言切換）；UI 只做過伺服器端渲染 | 真實麥克風 + Web Speech：Chrome / Edge 雲端辨識、Safari；Android 的累加式逐字稿（只有單元測試）；iOS Safari 的 continuous 行為；詞表寬鬆度造成的誤觸發 |
 | 雙螢幕（`getScreenDetails`） | 46 項單元測試（假 BroadcastChannel 的協定、節流、斷線偵測、快照自我修復、選螢幕邏輯）；同源 BroadcastChannel 可在單機兩個分頁模擬 | 真實外接螢幕 / 投影機；「視窗管理」權限流程；權限提示造成的手勢過期與彈窗封鎖；全螢幕行為 |
 | 觸控筆 | 17 項單元測試（壓力 → 浪勁、傾斜 → 洋流、iOS 角度後備換算）＋ 39 項資料出處測試；選取投影數學在 Node 以 three 與真實 `ocean.json` 驗證（188 座測站都落在畫布內，自點命中 181 個，其餘 7 個座標與別站完全重合）；可用合成 `PointerEvent`（`pointerType: 'pen'`）模擬 | 真實 Apple Pencil / Surface Pen / Wacom；iOS 是否真的只給 `altitudeAngle`；自然握筆的傾斜是否過敏 |
@@ -456,20 +460,30 @@ npm run build                         # 建置必須成功
 | `scripts/gov/gov.test.mjs` | 14 | 各資料集的離線解析（揚塵哨兵值與歷史滾動、測站座標、魚鳥調查、月出月沒、HTTP 重試、JSON 輸出、烘焙冪等） |
 | `src/lib/share.test.mjs` | 35 | 分享連結編碼 / 解碼、資料脈絡（`&o=&m=&sl=&lang=`）、舊連結相容與亂碼容錯、載入順序、圖片分享文案、`fitText` 排版 |
 | `src/lib/tour.test.mjs` | 32 | 導覽站（真實 / 缺資料 / 壞資料）、倍速、中英字幕無 `undefined` / `NaN`、空窗年、揚塵誠實說明、還原與各種中斷、循環、偏好、鏡像 |
-| `src/lib/inspect.test.mjs` | 39 | 點物件看資料出處：螢幕空間選取、輕點判定、測站 / 月亮 / 鳥群卡片資料、卡片定位 |
+| `src/lib/inspect.test.mjs` | 41 | 點物件看資料出處：螢幕空間選取、輕點判定、測站 / 月亮 / 鳥群卡片資料、卡片定位、依內容長度的停留時間 |
 | `src/lib/pointerExpr.test.mjs` | 17 | 觸控筆壓力 → 浪勁、傾斜 → 洋流、死區、iOS `altitudeAngle` / `azimuthAngle` 後備換算 |
 | `src/lib/audience.test.mjs` | 46 | 觀眾視窗協定（假 BroadcastChannel）：快照 / 增量、節流、斷線偵測、自我修復、選螢幕邏輯 |
 | `src/lib/mirror.test.mjs` | 2 | 鏡像狀態切片註冊表 |
-| `src/lib/gestures.test.mjs` | 49 | 手勢分類、遲滯、冷卻、平滑、鏡像與左右手、丟手回閒置；假相機的執行期；`package.json` 與 WASM 版本一致 |
+| `src/lib/gestures.test.mjs` | 56 | 手勢分類、遲滯、冷卻、平滑、鏡像與左右手、丟手回閒置；假相機的執行期（含分頁隱藏放掉相機與快速切分頁不漏相機、推論慢時的退讓）；`package.json` 與 WASM 版本一致 |
 | `src/lib/voice.test.mjs` | 26 | 語音辨識包裝：生命週期、自動重啟、失敗退避、`stop()` 清理、語言切換（假辨識器） |
 | `src/lib/voiceCommands.test.mjs` | 53 | 逐字稿正規化、中英同義詞比對（含誤辨與簡體）、去重與冷卻、指令動作 |
 | `src/lib/haptics.test.mjs` | 42 | 事件節奏表、強度縮放、冷卻與全域上限、預設值與持久化、手把 dual-rumble（假裝置） |
 | `src/lib/quality.test.mjs` | 25 | 畫質狀態機：降 / 升級、遲滯、冷卻、抖動保護、暖機、手動鎖定、偏好序列化 |
-| `src/lib/qualityRuntime.test.mjs` | 11 | 畫質執行期：rAF 餵幀、暫停原因（分頁隱藏 / 錄製 / 錄影 / 拖曳）、`?quality=` 覆寫、`stop()` 釋放全部監聽 |
+| `src/lib/qualityRuntime.test.mjs` | 18 | 畫質執行期：rAF 餵幀、暫停原因（分頁隱藏 / 錄製 / 錄影 / 拖曳）、`?quality=` 覆寫、`stop()` 釋放全部監聽；觀眾視窗自己降級但不寫共用偏好、主視窗的畫質模式鏡像 |
 | `src/store/hud.test.mjs` | 1 | 參數 HUD 標籤跟著語系 |
-| `src/lib/xr.test.mjs` | 35 | WebXR：特徵偵測（假 `navigator.xr`）、放置數學、hit-test 追蹤、狀態機 idle → requesting → placing → placed → ended、錯誤與系統中斷退場、重複進入 / 退出 |
+| `src/services/tourCore.test.mjs` | 21 | 導覽 × 真實輸入路徑（真的 `useStore` / `activity` / `createTourRunner`）：MIDI 旋鈕與走帶鍵、語音、手機遙控、滾輪、Marker 都先還原再動作；分頁隱藏中止；閒置計時；導覽期間觸覺靜音 |
+| `src/store/rec-stash.test.mjs` | 5 | 使用者的錄製在資料播放 / 整輪導覽之後仍在（拿掉暫存邏輯會失敗） |
+| `src/store/survey.test.mjs` | 5 | 分享連結暫時帶來的鳥 / 魚連動不落地、資料播放日誌報真實調查年數 |
+| `src/lib/wakeLock.test.mjs` | 6 | 螢幕喚醒鎖：以方法呼叫、請求完成前 release 不洩漏、回前景重新申請 |
+| `src/audio/mic.test.mjs` · `src/lib/ar.test.mjs` | 3 · 4 | 麥克風 / AR 相機在授權期間重複點擊、取消、失敗都不留孤兒串流 |
+| `src/lib/modalFocus.test.mjs` | 10 | 彈窗焦點管理：開啟移入、Esc、Tab 循環、關閉後焦點回原按鈕、全域快速鍵在彈窗內略過 |
+| `src/lib/shareLink.test.mjs` | 6 | 複製分享連結（剪貼簿不可用 → 手動複製）、分享結果訊息的位置 |
+| `src/lib/describeGaps.test.mjs` | 4 | 資料看板 / 日誌的鳥魚列標出調查空窗 |
+| `src/lib/captionCss.test.mjs` · `scripts/vite-config.test.mjs` | 3 · 2 | 字幕版面規則（QR 上方、觀眾視窗放大）· 建置分塊設定（入口不拉 three） |
+| `src/lib/xr.test.mjs` | 37 | WebXR：特徵偵測（假 `navigator.xr`）、放置數學、hit-test 追蹤、狀態機 idle → requesting → placing → placed → ended、錯誤與系統中斷退場、重複進入 / 退出 |
+| `src/lib/urlFlags.test.mjs` | 2 | 網址旗標（?kiosk / ?audience）一致：`=0` / `false` / `off` 明確關閉，導覽與觀眾視窗判斷同一個函式 |
 
-合計 **468 項**（`node --test`，含下列 WebXR 35 項）。
+合計 **557 項**（`node --test`，含下列 WebXR 37 項）。
 
 單元測試的限制：Node 看不到瀏覽器專屬的錯（例如 `this` 綁定造成的 `Illegal invocation`），所以每個新功能仍需要在真實瀏覽器跑過一次——這也是〈驗證狀態〉一節存在的原因。
 
@@ -505,7 +519,7 @@ IXD2026/
    │  ├─ GLOSSARY.md                    # 英文用語表（所有翻譯者共用）
    │  ├─ i18n.test.mjs                  # 驗收測試
    │  └─ en/*.js                        # 英文字典：每個功能一檔，建置時自動合併
-   ├─ services/                         # 常駐服務（Services.jsx 一次掛載）：Audience / Gesture / Voice / Haptics / Quality / Tour
+   ├─ services/                         # 常駐服務（Services.jsx 一次掛載）：Audience / Gesture / Voice / Haptics / Quality / Tour（tourCore.js＝導覽的非 React 接線，Node 可測）
    ├─ lib/
    │  ├─ persist.js                     # localStorage / sessionStorage（所有偏好的 key 都在這裡）
    │  ├─ share.js                       # 參數 ↔ 分享網址、資料脈絡（?s= &o= &m= &sl= &lang=）、分享文案 / 排版
@@ -516,6 +530,7 @@ IXD2026/
    │  ├─ tour.js                        # 資料導覽：導覽站 / 字幕 / 執行器（純邏輯）
    │  ├─ inspect.js · pointerExpr.js    # 點物件看資料出處 · 觸控筆壓力 / 傾斜
    │  ├─ mirror.js · audience.js        # 鏡像狀態切片註冊表 · 觀眾視窗協定（BroadcastChannel）
+   │  ├─ wakeLock.js · modalFocus.js · shareLink.js · remoteDispatch.js   # 螢幕喚醒鎖 · 彈窗焦點管理 · 複製連結（含手動複製後備）· 手機遙控訊息派送
    │  ├─ gestures.js · hands.js         # 相機手勢：分類與狀態機 · 相機 + MediaPipe 執行層
    │  ├─ voice.js · voiceCommands.js    # 語音辨識包裝 · 指令表與比對
    │  ├─ haptics.js                     # 觸覺回饋（手機震動 / 手把 dual-rumble）
@@ -539,7 +554,7 @@ IXD2026/
 
 React + Vite · Three.js + React Three Fiber · Zustand · Web MIDI API · Tone.js · cannon-es · PeerJS（WebRTC）· MediaPipe Tasks Vision（相機手勢，動態載入）· Web Speech API（語音指令）· BroadcastChannel（觀眾視窗）。
 
-**效能設計**：3D 場景在 render loop 內以 `useStore.getState()` 讀參數，MIDI 高頻訊息不觸發 React re-render；錄製緩衝與 soft-takeover 狀態放模組層，避免每則訊息重繪。手機遙控頁與觀眾視窗各自只載入需要的程式碼；MediaPipe 只在使用者打開相機手勢時才載入；沒有觀眾視窗連著、沒有開啟手勢 / 語音時，對應的服務不做任何工作。
+**效能設計**：3D 場景在 render loop 內以 `useStore.getState()` 讀參數，MIDI 高頻訊息不觸發 React re-render；錄製緩衝與 soft-takeover 狀態放模組層，避免每則訊息重繪。手機遙控頁與觀眾視窗各自只載入需要的程式碼（遙控頁的入口只依賴 react，約 80 KB gzip，不含 three / 場景 / store；主畫面與觀眾視窗一開始就預載 3D 場景）；MediaPipe 只在使用者打開相機手勢時才載入；沒有觀眾視窗連著、沒有開啟手勢 / 語音時，對應的服務不做任何工作。
 
 **開發輔助**：dev 模式下主控台可用 `window.__store` 驅動測試。
 

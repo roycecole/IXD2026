@@ -46,7 +46,7 @@ export default function GestureSection() {
           <li><b>{t('捏合')}</b>{t('拇指與食指捏在一起：召喚一隻鯨魚（每 3 秒最多一次，捏著不放不會重複）。')}</li>
         </ul>
         <p className="dev-sec-hint">{t('手放在鏡頭前、光線充足、手心朝向相機效果最好；其他手勢都會被忽略。已開啟 AR 實景時，手勢會直接共用實景的相機。')}</p>
-        <p className="dev-sec-hint">{t('隱私：影像只在這台裝置上處理，不會上傳也不會錄下來；關閉開關或離開頁面就會停止相機。手勢模型檔（約 8 MB，來自 Google）與運算程式（WebAssembly，來自 jsDelivr）第一次會下載，之後由瀏覽器快取。')}</p>
+        <p className="dev-sec-hint">{t('隱私：影像只在這台裝置上處理，不會上傳也不會錄下來；關閉開關、離開頁面或切到背景，都會立刻停止相機（回到這一頁時自動重新開啟）。手勢模型檔（約 8 MB，來自 Google）與運算程式（WebAssembly，來自 jsDelivr）第一次會下載，之後由瀏覽器快取。')}</p>
       </div>
     </section>
   )

@@ -12,6 +12,7 @@ import { birdSeasonal, flockCount } from '../lib/birds.js'
 import { surveyMonthText } from '../lib/describe.js'
 import { t, T } from '../i18n/index.js'
 import { nameText } from '../i18n/data.js'
+import { pulse as hapticPulse } from '../lib/haptics.js'
 
 // 資料播放中的「資料時刻」資訊（DataHUD / MoonSky 每幀讀取，非反應式）
 // 畫布上的資訊面板分三組，各自可關：board=資料看板、hud=播放 / 參數 / 待接管提示（含 AR 調整鈕、聲音提示）、qr=展場掃碼 QR 與統計。
@@ -35,8 +36,7 @@ let overlaysBeforeHide = null // 「全部隱藏」前的組合，再按一次�
 
 export const seriesMeta = { active: false, kind: '', name: '', label: '', unit: '', date: '', step: 1.1, points: [], target: '', extra: {}, lunar: '', lunarLabel: '', range: '', events: [] }
 
-import { pulse as hapticPulse } from '../lib/haptics.js'   // 觸覺回饋（總開關 / 強度 / 手把都在 lib/haptics.js；事件節奏由 services/HapticsService 依 spawns / rec 狀態觸發）
-const haptic = (ms) => { try { hapticPulse(ms) } catch (e) {} }
+const haptic = (ms) => { try { hapticPulse(ms) } catch (e) {} }   // 觸覺回饋（總開關 / 強度 / 手把都在 lib/haptics.js；事件節奏由 services/HapticsService 依 spawns / rec 狀態觸發）
 
 const clamp01 = (v) => Math.max(0, Math.min(1, v))
 const perfNow = () => { try { return performance.now() / 1000 } catch (e) { return 0 } }
@@ -70,6 +70,13 @@ const initialParams = {}
 PARAM_ORDER.forEach((pid) => {
   initialParams[pid] = savedParams && typeof savedParams[pid] === 'number' ? clamp01(savedParams[pid]) : PARAMS[pid].value
 })
+
+// 鳥 / 魚「連動」偏好只寫「使用者這次動的那一個 key」（疊在已存的值上），不寫整個記憶體狀態：
+// 分享連結（?sl=）暫時帶來的另一個種類的連動值（applySharedContext 不落地）不該因為使用者之後按「套用」/ 手動調數量而被一起存成自己的偏好。
+function persistSurveyLink(kind, on) {
+  const saved = loadLS(LS.surveyLink, {})
+  saveLS(LS.surveyLink, { ...(saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {}), [kind]: !!on })
+}
 
 function loadBindings() { const b = loadLS(LS.bindings, null); return b && typeof b === 'object' ? b : { ...DEFAULT_BINDINGS } }
 function saveBindings(b) { saveLS(LS.bindings, b) }
@@ -115,17 +122,18 @@ export const useStore = create((set, get) => ({
   // 人為輸入入口（MIDI / 滑鼠 / 滑桿）：套用參數，錄製中時寫入事件緩衝。
   // 播放中對「被自動化」的參數手動輸入 → 立即登記接管（caught），配合 tickPlayback 跳過覆寫。
   input: (pid, v) => {
+    touch()   // 活動時間戳（必須第一個：資料導覽在這裡同步中止並還原，輸入才會落在還原後的海上，而不是先寫進去、100ms 後被還原蓋掉）
     const st = get()
     if (st.rec.mode === 'playing' && recParamSet.has(pid)) {
       const t = takeover[pid] || (takeover[pid] = { caught: false, last: null })
       t.caught = true
     }
     st.setParam(pid, v)
-    setHud(pid, clamp01(v)); touch()   // 參數 HUD + 活動時間戳
+    setHud(pid, clamp01(v))            // 參數 HUD
     if (pid === 'glow') touchGlow()    // 手動調輝光 → AR 環境光自動調輝光暫停 8 秒
     if (pid === 'birdCount' || pid === 'fishCount') {   // 手動調鳥 / 魚數量 → 脫鉤（獨立控制），要再連動請按「套用 / 連動」
       const k = pid === 'birdCount' ? 'birds' : 'fish'
-      if (st.surveyLink[k]) { const l = { ...st.surveyLink, [k]: false }; saveLS(LS.surveyLink, l); set({ surveyLink: l }) }
+      if (st.surveyLink[k]) { persistSurveyLink(k, false); set({ surveyLink: { ...st.surveyLink, [k]: false } }) }
     }
     if (st.rec.mode === 'recording') recBuffer.push({ t: st.rec.playhead, pid, value: clamp01(v) })
   },
@@ -141,8 +149,8 @@ export const useStore = create((set, get) => ({
   }),
 
   handleCC: (cc, value01) => {
+    touch()   // 先於 get()：導覽在這裡同步中止並還原，後面讀到的 rec.mode / params 才是還原後的
     const st = get()
-    touch()
     const ln = st.learn
     if (ln.active && ln.target != null) {                    // 單一參數 Learn
       const b = { ...st.bindings }
@@ -334,22 +342,24 @@ export const useStore = create((set, get) => ({
     const value = kind === 'birds' ? flocks / 5 : fishParam(d.species, rel)
     return { kind, month: mo, season, basin: d.basin, species: d.species, flocks, value: Math.round(value * 100) / 100 }
   },
-  applySurvey: (kind) => {
+  // persist：是否把「連動 = 開」寫進偏好。使用者按「套用 / 連動」= true（預設）；applySurveyLinked（載入 / 換海況 / 換月份時自動重套用「已經連動中」的）= false——
+  // 連動本來就開著，不必再寫；而分享連結暫時帶來的連動狀態只在記憶體，自動重套用時更不能被落地。
+  applySurvey: (kind, { persist = true } = {}) => {
     const sg = get().surveySuggest(kind)
     if (!sg) return false
     get().setParam(kind === 'birds' ? 'birdCount' : 'fishCount', sg.value)
-    const l = { ...get().surveyLink, [kind]: true }
-    saveLS(LS.surveyLink, l); set({ surveyLink: l })
+    if (persist) persistSurveyLink(kind, true)
+    set({ surveyLink: { ...get().surveyLink, [kind]: true } })
     const P = { seg: surveyMonthText(sg.basin, sg.month, sg.season), val: sg.value.toFixed(2), n: sg.flocks }
     get().pushLog('out', kind === 'birds'
       ? (sg.flocks != null ? t('鳥群 · {seg} → 鳥群數量 {val}（{n} 群）', P) : t('鳥群 · {seg} → 鳥群數量 {val}', P))
       : t('魚群 · {seg} → 魚群數量 {val}', P))
     return true
   },
-  applySurveyLinked: () => { const l = get().surveyLink; for (const k of ['birds', 'fish']) if (l[k]) get().applySurvey(k) },
+  applySurveyLinked: () => { const l = get().surveyLink; for (const k of ['birds', 'fish']) if (l[k]) get().applySurvey(k, { persist: false }) },
   setSurveyLink: (kind, on) => {
     if (on) { get().applySurvey(kind); return }        // 開啟連動 = 立刻套用資料值
-    const l = { ...get().surveyLink, [kind]: false }; saveLS(LS.surveyLink, l); set({ surveyLink: l })
+    persistSurveyLink(kind, false); set({ surveyLink: { ...get().surveyLink, [kind]: false } })
   },
   setSurveyMonth: (m) => { set({ surveyMonth: m }); get().applySurveyLinked() },
   // 分享連結帶來的鳥 / 魚連動狀態（?sl=）：只暫時套用到記憶體，不寫進 localStorage——分享連結不該改掉對方自己的偏好
@@ -381,7 +391,9 @@ export const useStore = create((set, get) => ({
     })
     set((s) => ({ rec: { ...s.rec, mode: 'idle', playhead: 0, playIndex: 0, duration: spec.points.length * spec.step, count: recBuffer.length } }))
     get().startPlayback()
-    const LP = { name: nameText(spec.name), date: spec.date || '', label: nameText(spec.label), n: spec.points.length, unit: nameText(spec.unit) }
+    // 調查年表是逐年稠密序列（含內插的「無調查」年）：日誌報的「筆數」要是真實調查年數，不是 points 數（空窗年不是資料）
+    const nRecords = String(spec.kind || '').startsWith('survey-') && Array.isArray(ex.years) ? ex.years.length : spec.points.length
+    const LP = { name: nameText(spec.name), date: spec.date || '', label: nameText(spec.label), n: nRecords, unit: nameText(spec.unit) }
     get().pushLog('out', spec.unit ? t('▶ 資料播放：{name} {date} {label}（{n} 筆，{unit}）', LP) : t('▶ 資料播放：{name} {date} {label}（{n} 筆）', LP))
     return true
   },
@@ -397,9 +409,10 @@ export const useStore = create((set, get) => ({
   scenePrev: () => { const i = (get().sceneIdx - 1 + SCENES.length) % SCENES.length; set({ sceneIdx: i }); get().applyScene(SCENES[i].params); get().pushLog('out', t('場景 ◀ {label}', { label: t(SCENES[i].label) })) },
   sceneNext: () => { const i = (get().sceneIdx + 1) % SCENES.length; set({ sceneIdx: i }); get().applyScene(SCENES[i].params); get().pushLog('out', t('場景 ▶ {label}', { label: t(SCENES[i].label) })) },
   markerSet: () => {
+    touch()   // 先於快照：導覽進行中按 Marker 存的要是使用者的海，不是導覽的
     const m = [...get().markers, { ...get().params }].slice(-8) // 最多 8 組
     saveLS(LS.markers, m); set({ markers: m, markerIdx: m.length - 1 })
-    touch(); get().pushLog('out', t('Marker 快照 #{n}（共 {total} 組）', { n: m.length, total: m.length }))
+    get().pushLog('out', t('Marker 快照 #{n}（共 {total} 組）', { n: m.length, total: m.length }))
   },
   markerPrev: () => { const m = get().markers; if (!m.length) return; const i = (get().markerIdx - 1 + m.length) % m.length; set({ markerIdx: i }); get().applyScene(m[i]); get().pushLog('out', t('Marker ◀ 快照 #{n}', { n: i + 1 })) },
   markerNext: () => { const m = get().markers; if (!m.length) return; const i = (get().markerIdx + 1) % m.length; set({ markerIdx: i }); get().applyScene(m[i]); get().pushLog('out', t('Marker ▶ 快照 #{n}', { n: i + 1 })) },

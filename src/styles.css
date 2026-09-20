@@ -123,7 +123,15 @@ input[type="range"] { accent-color: var(--accent); width: 100%; height: 16px; }
 /* ---- 頂部工具（分享 / 錄影 / LOG）---- */
 .tools { display: flex; align-items: center; gap: 6px; }
 .tools button { padding: 6px 10px; font-size: 12px; }
-.toast { font-size: 12px; color: var(--accent); white-space: nowrap; }
+/* 分享結果訊息：TopBar 的直接子元素（不在 .toolstrip 裡——手機上工具列是橫向捲動的，放裡面會被排到畫面外），浮在頂欄正下方；空的時候不佔位 */
+.topbar { position: relative; }
+.topbar > .toast {
+  position: absolute; top: calc(100% + 6px); right: 12px; z-index: 25; max-width: calc(100% - 24px);
+  padding: 6px 12px; border-radius: 10px; background: var(--panel2); border: 1px solid var(--accent);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4); font-size: 12.5px; line-height: 1.5; color: var(--accent);
+  white-space: normal; pointer-events: none;
+}
+.topbar > .toast:empty { display: none; }
 .scenes-label { font-size: 11px; align-self: center; }
 .actions { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
 .actions button { flex: 1 1 auto; min-width: 62px; font-size: 12px; padding: 7px 4px; }
@@ -446,7 +454,7 @@ html, body { overscroll-behavior: none; }
   .toolstrip::-webkit-scrollbar { display: none; }
   .toolstrip .tools { display: contents; }
   .toolstrip button, .toolstrip .conn { flex: 0 0 auto; white-space: nowrap; min-height: 40px; padding: 0 14px; font-size: 13px; scroll-snap-align: start; }
-  .toolstrip .toast { flex: 0 0 auto; white-space: nowrap; }
+  .topbar > .toast { left: 10px; right: 10px; text-align: center; font-size: 13.5px; padding: 8px 12px; }
   /* 手機上的按鈕優先序（用 data-k，新增按鈕不必重排索引）：聲音 → 語言 → 分享 → 多人 → 實景 → 資訊 → 分享星球 → 錄影 → 裝置 → 麥克風 → 說明 → 控制器 → 匯出LOG → MIDI / 藍牙 */
   .toolstrip [data-k='audio'] { order: -12; }
   .toolstrip [data-k='lang'] { order: -11; }
@@ -542,6 +550,7 @@ html, body { overscroll-behavior: none; }
 /* ---- 語言鈕 / 「裝置」面板 ---- */
 .lang-btn { min-width: 44px; font-weight: 600; letter-spacing: .02em; }
 .devices-modal { max-width: 560px; }
+.devices-modal:focus { outline: none; }   /* 開啟時焦點程式性移到容器（見 lib/modalFocus.js），不畫外框；裡面的按鈕照常有焦點框 */
 .dev-lead { font-size: 12.5px; color: var(--muted); margin: 8px 0 4px; }
 .dev-sec { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line2); }
 .dev-sec:first-of-type { border-top: none; }

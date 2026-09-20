@@ -517,3 +517,25 @@ test('getXrController：整頁同一個實例；沒有 WebXR 的環境（node / 
     getXrController().dismiss()
   }
 })
+
+test('進出 XR 時廣播 active 事件（自動畫質據此暫停）：requesting → true；ended / 取消 → false；同狀態內的變化不重複廣播', async () => {
+  const seen = []
+  const s1 = fakeSession()
+  const nav = { xr: { requestSession: async () => s1 } }
+  const { c } = make(nav, makeClock(), { announce: (a) => seen.push(a) })
+  await c.start()
+  assert.deepEqual(seen, [true])                       // idle → requesting
+  c.ready(); c.setTracking(true); c.setHit(true)
+  assert.deepEqual(seen, [true])                       // placing 內部的變化不重複廣播
+  c.exit(); await tick()
+  assert.deepEqual(seen, [true, false])                // → ended
+})
+
+test('廣播函式丟例外不會拖垮狀態機；預設廣播在沒有 window 的環境（node）是無害的 no-op', async () => {
+  const s1 = fakeSession()
+  const { c } = make({ xr: { requestSession: async () => s1 } }, makeClock(), { announce: () => { throw new Error('boom') } })
+  assert.equal(await c.start(), true)
+  assert.equal(c.getState().status, 'requesting')
+  const { c: c2 } = make({ xr: { requestSession: async () => fakeSession() } })   // 預設 announce
+  assert.equal(await c2.start(), true)
+})
