@@ -532,9 +532,11 @@ html, body { overscroll-behavior: none; }
   .topbar { gap: 10px; padding-left: 10px; padding-right: 10px; }
   .scenes-label { display: none; }
   .transport { gap: 5px; }
-  .transport button { padding: 6px 9px; }
-  .toolstrip { gap: 4px; }
-  .toolstrip button { padding: 6px 8px; font-size: 12px; }
+  .transport button { padding: 6px 8px; }
+  .toolstrip { gap: 3px; }
+  .toolstrip button { padding: 6px 7px; font-size: 11.5px; }
+  .toolstrip .lang-btn { min-width: 0; }
+  .scene { width: 26px; }
 }
 
 /* ---- 語言鈕 / 「裝置」面板 ---- */
@@ -561,3 +563,17 @@ html[lang='en'] .vk-strip { width: 56px; }
 html[lang='en'] .vk-lab { font-size: 9.5px; height: 27px; overflow-wrap: anywhere; }
 html[lang='en'] .vk-bank { padding: 3px 7px; }
 @media (max-width: 820px) { html[lang='en'] .data-board-row { grid-template-columns: 70px 1fr; } }
+
+/* ---- 畫布右上角「使用中」徽章（相機手勢 / 收音）的排版協調 ----
+   兩個功能各自寫了自己的徽章（styles/gestures.css、styles/voice.css），都錨在右上角；同時開啟時要上下疊放，
+   手機上置中的資料 HUD / 參數 HUD 也要讓開（隱私徽章永遠顯示，不能被蓋住）。用 :has() 判斷有沒有對方在場。 */
+.app:not(.stagemode) .canvas-wrap:has(.gesture-cam) .voice-badge { top: 44px; }
+.app:not(.stagemode) .canvas-wrap:has(.gesture-badge) .voice-badge { top: 76px; }
+@media (max-width: 820px) {
+  .canvas-wrap .voice-badge { top: 8px; right: 8px; }
+  .app:not(.stagemode) .canvas-wrap:has(.gesture-cam) .voice-badge { top: 38px; }
+  .app:not(.stagemode) .canvas-wrap:has(.gesture-badge) .voice-badge { top: 68px; }
+  /* 置中的 HUD 在窄螢幕不可能繞開右上角那一疊 → 改靠左，右邊留一欄（約 172px）給徽章 */
+  .canvas-wrap:has(.gesture-cam, .voice-badge) .data-hud,
+  .canvas-wrap:has(.gesture-cam, .voice-badge) .hud { top: 8px; left: 8px; transform: none; max-width: calc(100% - 172px); text-align: left; }
+}

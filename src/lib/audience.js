@@ -33,6 +33,14 @@ export const HOST_LOST_MS = 5000       // 觀眾視窗：主視窗安靜超過 5
 export const DEFAULT_HZ = 10           // 切片預設最高廣播頻率
 export const MAX_AUDIENCES = 16
 
+// 原生計時器必須用「包一層」的方式放進物件：瀏覽器的 setTimeout / setInterval 要求 this 是 window（或 undefined），
+// 直接存成物件屬性再以 T.setInterval(...) 呼叫會丟 TypeError: Illegal invocation（Node 不檢查，所以單元測試看不出來）。
+const NATIVE_TIMERS = {
+  setTimeout: (...a) => globalThis.setTimeout(...a),
+  clearTimeout: (...a) => globalThis.clearTimeout(...a),
+  setInterval: (...a) => globalThis.setInterval(...a),
+  clearInterval: (...a) => globalThis.clearInterval(...a),
+}
 const nowDefault = () => { try { return performance.now() } catch (e) { return Date.now() } }
 const isObj = (v) => v !== null && typeof v === 'object'
 const num = (v, d = 0) => (typeof v === 'number' && Number.isFinite(v) ? v : d)
@@ -69,7 +77,7 @@ export function createHost(opts) {
   const ch = opts.channel
   const listSlices = opts.listSlices || (() => [])
   const now = opts.now || nowDefault
-  const T = { setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout, setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval, ...(opts.timers || {}) }
+  const T = { ...NATIVE_TIMERS, ...(opts.timers || {}) }
   const hostId = opts.hostId || newId('h')
   const pingMs = opts.pingMs || PING_MS
   const maxMissed = opts.maxMissed || MAX_MISSED
@@ -211,7 +219,7 @@ export function createHost(opts) {
 export function createAudience(opts) {
   const ch = opts.channel
   const now = opts.now || nowDefault
-  const T = { setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval, ...(opts.timers || {}) }
+  const T = { ...NATIVE_TIMERS, ...(opts.timers || {}) }
   const id = opts.id || newId('a')
   const helloMs = opts.helloMs || HELLO_MS
   const probeAfterMs = opts.probeAfterMs || PROBE_AFTER_MS

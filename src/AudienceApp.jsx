@@ -2,6 +2,8 @@ import { Suspense, lazy, useEffect, useRef, useState } from 'react'
 import { useStore } from './store/useStore.js'
 import DataBoard from './ui/DataBoard.jsx'
 import DataHUD from './ui/DataHUD.jsx'
+import TourCaption from './ui/TourCaption.jsx'      // 資料導覽字幕（載入它就會註冊 'tour' 鏡像切片）
+import InspectCard from './ui/InspectCard.jsx'      // 點物件看資料出處的卡片（載入它就會註冊 'inspect' 鏡像切片）
 import { loadOceanData } from './lib/govdata.js'
 import { getMirror } from './lib/mirror.js'
 import { useT } from './i18n/index.js'
@@ -97,6 +99,8 @@ export default function AudienceApp() {
       </div>
       {overlays.hud && <DataHUD />}
       <DataBoard />
+      <TourCaption />
+      <InspectCard />
       {unsupported ? (
         <div className="aud-status warn" role="status">{t('這個瀏覽器不支援視窗同步（BroadcastChannel），無法顯示主視窗的畫面')}</div>
       ) : !live && (

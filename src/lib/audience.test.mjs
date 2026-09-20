@@ -795,3 +795,34 @@ test('真實 BroadcastChannel：hello → 快照 → 增量 → bye（主視窗 
     aud.stop(); host.destroy()
   }
 })
+
+// ───────────── 回歸：瀏覽器的計時器不能被當成物件方法呼叫 ─────────────
+// 瀏覽器的 setTimeout / setInterval 要求 this 是 window（或 undefined）；把它們存成 { setInterval: globalThis.setInterval } 再 T.setInterval() 呼叫，
+// 會丟 TypeError: Illegal invocation，整個觀眾視窗掛掉。Node 不檢查 this，所以這裡把全域計時器換成「會檢查 this」的版本再跑一次預設路徑。
+test('預設計時器在瀏覽器的 this 規則下可用（回歸：Illegal invocation）', async (t) => {
+  if (typeof BroadcastChannel === 'undefined') return t.skip('no BroadcastChannel')
+  const names = ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval']
+  const saved = Object.fromEntries(names.map((n) => [n, globalThis[n]]))
+  for (const n of names) {
+    const orig = saved[n]
+    globalThis[n] = function strictThis(...a) {
+      if (this !== undefined && this !== globalThis) throw new TypeError(`Illegal invocation: ${n}`)
+      return orig(...a)
+    }
+  }
+  const name = 'midisea-audience-strict-' + Math.random().toString(36).slice(2)
+  let host, aud
+  try {
+    // 要在「換掉全域計時器之後」才載入一份新的模組：模組載入時就把 setInterval 存進物件的舊寫法，才會抓到被換過的（會檢查 this 的）版本
+    const fresh = await import('./audience.js?strict=' + Math.random().toString(36).slice(2))
+    host = fresh.createHost({ channel: new BroadcastChannel(name), listSlices: () => [], hostId: 'HS' })
+    aud = fresh.createAudience({ channel: new BroadcastChannel(name), id: 'AS', apply() {} })
+    aud.start()                                   // 會呼叫 T.setInterval（hello 重試）
+    await new Promise((r) => saved.setTimeout(r, 80))
+    aud.stop()
+  } finally {
+    for (const n of names) globalThis[n] = saved[n]
+    if (aud) aud.stop()
+    if (host) host.destroy()
+  }
+})
