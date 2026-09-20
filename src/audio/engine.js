@@ -1,5 +1,6 @@
 import { useStore } from '../store/useStore.js'
 import { noteQueue } from './bus.js'
+import { purifyMeta } from '../store/events.js'
 
 let Tone = null // code-splitting：按下「聲音」才動態載入 Tone.js（不佔首載）
 
@@ -11,10 +12,13 @@ let Tone = null // code-splitting：按下「聲音」才動態載入 Tone.js（
 
 export const audioState = { on: false, ready: false, rootHz: 0 }
 
+// 開發輔助：主控台可用 window.__audio 取得節點與 Tone（供量測輸出電平等測試；正式建置會被移除）
+if (import.meta.env.DEV) Object.defineProperty(window, '__audio', { get: () => ({ N, Tone }), configurable: true })
+
 let N = null            // Tone 節點集合（使用者手勢後才建立，符合瀏覽器 autoplay 政策）
 let muted = false
 let sparkleAt = 0
-const lastSpawns = { whale: 0, dolphin: 0, turtle: 0 }
+const lastSpawns = { whale: 0, dolphin: 0, turtle: 0, purify: 0 }
 
 function build() {
   const master = new Tone.Gain(0)
@@ -56,9 +60,15 @@ function build() {
   })
   call.connect(callPan)
 
+  // 水滴聲：溢流（水位 >97%）時稀疏的高音「滴」— 短促正弦、上揚音高、隨機左右聲道
+  const dripPan = new Tone.Panner(0); dripPan.connect(reverb)
+  const dripGain = new Tone.Gain(0.22); dripGain.connect(dripPan)
+  const drip = new Tone.Synth({ oscillator: { type: 'sine' }, envelope: { attack: 0.002, decay: 0.11, sustain: 0, release: 0.06 } })
+  drip.connect(dripGain)
+
   Tone.getDestination().volume.value = -8
   master.gain.rampTo(0.85, 2.5) // 緩緩淡入
-  N = { master, reverb, filter, oscA, oscB, oscC, lfo, pluck, call, callPan }
+  N = { master, reverb, filter, oscA, oscB, oscC, lfo, pluck, call, callPan, drip, dripPan }
 }
 
 export async function audioToggle() {
@@ -98,6 +108,27 @@ export function chime() {
   const f = Math.min(2200, root * 4 * SC[(Math.random() * SC.length) | 0])
   N.pluck.triggerAttackRelease(f, 0.5, t + 0.01, 0.2)
   N.pluck.triggerAttackRelease(Math.min(2600, f * 1.5), 0.6, t + 0.09, 0.13)
+}
+
+// 淨化波 → 明亮大調五聲上行琶音（不論當下濁度都用大調：那正是「變乾淨」的聲音），頂端再拖一個高八度光亮尾音
+function purifyArp(v) {
+  const root = 45 + (useStore.getState().params.seaLevel ?? 0.5) * 65
+  const t = Tone.now() + 0.02
+  const idx = [0, 1, 2, 3, 5] // 2, 2.25, 2.5, 3, 4（根音上方一個八度內的五聲音階）
+  idx.forEach((k, i) => {
+    N.pluck.triggerAttackRelease(Math.min(2200, root * 2 * SCALE_CLEAR[k]), 0.45, t + i * 0.085, 0.11 + v * 0.12 + i * 0.03)
+  })
+  N.pluck.triggerAttackRelease(Math.min(2600, root * 4 * SCALE_CLEAR[5]), 0.9, t + idx.length * 0.085, 0.1 + v * 0.1)
+}
+
+// 溢流水滴：一顆短促的「噗」— 音高快速上揚 1.65 倍，隨機左右聲道
+function dripOnce() {
+  const t = Tone.now() + Math.random() * 0.09
+  const f = 780 + Math.random() * 900
+  N.dripPan.pan.value = (Math.random() * 2 - 1) * 0.7
+  N.drip.triggerAttackRelease(f, 0.05, t, 0.35 + Math.random() * 0.4)
+  N.drip.frequency.setValueAtTime(f, t)
+  N.drip.frequency.exponentialRampToValueAtTime(f * 1.65, t + 0.055)
 }
 
 function creatureCall(type) {
@@ -149,6 +180,10 @@ export function audioUpdate() {
   for (const k of ['whale', 'dolphin', 'turtle']) {
     if (sp[k] > lastSpawns[k]) { lastSpawns[k] = sp[k]; creatureCall(k) }
   }
+  if (sp.purify > lastSpawns.purify) { lastSpawns.purify = sp.purify; purifyArp(purifyMeta.v) } // 淨化波 → 上行琶音
+
+  const over = Math.max(0, ((p.seaLevel ?? 0) - 0.97) / 0.03) // 溢流（與 OverflowFx 同門檻）→ 水滴聲，最多約 3 滴/秒
+  if (over > 0 && Math.random() < 0.05 + over * 0.25) dripOnce()
 
   while (noteQueue.length) {                              // nanoPAD2 → 音階觸發
     const { note, vel } = noteQueue.shift()

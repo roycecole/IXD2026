@@ -2,7 +2,8 @@ name: Refresh ocean data
 
 on:
   schedule:
-    - cron: '0 */6 * * *' # 每 6 小時更新「今日海況」
+    - cron: '0 */6 * * *'  # 每 6 小時更新「今日海況」
+    - cron: '10 16 * * *'  # 台北 00:10：跨日後立即換上新一天的潮汐 series
   workflow_dispatch:
 
 permissions:

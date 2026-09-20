@@ -3,10 +3,12 @@ import { useRef, useMemo, useEffect } from 'react'
 import * as THREE from 'three'
 import * as CANNON from 'cannon-es'
 import { arState } from '../lib/ar.js'
-import { useStore } from '../store/useStore.js'
+import { useStore, seriesMeta } from '../store/useStore.js'
+import { birdSeasonal, flockCount } from '../lib/birds.js'
+import { ageFromLunar, moonAge, moonPhaseAngle, moonIllum, moonSky, dateAtHour } from '../lib/moon.js'
 import { chime, setCreaturePan } from '../audio/engine.js'
 import { micState } from '../audio/mic.js'
-import { padEvents } from '../store/events.js'
+import { padEvents, purifyMeta } from '../store/events.js'
 
 // 線稿海洋球：細線輪廓 + 微光 + 通透。程序化波浪（非流體模擬）、簡化弧形反光（非折射）。
 // 效能：useFrame 內以 getState() 讀參數；線段全部寫進少數共用 batch（2 個 draw call），
@@ -665,7 +667,7 @@ function PadFx() {
   }
   useFrame((_, dt) => {
     const sp = useStore.getState().spawns
-    if (sp.purify > lastPurify.current) { lastPurify.current = sp.purify; spawnPurify(1) } // 清垃圾 → 淨化波
+    if (sp.purify > lastPurify.current) { lastPurify.current = sp.purify; spawnPurify(purifyMeta.v) } // 清垃圾 / pad 淨化 → 淨化波
     while (padEvents.length) {
       const e = padEvents.shift()
       const v = Math.min(1, e.vel * [0.7, 1, 1.35, 1.7][e.bank || 0]) // bank → 強度檔位
@@ -679,7 +681,7 @@ function PadFx() {
         case 5: st.spawnDolphin(); break
         case 6: st.spawnWhale(); break
         case 7: st.spawnTurtle(); break
-        case 8: spawnPurify(v); break
+        case 8: st.purify(v); break // 走 store 計數器：視覺（漣漪+推垃圾）與聲音（琶音）同源觸發
         case 9: st.input('trashCount', Math.min(1, (st.params.trashCount ?? 0) + 0.12 * v)); break
         case 10: { const a2 = Math.random() * Math.PI * 2; st.input('flowX', 0.5 + 0.45 * Math.cos(a2) * v); st.input('flowY', 0.5 + 0.45 * Math.sin(a2) * v); break }
         case 11: glowBoost = Math.min(1.6, glowBoost + 0.5 + v * 0.9); break
@@ -1152,20 +1154,120 @@ function Galaxy() {
   return <group ref={grp} rotation={[0.18, 0, 0.35]}><primitive object={pts} /></group>
 }
 
-// 球外生態：鳥群線稿（V 隊形、拍翅）繞球飛行；群數由鳥類調查資料（該海況流域鳥種數）驅動
+// 潮汐海況的背景月亮：盈虧 = 當日月齡（由 CWA 農曆日期推得，與潮汐資料同源），
+// 位置 = 月中天時刻與「當下時刻」決定的天空弧線（新月正午、上弦傍晚、滿月午夜中天）。
+// 資料播放時，時刻跟著序列走 → 24h 潮位起伏的同時月亮真的劃過天空；靜止時用現實時刻。
+const MOON_R = 6.4, MOON_Z = -9
+function MoonSky() {
+  const mesh = useRef(), halo = useRef()
+  const mat = useMemo(() => new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    uniforms: { uPhase: { value: 0 }, uAlpha: { value: 0 }, uTint: { value: new THREE.Color('#f6eed2') } },
+    vertexShader: 'varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }',
+    fragmentShader: `varying vec2 vUv; uniform float uPhase; uniform float uAlpha; uniform vec3 uTint;
+      float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
+      float noise(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
+        return mix(mix(hash(i),hash(i+vec2(1.0,0.0)),f.x), mix(hash(i+vec2(0.0,1.0)),hash(i+vec2(1.0,1.0)),f.x), f.y); }
+      void main(){
+        vec2 p = vUv*2.0-1.0; float r2 = dot(p,p);
+        if (r2 > 1.0) discard;
+        vec3 n = vec3(p, sqrt(1.0-r2));
+        vec3 L = vec3(sin(uPhase), 0.0, -cos(uPhase));           // 太陽方向：新月在背後、滿月在前、上弦在右
+        float ndl = dot(n, L);
+        float lit = smoothstep(-0.02, 0.10, ndl);
+        float maria = 0.55*noise(p*2.6+1.7) + 0.30*noise(p*6.0+4.2) + 0.15*noise(p*13.0);
+        float surf = 0.62 + 0.38*maria;
+        float rim = smoothstep(0.86, 1.0, sqrt(r2));
+        float shade = 0.55 + 0.45*max(ndl, 0.0);
+        vec3 col = uTint*surf*shade*lit + uTint*0.05;              // 暗面留一點點地球反照
+        gl_FragColor = vec4(col, (lit*0.92 + 0.10 + rim*0.20*lit) * uAlpha);
+      }`,
+  }), [])
+  const haloMat = useMemo(() => new THREE.SpriteMaterial({ map: dotTex(), color: '#dfe8ff', transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, fog: false }), [])
+  const s = useRef({ alpha: 0, x: -MOON_R, y: 0.6, phase: 0, init: false })
+  const { camera, size } = useThree()
+  useFrame((_, dt) => {
+    const st = useStore.getState()
+    // 依相機可視範圍夾住月亮（側邊面板 / 手機直式時畫布較窄，不能被切掉）
+    const dist = Math.max(4, camera.position.z - MOON_Z)
+    const halfH = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * dist
+    const halfW = halfH * (size.width / Math.max(1, size.height))
+    const xr = Math.max(2, Math.min(MOON_R, halfW - 1.6))
+    const ymax = Math.max(1.5, halfH - 1.6)
+    const o = st.govOption && st.govOption()
+    const tide = o && o.kind === 'tide' && o.series
+    const S = s.current
+    let wantAlpha = 0, tx = S.x, ty = S.y, tPhase = S.phase
+    if (tide && !arState.on) {
+      const playing = seriesMeta.active && st.rec.mode === 'playing' && seriesMeta.points.length > 0
+      let hour
+      if (playing) {                                     // 序列時刻（相鄰兩點間平滑內插）
+        const pts = seriesMeta.points
+        const f = Math.max(0, st.rec.playhead / seriesMeta.step)
+        const i0 = Math.min(pts.length - 1, Math.floor(f)), i1 = Math.min(pts.length - 1, i0 + 1)
+        hour = pts[i0].h + (pts[i1].h - pts[i0].h) * (f - Math.floor(f))
+      } else { const d = new Date(); hour = d.getHours() + d.getMinutes() / 60 }
+      // 月齡：資料播放（時刻屬於序列那一天）或資料日期＝今天 → 用 CWA 農曆日期推；資料檔已過期則退回天文公式（永遠是當下）
+      const now = new Date()
+      const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+      const fromLunar = (playing || tide.date === todayStr) ? ageFromLunar(tide.lunar, hour) : null
+      const age = fromLunar != null ? fromLunar : moonAge(playing ? dateAtHour(tide.date, hour) : now)
+      const sky = moonSky(age, hour)
+      tPhase = moonPhaseAngle(age)
+      if (sky.up > 0.05) {                               // 在地平線上：沿弧線劃過（東升左 → 西落右）
+        tx = Math.sin(sky.H) * xr; ty = Math.min(ymax, 0.6 + sky.up * 3.4)
+        wantAlpha = playing ? Math.min(1, (sky.up - 0.05) / 0.25) : 1
+      } else if (!playing) {                             // 靜止且尚在地平線下：貼在將升起 / 剛落下的那一側，半透明
+        tx = (sky.H < 0 ? -1 : 1) * xr; ty = 0.6; wantAlpha = 0.5
+      }                                                  // 播放中位於地平線下 → 淡出（月落 / 月出前）
+    }
+    const k = Math.min(1, dt * 3)
+    if (!S.init) { S.init = true; S.x = tx; S.y = ty; S.phase = tPhase }
+    S.alpha += (wantAlpha - S.alpha) * k
+    if (wantAlpha > 0.02) {
+      if (S.alpha < 0.05) { S.x = tx; S.y = ty; S.phase = tPhase }                                            // 剛要淡入：直接就位，不從舊座標 / 舊月相滑過來
+      else { S.x += (tx - S.x) * k; S.y += (ty - S.y) * k; S.phase += (tPhase - S.phase) * k }              // 平時平滑跟隨（播放時月亮劃過天空）
+    }                                                                                                       // 淡出時位置凍結，避免滑走
+    if (mesh.current) { mesh.current.visible = S.alpha > 0.01; mesh.current.position.set(S.x, S.y, MOON_Z) }
+    if (halo.current) { halo.current.visible = S.alpha > 0.01; halo.current.position.set(S.x, S.y, MOON_Z - 0.1) }
+    mat.uniforms.uPhase.value = S.phase
+    mat.uniforms.uAlpha.value = S.alpha
+    haloMat.opacity = S.alpha * (0.06 + 0.2 * moonIllum((S.phase / (Math.PI * 2)) * 29.530588853))
+  })
+  return (
+    <>
+      <mesh ref={mesh} scale={2.5} visible={false}><planeGeometry args={[1, 1]} /><primitive object={mat} attach="material" /></mesh>
+      <sprite ref={halo} scale={[7.5, 7.5, 1]} visible={false}><primitive object={haloMat} attach="material" /></sprite>
+    </>
+  )
+}
+
+// 球外生態：鳥群線稿（V 隊形、拍翅）繞球飛行；群數由鳥類調查資料（該海況流域鳥種數 × 現實季節）驅動
 function BirdFlocks() {
   const batch = useMemo(() => makeBatch(240), [])
   const flocks = useMemo(() => Array.from({ length: 5 }, (_, i) => ({
     ang: i * 1.9, r: 3.1 + (i % 3) * 0.7, y: 1.0 + (i % 4) * 0.55,
     speed: (0.05 + (i % 3) * 0.03) * (i % 2 ? 1 : -1), ph: i * 2.3, n: 5 + (i % 3) * 2, vis: 0,
   })), [])
+  const flockTarget = useRef(2)
+  const acc = useRef(9)
   useFrame((state, dt) => {
     const t = state.clock.elapsedTime
     bBegin(batch)
-    const st = useStore.getState()
-    const o = st.govOption && st.govOption()
-    const bd = (o && o.birds) || (st.gov && st.gov.birds) || null
-    const flockActive = bd ? Math.max(1, Math.min(5, Math.round((bd.species || 80) / 40))) : 2
+    // 群數 = 該流域年度鳥種數的基準 × 現實季節（鳥類調查逐月鳥種數；birdMonth 可手動預覽其他月份）。每 0.5 秒重算即可。
+    acc.current += dt
+    if (acc.current > 0.5) {
+      acc.current = 0
+      const st = useStore.getState()
+      const o = st.govOption && st.govOption()
+      const bd = o && o.birds
+      if (bd) {
+        const mo = st.birdMonth != null ? st.birdMonth : new Date().getMonth()
+        const s = birdSeasonal(bd.monthly, mo)
+        flockTarget.current = flockCount(bd.species, s ? s.rel : 1)
+      } else flockTarget.current = 2
+    }
+    const flockActive = flockTarget.current
     flocks.forEach((f, i) => {
       f.vis += ((i < flockActive ? 1 : 0) - f.vis) * Math.min(1, dt * 1.5)
       if (f.vis < 0.03) return
@@ -1252,6 +1354,7 @@ export default function Scene3D() {
       <Galaxy />
       <Stars />
       <ShootingStars />
+      <MoonSky />
       <BirdFlocks />
       <ambientLight intensity={0.6} />
       <Ocean />

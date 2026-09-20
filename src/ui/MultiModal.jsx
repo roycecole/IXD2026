@@ -1,31 +1,33 @@
 import { useEffect, useRef, useState } from 'react'
-import { startHost, remoteUrl, multiState } from '../lib/multiplayer.js'
+import { startHost, onHostChange, remoteUrl, multiState } from '../lib/multiplayer.js'
 import { stats } from '../store/stats.js'
 
 // 多人合奏：開 host + 顯示 QR。手機掃碼開遙控頁，一人演奏變一群人合奏。
 export default function MultiModal({ onClose }) {
   const canvasRef = useRef(null)
+  const drawn = useRef('')
   const [state, setState] = useState({ ready: multiState.on, count: multiState.count, err: null })
   const [copied, setCopied] = useState(false)
 
   useEffect(() => {
     let dead = false
-    const refresh = () => { if (!dead) setState((s) => ({ ...s, ready: multiState.on, count: multiState.count })) }
-    ;(async () => {
+    const draw = async () => {                        // host 重建換 ID 時也會重畫
+      const url = remoteUrl()
+      if (!url || url === drawn.current || !canvasRef.current) return
+      drawn.current = url
       try {
-        await startHost(refresh)
-        refresh()
         const QR = await import('qrcode')
-        if (canvasRef.current) {
-          await QR.toCanvas(canvasRef.current, remoteUrl(), {
-            width: 216, margin: 2,
-            color: { dark: '#0b0e17', light: '#f2f7ff' }, // 標準深碼淺底：掃描相容性最佳
-          })
-        }
-      } catch (e) { if (!dead) setState((s) => ({ ...s, err: e.message || '啟動失敗' })) }
-    })()
-    const iv = setInterval(refresh, 1500)
-    return () => { dead = true; clearInterval(iv) }
+        await QR.toCanvas(canvasRef.current, url, {
+          width: 216, margin: 2,
+          color: { dark: '#0b0e17', light: '#f2f7ff' }, // 標準深碼淺底：掃描相容性最佳
+        })
+      } catch (e) { drawn.current = '' }
+    }
+    const refresh = () => { if (!dead) { setState((s) => ({ ...s, ready: multiState.on, count: multiState.count, err: null })); draw() } }
+    const off = onHostChange(refresh)
+    startHost().then(refresh).catch((e) => { if (!dead) setState((s) => ({ ...s, err: e.message || e.type || '啟動失敗' })) })
+    const iv = setInterval(refresh, 2000)
+    return () => { dead = true; off(); clearInterval(iv) }
   }, [])
 
   const copy = async () => {

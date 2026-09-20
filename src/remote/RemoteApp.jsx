@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { PEER_CONFIG } from '../lib/ice.js'
+import { askSensorPermission, startTilt, startShake } from '../lib/sensors.js'
 
 // 手機遙控頁（#remote=<hostId>）：輕量、不載 three。滑桿 / 按鈕 / 打擊墊
 // 全部送回主畫面的 store.input()/handleNote() —— 多支手機同時連線＝一群人合奏一片海。
@@ -51,6 +52,15 @@ export default function RemoteApp({ hostId }) {
   const lastSend = useRef({})   // 節流
   const lastLocal = useRef({})  // 最近本地拖動時間（同步不要蓋住手上的滑桿）
   const listRef = useRef(null)
+  const [sensorsOn, setSensorsOn] = useState(false)
+  const [sensMsg, setSensMsg] = useState('')
+  const tiltRef = useRef(null)
+  const shakeStop = useRef(null)
+
+  useEffect(() => () => {                       // 離開頁面時收掉感測器監聽
+    try { tiltRef.current && tiltRef.current.stop() } catch (e) {}
+    try { shakeStop.current && shakeStop.current() } catch (e) {}
+  }, [])
 
   useEffect(() => {
     const b = ensurePeer(hostId)
@@ -85,6 +95,26 @@ export default function RemoteApp({ hostId }) {
     send({ t: 'p', pid, v })
   }
 
+  // 感測器：傾斜 → 洋流方向（flowX/flowY）、搖晃 → 浪湧（pad note 17）。走同一條 wire 協定，主畫面不需新程式。
+  const toggleSensors = async () => {
+    if (sensorsOn) {
+      try { tiltRef.current && tiltRef.current.stop() } catch (e) {}
+      try { shakeStop.current && shakeStop.current() } catch (e) {}
+      tiltRef.current = null; shakeStop.current = null
+      setSensorsOn(false); setSensMsg(''); return
+    }
+    if (!(await askSensorPermission())) { setSensMsg('未取得感測器權限（iOS 請在提示中允許「動作與方向」）'); return }
+    let seen = false
+    tiltRef.current = startTilt(({ flowX, flowY }) => { send({ t: 'p', pid: 'flowX', v: flowX }); send({ t: 'p', pid: 'flowY', v: flowY }) }, { onFirst: () => { seen = true; setSensMsg('') } })
+    shakeStop.current = startShake((vel) => {
+      send({ t: 'n', note: 17, vel })
+      try { navigator.vibrate && navigator.vibrate(15) } catch (e) {}
+    })
+    setSensorsOn(true)
+    setSensMsg('偵測中…傾斜看看')
+    setTimeout(() => { if (!seen) setSensMsg('沒有收到感測器資料（需要手機或平板）') }, 2000)
+  }
+
   const pids = (role && role.pids && role.pids.length ? role.pids : DEFAULT_PIDS).filter((p) => ALL_SLIDERS[p])
 
   return (
@@ -110,6 +140,13 @@ export default function RemoteApp({ hostId }) {
                      }} disabled={!ok} />
             </label>
           ))}
+        </section>
+        <section className="remote-sensors" aria-label="手機感測器">
+          <button className={sensorsOn ? 'on' : ''} aria-pressed={sensorsOn} onClick={toggleSensors} disabled={!ok}>
+            {sensorsOn ? '感測器 開　傾斜＝洋流 · 搖晃＝浪湧' : '啟用感測器　傾斜＝洋流 · 搖晃＝浪湧'}
+          </button>
+          {sensorsOn && <button onClick={() => tiltRef.current && tiltRef.current.recenter()} title="把目前握持姿勢設為水平基準">歸零</button>}
+          {sensMsg && <span className="remote-hint">{sensMsg}</span>}
         </section>
         <section className="remote-actions" aria-label="動作按鈕">
           {ACTIONS.map((b) => (

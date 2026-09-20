@@ -1,6 +1,9 @@
 import { useStore, getPendingTakeoverCCs } from '../store/useStore.js'
+import { routeMidi } from '../lib/midiRoute.js'
+import { bleConnect, bleSupported } from '../lib/blemidi.js'
 
-// 回傳 { connect }：需由使用者手勢（按鈕）觸發，瀏覽器才會授權 Web MIDI。
+// 回傳 { connect, connectBle }：需由使用者手勢（按鈕）觸發，瀏覽器才會授權 Web MIDI / Web Bluetooth。
+// connect＝USB（Web MIDI，含 LED 回饋）；connectBle＝藍牙 MIDI（Web Bluetooth，直接 GATT，兩者共用 routeMidi）。
 // 輸入：CC / Note / Pitch Bend（→ 偽 CC128，供 nanoPAD2 X 軸綁 flowX）。
 // 輸出：nanoKONTROL2 LED 回饋（需以 KORG Kontrol Editor 將 LED Mode 設為 External）：
 //   ● REC 錄製中閃爍、▶ PLAY 播放中恆亮、■ STOP 有錄製待播放時亮、
@@ -54,15 +57,7 @@ export function useMIDI() {
     try {
       const access = await navigator.requestMIDIAccess({ sysex: false })
 
-      const route = (e) => {
-        const [status, d1, d2] = e.data
-        const type = status & 0xf0
-        const st = useStore.getState()
-        if (type === 0xb0) st.handleCC(d1, d2 / 127)
-        else if (type === 0x90 && d2 > 0) st.handleNote(d1, d2 / 127)
-        else if (type === 0xe0) st.handleCC(128, ((d2 << 7) | d1) / 16383) // Pitch Bend → 偽 CC128
-        // Note Off / velocity=0 為事件結束，這裡忽略
-      }
+      const route = (e) => routeMidi(e.data)
 
       const bind = () => {
         const names = []
@@ -85,5 +80,26 @@ export function useMIDI() {
     }
   }
 
-  return { connect }
+  // 藍牙 MIDI：iPad / iPhone Safari 沒有 Web Bluetooth → 引導改用「多人」QR 遙控
+  const connectBle = async () => {
+    const setMidi = useStore.getState().setMidi
+    if (!bleSupported()) {
+      setMidi({ error: '此瀏覽器不支援 Web Bluetooth（iPad / iPhone Safari 請改用「多人」掃 QR 當遙控器）' })
+      return
+    }
+    try {
+      const dev = await bleConnect({
+        onMsg: routeMidi,
+        onDisconnect: () => { const s = useStore.getState(); s.setMidi({ bleName: null }); s.pushLog('in', '藍牙 MIDI 已斷線') },
+      })
+      const s = useStore.getState()
+      s.setMidi({ bleName: dev.name, error: null })
+      s.pushLog('in', `藍牙 MIDI 已連線：${dev.name}`)
+    } catch (err) {
+      if (err && err.name === 'NotFoundError') return // 使用者取消選擇裝置
+      setMidi({ error: '藍牙 MIDI：' + String(err && err.message ? err.message : err) })
+    }
+  }
+
+  return { connect, connectBle }
 }

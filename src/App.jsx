@@ -10,8 +10,12 @@ import VirtualController from './ui/VirtualController.jsx'
 import ParamHUD from './ui/ParamHUD.jsx'
 import TakeoverHint from './ui/TakeoverHint.jsx'
 import DataHUD from './ui/DataHUD.jsx'
-import { arState, arStart, arStop, arFilter } from './lib/ar.js'
+import KioskQR from './ui/KioskQR.jsx'
+import { arState, arStart, arStop, arFilter, createLumaSampler, glowForLuma } from './lib/ar.js'
 import { stats } from './store/stats.js'
+import { hudState } from './store/hud.js'
+import { PARAMS } from './params/registry.js'
+import { multiState } from './lib/multiplayer.js'
 import { useMIDI } from './hooks/useMIDI.js'
 import { useStore } from './store/useStore.js'
 import { decodeParams } from './lib/share.js'
@@ -55,7 +59,7 @@ function StageStats() {
 const KIOSK = (() => { try { return new URLSearchParams(location.search).has('kiosk') } catch (e) { return false } })()
 
 export default function App() {
-  const { connect } = useMIDI()
+  const { connect, connectBle } = useMIDI()
   const raf = useRef(0)
   const last = useRef(performance.now())
 
@@ -110,6 +114,26 @@ export default function App() {
     arState[key] = v
     if (videoRef.current) videoRef.current.style.filter = arFilter()
   }
+
+  // 環境光感知：AR 開啟時每 0.6 秒取相機平均亮度 → 自動調球體輝光（環境亮 → 輝光強、暗 → 收斂）。
+  // 用 setParam（不進錄製、不閃 HUD）；使用者剛手動調過輝光（旋鈕 / 滑桿 / 遙控）→ 暫停自動 8 秒。
+  useEffect(() => {
+    if (!arOn) return
+    const sample = createLumaSampler()
+    let smooth = null
+    const iv = setInterval(() => {
+      if (!arState.autoGlow) { smooth = null; return }
+      const L = sample(videoRef.current)
+      if (L == null) return
+      arState.luma = L
+      if (hudState.label === PARAMS.glow.label && performance.now() - hudState.t < 8000) return
+      const target = glowForLuma(L, arState.clarity)
+      smooth = smooth == null ? target : smooth + (target - smooth) * 0.35
+      const st = useStore.getState()
+      if (Math.abs((st.params.glow ?? 0) - smooth) > 0.01) st.setParam('glow', smooth)
+    }, 600)
+    return () => clearInterval(iv)
+  }, [arOn])
 
   // 全域鍵盤：H 演出模式、空白鍵播放、R 錄製、1-4 召喚生物、? 說明（輸入/按鈕聚焦時放行原生行為）
   useEffect(() => {
@@ -216,7 +240,7 @@ export default function App() {
   return (
     <div className={'app' + (stage ? ' stagemode' : '')} style={{ '--panel-w': panelW + 'px', '--monitor-h': monitorH + 'px', '--canvas-vh': canvasVh }}>
       {stage && <button className="stage-exit" onClick={() => setStage(false)} title="離開演出模式（或按 H）">✕</button>}
-      <TopBar onConnect={connect} onInfo={() => setShowInfo(true)} onVK={() => setShowVK((v) => !v)} vkOn={showVK}
+      <TopBar onConnect={connect} onBle={connectBle} onInfo={() => setShowInfo(true)} onVK={() => setShowVK((v) => !v)} vkOn={showVK}
               onMulti={() => setShowMulti((v) => !v)} multiOn={showMulti} onAR={toggleAR} arOn={arOn} />
       <main className="stage">
         <div className={'canvas-wrap' + (arOn ? ' ar-on' : '')} onDoubleClick={() => setStage((s) => !s)} onWheel={onWheel} title="雙擊演出模式 · 滾輪縮放">
@@ -231,8 +255,12 @@ export default function App() {
                      onInput={(e) => onArTune('blur', parseFloat(e.target.value))} /></label>
               <label>清澈<input type="range" min="0" max="1" step="0.01" defaultValue={arState.clarity}
                      onInput={(e) => onArTune('clarity', parseFloat(e.target.value))} /></label>
+              <label className="ar-auto" title="依相機畫面平均亮度自動調球體輝光（環境光感知）">
+                <input type="checkbox" defaultChecked={arState.autoGlow} onChange={(e) => { arState.autoGlow = e.target.checked }} />環境光自動調輝光
+              </label>
             </div>
           )}
+          {stage && (KIOSK || multiState.on) && <KioskQR />}
           {stage && <StageStats />}
         </div>
         <Splitter axis="x" onDelta={(dx) => setPanelW((w) => clamp(w - dx, 260, 640))} />

@@ -2,14 +2,14 @@ import { create } from 'zustand'
 import { PARAMS, PARAM_ORDER, DEFAULT_BINDINGS, ACTION_BINDINGS } from '../params/registry.js'
 import { LS, SS, loadLS, saveLS, removeLS, loadSS, saveSS } from '../lib/persist.js'
 import { noteQueue } from '../audio/bus.js'
-import { padEvents } from './events.js'
+import { padEvents, purifyMeta } from './events.js'
 import { setHud } from './hud.js'
 import { touch } from './activity.js'
 import { bumpStat } from './stats.js'
 import { SCENES } from '../timeline/scenes.js'
 
-// 資料播放中的「資料時刻」資訊（DataHUD 每幀讀取，非反應式）
-export const seriesMeta = { active: false, name: '', label: '', unit: '', date: '', step: 1.1, points: [] }
+// 資料播放中的「資料時刻」資訊（DataHUD / MoonSky 每幀讀取，非反應式）
+export const seriesMeta = { active: false, name: '', label: '', unit: '', date: '', step: 1.1, points: [], target: '', lunar: '', lunarLabel: '', range: '', events: [] }
 
 const haptic = (ms) => { try { navigator.vibrate && navigator.vibrate(ms) } catch (e) {} }
 
@@ -53,12 +53,14 @@ export const useStore = create((set, get) => ({
   params: initialParams,
   bindings: loadBindings(),                     // cc(number) -> paramId
   learn: { active: false, target: null, seq: -1 },
-  midi: { connected: false, inputs: [], error: null },
+  midi: { connected: false, inputs: [], error: null, bleName: null },
   log: [],
   rec: { mode: 'idle', playhead: 0, duration: (savedRec && savedRec.duration) || 0, playIndex: 0, count: recBuffer.length, speed: 1, loop: false },
   spawns: { whale: 0, dolphin: 0, turtle: 0, purify: 0 },   // 按鈕觸發計數（場景讀取後生成訪客 / 淨化波）
   gov: null,                                     // 真實海況資料快照（public/data/ocean.json）
   govOptionId: null,                             // 目前選擇的水庫海況
+  birdMonth: null,                               // 球外鳥群的季節：null=現實月份，0..11=手動預覽該月（展場示範用）
+  setBirdMonth: (m) => set({ birdMonth: m }),
 
   // ---- 參數 ----
   setParam: (pid, v) => set((s) => ({ params: { ...s.params, [pid]: clamp01(v) } })),
@@ -250,7 +252,9 @@ export const useStore = create((set, get) => ({
   spawnWhale: () => { touch(); haptic(18); set((s) => ({ spawns: { ...s.spawns, whale: s.spawns.whale + 1 } })); get().pushLog('out', '鯨魚出現') },
   spawnDolphin: () => { touch(); haptic(14); set((s) => ({ spawns: { ...s.spawns, dolphin: s.spawns.dolphin + 1 } })); get().pushLog('out', '海豚出現') },
   spawnTurtle: () => { touch(); haptic(14); set((s) => ({ spawns: { ...s.spawns, turtle: s.spawns.turtle + 1 } })); get().pushLog('out', '海龜出現') },
-  clearTrash: () => { touch(); haptic(10); get().setParam('trashCount', 0); set((s) => ({ spawns: { ...s.spawns, purify: s.spawns.purify + 1 } })); get().pushLog('out', '清除垃圾 → 淨化波') },
+  // 淨化波：視覺（三環擴散 + 推開垃圾）與聲音（上行琶音）都以 spawns.purify 計數器 + purifyMeta.v 觸發
+  purify: (v = 1) => { touch(); purifyMeta.v = Math.max(0.2, Math.min(1, v)); set((s) => ({ spawns: { ...s.spawns, purify: s.spawns.purify + 1 } })) },
+  clearTrash: () => { touch(); haptic(10); get().setParam('trashCount', 0); get().purify(1); get().pushLog('out', '清除垃圾 → 淨化波') },
 
   // ---- 走帶鍵（實體 transport）----
   transportPlay: () => { const m = get().rec.mode; if (m === 'playing') get().stopPlayback(); else if (m === 'idle') get().startPlayback() },
@@ -293,7 +297,10 @@ export const useStore = create((set, get) => ({
       }
     })
     const dur = pts.length * STEP
-    Object.assign(seriesMeta, { active: true, name: o.name, label: o.series.label, unit: o.series.unit || '', date: o.series.date || '', step: STEP, points: pts })
+    Object.assign(seriesMeta, {
+      active: true, name: o.name, label: o.series.label, unit: o.series.unit || '', date: o.series.date || '', step: STEP, points: pts,
+      target: o.series.target || '', lunar: o.series.lunar || '', lunarLabel: o.series.lunarLabel || '', range: o.series.range || '', events: o.series.events || [],
+    })
     set((s) => ({ rec: { ...s.rec, mode: 'idle', playhead: 0, playIndex: 0, duration: dur, count: recBuffer.length } }))
     get().startPlayback()
     get().pushLog('out', `▶ 資料播放：${o.name} ${o.series.date || ''} ${o.series.label}（${pts.length} 筆，${o.series.unit}）`)

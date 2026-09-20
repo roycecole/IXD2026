@@ -5,13 +5,14 @@ import { buildShareUrl } from '../lib/share.js'
 import { captureCanvas, downloadBlob, shareSnapshot } from '../lib/capture.js'
 import { audioToggle, audioState } from '../audio/engine.js'
 import { micToggle } from '../audio/mic.js'
+import { bleSupported } from '../lib/blemidi.js'
 
 function fmt(t) {
   const m = Math.floor(t / 60), s = Math.floor(t % 60)
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
-export default function TopBar({ onConnect, onInfo, onVK, vkOn, onMulti, multiOn, onAR, arOn }) {
+export default function TopBar({ onConnect, onBle, onInfo, onVK, vkOn, onMulti, multiOn, onAR, arOn }) {
   const rec = useStore((s) => s.rec)
   const midi = useStore((s) => s.midi)
   const startRecording = useStore((s) => s.startRecording)
@@ -126,6 +127,12 @@ export default function TopBar({ onConnect, onInfo, onVK, vkOn, onMulti, multiOn
       <button className={'conn' + (midi.connected ? ' on' : '')} onClick={onConnect}>
         {midi.connected ? '● MIDI 已連線' : '連線 MIDI'}
       </button>
+      {bleSupported() && (
+        <button className={'conn' + (midi.bleName ? ' on' : '')} onClick={onBle}
+                title="藍牙 MIDI（Web Bluetooth）：直接連 BLE-MIDI 控制器 / 鍵盤，不需先在系統配對">
+          {midi.bleName ? '● 藍牙 ' + midi.bleName.slice(0, 12) : '藍牙 MIDI'}
+        </button>
+      )}
     </header>
   )
 }
