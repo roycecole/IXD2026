@@ -12,6 +12,7 @@ import { registerPickSource, collectCandidates, pickSources, pickTarget, createT
 import { createPenForce, createPenFlow } from '../lib/pointerExpr.js'   // 觸控筆：壓力 → 浪勁、傾斜 → 洋流方向
 import { useQualityStore } from '../lib/qualityStore.js'
 import { flagOn } from '../lib/urlFlags.js'
+import { createCameraRig, fitEnabled, shellScale, stationLayout } from '../lib/cameraFit.js'   // 視角自動取景（窄畫布把相機拉遠，讓整顆球可見）
 import { trigger as hapticTrigger } from '../lib/haptics.js'   // 點擊亮星的輕觸感（受總開關 / 節流管理）
 import { tierFx, dprRange } from '../lib/quality.js'
 
@@ -27,6 +28,8 @@ const YAXIS = new THREE.Vector3(0, 1, 0)
 const bioNodes = []   // 生物節點（供 BioNetwork 科技連線）
 const _cl = new THREE.Vector3()
 const poke = { dir: new THREE.Vector3(0, 0, 1), str: 0, target: 0, vel: 0 } // 果凍壓凹（球殼柔軟壓回）
+const camFit = { v: 1 }  // 自動取景的「目前」相機距離倍率（CameraRig 每幀更新、跟著相機一起平滑；寬螢幕恆為 1）：霧的遠近跟著放大，球拉遠後不會被霧吃掉
+const FIT_ON = fitEnabled(typeof location !== 'undefined' ? location.search : '')   // ?fit=0 關閉自動取景（除錯用）
 const BG_LAYER = 1     // 背景層（星空 / 銀河 / 流星 / 月亮）；球體、生物、水體、鳥群在預設層 0
 const REDUCED = (() => { try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches } catch (e) { return false } })()
 
@@ -1001,7 +1004,7 @@ function Stars() {
   const grp = useRef()
   useFrame((state, dt) => {
     const t = state.clock.elapsedTime
-    if (grp.current) grp.current.rotation.y += dt * 0.012
+    if (grp.current) { grp.current.rotation.y += dt * 0.012; grp.current.scale.setScalar(shellScale(state.camera.position.length(), 12)) }   // 星殼內緣（半徑 12）要一直在相機外：自動取景把相機拉遠時同步放大（桌面恆為 1）
     const col = pts.geometry.attributes.color.array
     for (let i = 0; i < COUNT; i++) {
       const tw = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(t * phases[i * 2 + 1] + phases[i * 2]))
@@ -1089,7 +1092,7 @@ function FogDriver() {
     const clar = effClarity()
     const hw = waterHue() + 0.05
     fog.color.setHSL(hw, 0.6, 0.04 + clar * 0.06 + day * 0.012, SRGB)   // 改 sRGB 解讀（原 linear 解讀偏亮灰）；s 0.5→0.6 補回深藍飽和度，接近設計稿 #05121f
-    fog.near = 3.5 - (1 - clar) * 1.5; fog.far = 9 + clar * 6
+    fog.near = (3.5 - (1 - clar) * 1.5) * camFit.v; fog.far = (9 + clar * 6) * camFit.v   // 乘上自動取景倍率：窄畫布相機拉遠後，水體（唯一吃霧的材質）的霧濃度與桌面相同
     bgc.setHSL(hw + 0.02, 0.7, 0.065 + day * 0.035, SRGB)        // 背景隨晝夜 / 場景配色微變（sRGB 解讀；s 0.42→0.7、l 0.045+0.028d → 0.065+0.035d：夜 ≈ 設計稿 #05101c 深藍、晝略亮，不死黑）
   })
   return null
@@ -1173,8 +1176,8 @@ function Galaxy() {
     m.frustumCulled = false; m.layers.set(BG_LAYER); return m
   }, [])
   const grp = useRef()
-  useFrame((_, dt) => {
-    if (grp.current) grp.current.rotation.y += dt * 0.004
+  useFrame((state, dt) => {
+    if (grp.current) { grp.current.rotation.y += dt * 0.004; grp.current.scale.setScalar(shellScale(state.camera.position.length(), 16)) }   // 同 Stars：銀河內緣（半徑 16）不被拉遠的相機吞進去
     pts.geometry.setDrawRange(0, Math.max(1, Math.round(N * QF.particles)))   // 自動畫質：粒子上限係數
     let inten = 0.55                                        // 河川資料 → 銀河濃度
     const gov = useStore.getState().gov
@@ -1384,12 +1387,15 @@ function StationStars() {
     if (!list || !list.length || !grp.current) return
     const key = list.length + ':' + list[0].n
     if (cache.key !== key) { cache.key = key; build(list) }
-    // 位置：右側；依可視範圍夾取，窄畫面（手機直式）往中間靠
+    // 位置：右側；依可視範圍夾取。窄畫面（手機直式，長寬比 <= 0.8）球右側放不下 → 改放到球的上方（空間不夠時縮小），不會被夾到球後面（規則在 lib/cameraFit.js stationLayout；長寬比 >= 0.95 與原公式完全相同）
     const dist = Math.max(4, camera.position.z - STN_Z)
     const halfH = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * dist
-    const halfW = halfH * (size.width / Math.max(1, size.height))
+    const asp = size.width / Math.max(1, size.height)
+    const halfW = halfH * asp
     const sphereR = 2.02 * (dist / Math.max(3, camera.position.z))                  // 球體在此深度平面的投影半徑：星座要排在球體右側之外才看得出台灣輪廓
-    grp.current.position.set(Math.max(2.4, Math.min(halfW - 1.5, sphereR + 1.4)), -0.3, STN_Z)
+    const lay = stationLayout({ halfW, halfH, sphereR, aspect: asp })
+    grp.current.position.set(lay.x, lay.y, STN_Z)
+    grp.current.scale.setScalar(lay.s)
     grp.current.rotation.y = Math.sin(state.clock.elapsedTime * 0.05) * 0.08   // 極慢的視差擺動
     const col = cache.pts.geometry.attributes.color.array, t = state.clock.elapsedTime
     for (let i = 0; i < cache.n; i++) {
@@ -1738,11 +1744,21 @@ function BackdropFX({ hide }) {
   return null
 }
 
+// 相機：距離 = zoom 公式（4.6 + (1 - zoom) * 4）* 自動取景倍率 fit。
+// fit 由「目前畫布長寬比」算出（lib/cameraFit.js）：寬螢幕恆為 1（與改版前完全相同）；窄畫布（手機直式全螢幕）> 1，
+// 相機沿原視線後退，讓半徑 2.42 的球（含輝光）完整落在視野內。zoom 滑桿 / 雙指縮放仍是比例運作（在直式手機上也能拉近拉遠）。
+// 第一幀直接就位（不從 7 慢慢滑進來，直式手機一開始球不會被切掉）；之後維持既有的 lerp 平滑。?fit=0 關閉。
 function CameraRig() {
   const { camera, gl } = useThree()
-  const tmp = useMemo(() => new THREE.Vector3(), [])
+  const rig = useMemo(() => createCameraRig({ enabled: FIT_ON }), [])   // 狀態機在 lib/cameraFit.js（第一幀就位 / lerp / 尺寸變了才重算 fit），可用 node 測
   // WebXR 桌面放置時相機由 XR（手機姿態）控制，這裡不能動；結束後由 XrRuntime 還原相機再交回這裡
-  useFrame(() => { if (gl.xr.isPresenting) return; const p = useStore.getState().params; const dist = 4.6 + (1 - (p.zoom ?? 0.5)) * 4; tmp.set(0, 0.4, dist); camera.position.lerp(tmp, 0.06); camera.lookAt(0, 0, 0) })
+  useFrame((state) => {
+    if (gl.xr.isPresenting) return
+    const r = rig.step(camera.position, { width: state.size.width, height: state.size.height, zoom: useStore.getState().params.zoom ?? 0.5, fovDeg: camera.fov })
+    if (!r) return                                            // 畫布還沒量到尺寸：等量到再就位
+    camFit.v = r.shown
+    camera.lookAt(0, 0, 0)
+  })
   return null
 }
 

@@ -1,7 +1,10 @@
 // Help dialog body, English version. The shell lives in ../InfoModal.jsx and the Chinese version in ./InfoZh.jsx;
-// keep both files in the same order, with the same inline markup and the same facts.
-// To add content: add an entry { id, body } to PLAY (one more way to play), or add a section to SECTIONS
-// (`list` = bullet list, `text` = one paragraph). Button names follow src/i18n/GLOSSARY.md.
+// keep both files in the same order, with the same ids and groups, the same inline markup and the same facts.
+// Structure: a short lead paragraph -> "Quick start" (QUICK, at most 5 items) -> "Full guide" (GROUPS: collapsible
+// topic sections, closed by default, one-line summary).
+// To add content: add an entry { id, body } to PLAY (one more way to play) and put its id into the ids of exactly one
+// group in GROUPS; for a new topic add a group. Mirror every change in InfoZh.jsx (lib/onboarding.test.mjs checks that
+// the two files line up). Button names follow src/i18n/GLOSSARY.md.
 // This file must not contain any CJK text (the language button is described in words instead).
 import { Fragment } from 'react'
 
@@ -27,23 +30,47 @@ const PLAY = [
   { id: 'lang-devices', body: <><b>Language and Devices</b>: the language button in the top-right corner switches the interface between English and Traditional Chinese (you can also add <code>?lang=en</code> or <code>?lang=zh</code> to the URL). The "Devices" button gathers optional device features: <b>Audience window</b> (dual screen), <b>Camera gestures</b> (open palm = calm, pinch = whale), <b>Voice commands</b> (say "whale", "big wave", "quiet"…), <b>Haptics</b> (phone and gamepad vibration), <b>Graphics quality</b> (adjusts to the frame rate automatically) and <b>AR tabletop</b> (only shown on phones that support it). The camera and microphone are only used while you switch them on, and video is never uploaded; in Chrome / Edge, speech recognition is sent to a cloud service by the browser.</> },
 ]
 
-const SECTIONS = [
-  { id: 'play', title: 'How to play', list: PLAY },
-  { id: 'eco', title: 'Ocean ecology', text: <>More trash → murkier water, fewer creatures, fish schools that steer around the trash, and darker-toned sound. Clear the trash → a cleansing wave spreads, the water turns clear, creatures return, and the sound goes back to a bright major key. The background also has an extremely slow day-and-night "breathing" cycle.</> },
+// Quick start: five items or fewer, one line each; the details are in the full guide below.
+const QUICK = [
+  { id: 'quick-turn', body: <><b>Turn and tune</b>: drag the sphere to turn it; use the sliders on the right for sea level, current and clarity; click an action button to summon a whale, dolphin or turtle.</> },
+  { id: 'quick-data', body: <><b>Real data</b>: pick a reservoir, the tide, the moon or dust on the right, then press "Play" and the sphere follows the real data.</> },
+  { id: 'quick-tour', body: <><b>Data tour</b>: press <code>T</code> to play through today's real data automatically, with captions below the sphere explaining why it looks that way.</> },
+  { id: 'quick-nomidi', body: <><b>No MIDI controller?</b> Open "Controller" at the top for the virtual nanoKONTROL2, or press "Jam" and scan the QR code so a phone becomes a remote.</> },
+  { id: 'quick-more', body: <><b>More</b>: double-click the canvas for Stage mode; press <code>?</code> to open this Help any time; "Devices" has the optional camera gestures, voice commands and more.</> },
 ]
 
-export default function InfoEn() {
+// Topic groups of the full guide (title = the summary line, hint = the grey text beside it; ids point at PLAY above)
+const GROUPS = [
+  { id: 'controls', title: 'Controls', hint: 'Mouse, keyboard, touch, stylus, gamepad', ids: ['mouse', 'keyboard', 'touch', 'pen', 'gamepad'] },
+  { id: 'midi-sound', title: 'MIDI and sound', hint: 'MIDI controller, Bluetooth MIDI, ambient sound', ids: ['midi', 'ble', 'sound'] },
+  { id: 'data', title: 'Real data and tours', hint: 'Data card, survey timeline, data tour, data sources', ids: ['data', 'timeline', 'tour', 'inspect'] },
+  { id: 'view', title: 'View and AR', hint: 'Background blur, AR view, AR tabletop', ids: ['blur', 'ar', 'xr'] },
+  { id: 'share', title: 'Jam, sharing and exhibitions', hint: 'Phone remotes, share links, audience window', ids: ['multi', 'share', 'audience'] },
+  { id: 'devices', title: 'Language and devices', hint: 'Language, camera gestures, voice, haptics, graphics quality', ids: ['lang-devices'] },
+]
+const BY_ID = Object.fromEntries(PLAY.map((it) => [it.id, it.body]))
+
+const ECO = { id: 'eco', title: 'Ocean ecology', hint: 'How trash changes the sea, the creatures and the sound', text: <>More trash → murkier water, fewer creatures, fish schools that steer around the trash, and darker-toned sound. Clear the trash → a cleansing wave spreads, the water turns clear, creatures return, and the sound goes back to a bright major key. The background also has an extremely slow day-and-night "breathing" cycle.</> }
+
+// replay: the "Replay the quick tour" button passed in by the shell (InfoModal); it sits under the quick start
+export default function InfoEn({ replay = null }) {
   return (
     <>
       <p className="modal-lead">Play a line-art ocean inside a transparent sphere with a MIDI controller (or a mouse, keyboard or phone touch): shape the water, summon whales, dolphins and turtles, clean up ocean trash, and record a whole performance to replay it.</p>
-      {SECTIONS.map((s) => (
-        <Fragment key={s.id}>
-          <h3>{s.title}</h3>
-          {s.list
-            ? <ul className="modal-list">{s.list.map((it) => <li key={it.id}>{it.body}</li>)}</ul>
-            : <p className="modal-p">{s.text}</p>}
-        </Fragment>
+      <h3>Quick start</h3>
+      <ul className="modal-list">{QUICK.map((it) => <li key={it.id}>{it.body}</li>)}</ul>
+      {replay}
+      <h3 className="info-more">Full guide (click a topic to expand)</h3>
+      {GROUPS.map((g) => (
+        <details key={g.id} className="info-group">
+          <summary><span className="info-group-title">{g.title}</span><span className="info-group-hint">{g.hint}</span></summary>
+          <ul className="modal-list">{g.ids.map((id) => <Fragment key={id}><li>{BY_ID[id]}</li></Fragment>)}</ul>
+        </details>
       ))}
+      <details className="info-group">
+        <summary><span className="info-group-title">{ECO.title}</span><span className="info-group-hint">{ECO.hint}</span></summary>
+        <p className="modal-p">{ECO.text}</p>
+      </details>
     </>
   )
 }

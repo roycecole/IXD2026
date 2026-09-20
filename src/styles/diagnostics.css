@@ -1,0 +1,149 @@
+/* 裝置診斷：獨立頁（?diagnostics=1，src/DiagnosticsApp.jsx）+「裝置」面板的一節（ui/devices/DiagnosticsSection.jsx）。
+   頁面層級的規則全部以 html.diag-html / .diag-app 限定：這個檔案也會被主畫面（裝置面板那一節）載入，不能影響主畫面。 */
+
+/* ---- 「裝置」面板：診斷一節 ---- */
+.diag-sec .diag-open {
+  display: inline-flex; align-items: center; min-height: 36px; padding: 6px 14px; border-radius: 7px;
+  border: 1px solid var(--accent); color: var(--accent); background: #0f2a22; font-size: 12.5px; text-decoration: none;
+}
+.diag-sec .diag-open:hover { filter: brightness(1.12); }
+.diag-sec .diag-last { font-size: 12px; color: var(--muted); }
+
+/* ---- 頁面外觀：styles.css 對 body 設了 overflow:hidden 與 height:100%（給全螢幕的主畫面），診斷頁要能捲動 ---- */
+html.diag-html, html.diag-html body, html.diag-html #root { height: auto; min-height: 100%; }
+html.diag-html body { overflow: auto; -webkit-text-size-adjust: 100%; }
+
+.diag-app {
+  max-width: 760px; margin: 0 auto; color: var(--text); font-size: 14px; line-height: 1.6;
+  padding: 16px calc(16px + env(safe-area-inset-right)) calc(40px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+}
+.diag-app *, .diag-app *::before, .diag-app *::after { box-sizing: border-box; }
+.diag-app button { min-height: 40px; }
+.diag-app h1, .diag-app h2, .diag-app h4 { margin: 0; }
+
+/* ---- 頁首 ---- */
+.diag-head { padding-top: env(safe-area-inset-top); }
+.diag-head-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.diag-head h1 { font-size: 22px; letter-spacing: .02em; }
+.diag-lang { min-width: 56px; padding: 6px 12px; border-color: var(--accent); color: var(--accent); background: #0f2a22; }
+.diag-privacy { margin: 8px 0 14px; padding: 9px 12px; border-radius: 10px; font-size: 12.5px; line-height: 1.7; color: #c8cbd8; background: rgba(93, 202, 165, 0.08); border: 1px solid rgba(93, 202, 165, 0.25); }
+
+/* ---- 總覽：4 格（手機 2×2）；每格「數字 + 文字」，顏色只是輔助 ---- */
+.diag-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.diag-chip { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line2); background: var(--panel); min-width: 0; }
+.diag-chip b { font: 600 24px/1.2 var(--mono); }
+.diag-chip span { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.diag-chip.c-pass { border-color: rgba(93, 202, 165, 0.6); } .diag-chip.c-pass b { color: var(--accent); }
+.diag-chip.c-fail { border-color: rgba(255, 106, 106, 0.6); } .diag-chip.c-fail b { color: #ff8f8f; }
+.diag-chip.c-unsupported { border-style: dashed; } .diag-chip.c-unsupported b { color: #aab0c4; }
+.diag-chip.c-pending { border-style: dotted; } .diag-chip.c-pending b { color: var(--muted); }
+
+.diag-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.diag-msg { min-height: 20px; margin: 6px 0 0; font-size: 12.5px; color: var(--accent); }
+.diag-manual { width: 100%; min-height: 160px; margin-top: 4px; padding: 8px; border-radius: 8px; border: 1px solid var(--line2); background: var(--bg); color: var(--text); font: 12px/1.5 var(--mono); }
+
+/* ---- 按鈕（觸控目標 ≥ 40px）---- */
+.diag-btn { padding: 8px 14px; font-size: 13px; }
+.diag-btn.primary { border-color: var(--accent); color: var(--accent); background: #0f2a22; }
+.diag-btn.primary:disabled { opacity: .55; }
+.diag-btn.ghost { color: var(--muted); background: transparent; }
+.diag-btn.on-ok { border-color: var(--accent); color: #062018; background: var(--accent); }
+.diag-btn.on-bad { border-color: #ff6a6a; color: #2a0a0a; background: #ff8f8f; }
+
+/* ---- 分組（可摺疊）---- */
+.diag-main { margin-top: 16px; display: flex; flex-direction: column; gap: 12px; }
+.diag-group { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); overflow: hidden; }
+.diag-group-h { font-size: 14px; }
+.diag-group-h button {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 46px; padding: 8px 14px; text-align: left;
+  border: none; border-radius: 0; background: transparent; font-size: 14px; color: var(--text);
+}
+.diag-group-h button:hover { background: var(--panel2); }
+.diag-caret { flex: none; width: 8px; height: 8px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(-45deg); transition: transform .15s; }
+.diag-group-h button[aria-expanded='true'] .diag-caret { transform: rotate(45deg); }
+.diag-group-t { flex: 1 1 auto; min-width: 0; font-weight: 600; color: var(--accent); overflow-wrap: anywhere; }
+.diag-group-s { flex: none; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px 8px; font-size: 12px; color: var(--muted); }
+.diag-group-s em { font-style: normal; color: #ff8f8f; }
+.diag-rows { list-style: none; margin: 0; padding: 0; }
+.diag-rows[hidden] { display: none; }
+
+/* ---- 單項 ---- */
+.diag-row { padding: 12px 14px; border-top: 1px solid var(--line); min-width: 0; }
+.diag-row-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; }
+.diag-title { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.diag-hint { margin: 4px 0 0; font-size: 12.5px; color: var(--muted); }
+.diag-detail { margin: 4px 0 0; font-size: 13px; color: #c8cbd8; overflow-wrap: anywhere; word-break: break-word; }
+.diag-ms { display: inline-block; margin-top: 2px; font: 11px var(--mono); color: var(--dim); }
+.diag-ctl { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+
+/* ---- 狀態徽章：顏色 + 文字 + 形狀（不能只靠顏色）---- */
+.diag-badge { display: inline-flex; align-items: center; gap: 6px; flex: none; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line2); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.diag-badge i { flex: none; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.diag-badge.s-pass { color: var(--accent); border-color: rgba(93, 202, 165, 0.6); background: rgba(93, 202, 165, 0.1); }
+.diag-badge.s-fail { color: #ff8f8f; border-color: rgba(255, 106, 106, 0.65); background: rgba(255, 106, 106, 0.1); }
+.diag-badge.s-fail i { border-radius: 1px; }
+.diag-badge.s-unsupported { color: #aab0c4; border-style: dashed; }
+.diag-badge.s-unsupported i { background: transparent; border: 2px solid currentColor; }
+.diag-badge.s-needs-action { color: #ffb454; border-color: rgba(255, 180, 84, 0.6); background: rgba(255, 180, 84, 0.08); }
+.diag-badge.s-needs-action i { border-radius: 1px; transform: rotate(45deg); }
+.diag-badge.s-skipped { color: var(--muted); }
+.diag-badge.s-skipped i { width: 10px; height: 2px; border-radius: 0; }
+.diag-badge.s-info { color: #7db8ff; border-color: rgba(125, 184, 255, 0.5); background: rgba(125, 184, 255, 0.08); }
+.diag-badge.s-info i { background: transparent; border: 2px solid currentColor; box-shadow: inset 0 0 0 1px var(--panel), inset 0 0 0 4px currentColor; }
+.diag-badge.s-not-run { color: var(--muted); border-style: dotted; }
+.diag-badge.s-not-run i { background: transparent; border: 1px dotted currentColor; }
+.diag-badge.s-running { color: var(--accent2); border-color: rgba(74, 163, 255, 0.6); }
+.diag-badge.s-running i { animation: diagPulse 1s ease-in-out infinite; }
+@keyframes diagPulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+
+/* ---- 互動檢查的即時區 ---- */
+.diag-live { margin-top: 10px; }
+.diag-seg { display: inline-flex; gap: 4px; margin-bottom: 8px; }
+.diag-seg button { padding: 6px 14px; font-size: 12.5px; }
+.diag-seg button.on { color: var(--accent); border-color: var(--accent); background: #0f2a22; }
+.diag-preview { position: relative; width: 100%; max-width: 420px; aspect-ratio: 16 / 9; border-radius: 10px; overflow: hidden; background: #000; border: 1px solid var(--line2); }
+.diag-preview video { display: block; width: 100%; height: 100%; object-fit: cover; }
+.diag-preview-ph { position: absolute; inset: 0; display: grid; place-items: center; padding: 8px; text-align: center; font-size: 13px; color: var(--muted); background: #000; }
+.diag-note { margin: 6px 0 0; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.diag-note.warn { color: #e6c07a; }
+.diag-rec { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: #ff6a6a; box-shadow: 0 0 6px rgba(255, 106, 106, 0.8); animation: diagPulse 1.4s ease-in-out infinite; vertical-align: middle; }
+.diag-meter { position: relative; height: 16px; border-radius: 8px; overflow: hidden; background: var(--bg); border: 1px solid var(--line2); }
+.diag-meter i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); transition: width .08s linear; }
+.diag-meter b { position: absolute; top: 0; bottom: 0; width: 3px; background: var(--amber); }
+.diag-speech { min-height: 56px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line2); background: var(--bg); font-size: 15px; overflow-wrap: anywhere; }
+.diag-cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.diag-cols h4, .diag-pad-card h4 { font-size: 12.5px; color: var(--muted); font-weight: 600; overflow-wrap: anywhere; }
+.diag-pad-card h4 small { font-weight: 400; color: var(--dim); }
+.diag-list { margin: 4px 0 0; padding-left: 18px; font-size: 13px; overflow-wrap: anywhere; }
+.diag-dim { color: var(--dim); list-style: none; margin-left: -18px; }
+.diag-pad-card { margin-top: 8px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line2); background: var(--bg); }
+.diag-btns { display: grid; grid-template-columns: repeat(auto-fill, minmax(30px, 1fr)); gap: 4px; margin-top: 6px; }
+.diag-btn-cell { display: grid; place-items: center; height: 28px; border-radius: 6px; border: 1px solid var(--line2); font: 11px var(--mono); color: var(--muted); }
+.diag-btn-cell.on { color: #062018; background: var(--accent); border-color: var(--accent); }
+.diag-axes { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 4px 12px; margin-top: 8px; }
+.diag-axis { display: grid; grid-template-columns: 14px 1fr 44px; align-items: center; gap: 6px; font: 11px var(--mono); color: var(--muted); }
+.diag-axis-bar { position: relative; height: 8px; border-radius: 4px; background: var(--panel2); }
+.diag-axis-bar i { position: absolute; top: -2px; width: 6px; height: 12px; margin-left: -3px; border-radius: 2px; background: var(--accent2); }
+.diag-num { text-align: right; }
+.diag-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 14px; margin: 8px 0 0; font-size: 12.5px; }
+.diag-kv dt { color: var(--muted); font-family: var(--mono); }
+.diag-kv dd { margin: 0; overflow-wrap: anywhere; }
+.diag-pad {
+  display: block; width: 100%; height: 220px; border-radius: 10px; border: 1px dashed var(--line2); background: var(--bg);
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; cursor: crosshair;
+}
+.diag-verdict { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.diag-verdict-q { font-size: 13px; }
+
+.diag-foot { margin-top: 20px; text-align: center; }
+.diag-foot a { display: inline-block; padding: 10px 14px; color: var(--accent); }
+
+@media (max-width: 480px) {
+  .diag-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .diag-cols { grid-template-columns: 1fr; }
+  .diag-actions .diag-btn.primary { flex: 1 1 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .diag-badge.s-running i, .diag-rec { animation: none; }
+  .diag-caret, .diag-meter i { transition: none; }
+}

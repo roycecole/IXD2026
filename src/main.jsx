@@ -2,6 +2,7 @@ import React, { Suspense, lazy } from 'react'
 import { createRoot } from 'react-dom/client'
 import { t } from './i18n/index.js'
 import { flagOn } from './lib/urlFlags.js'
+import ErrorBoundary from './ErrorBoundary.jsx'
 import './styles.css'
 
 // 開發輔助：主控台可用 window.__store 驅動測試（無實體 MIDI 時模擬 handleCC 等）。
@@ -35,8 +36,11 @@ if (!remoteMatch && !diagnosticsMode) import('./scene/Scene3D.jsx').catch(() => 
 
 createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <Suspense fallback={<div className="canvas-loading">{t('載入中…')}</div>}>
-      {remoteMatch ? <RemoteApp hostId={decodeURIComponent(remoteMatch[1])} /> : diagnosticsMode ? <DiagnosticsApp /> : audienceMode ? <AudienceApp /> : <App />}
-    </Suspense>
+    {/* 最外層錯誤邊界（展場防呆）：render 出錯 → 復原畫面 + 倒數自動重新載入；觀眾視窗的防呆也由它啟動（見 ErrorBoundary.jsx） */}
+    <ErrorBoundary>
+      <Suspense fallback={<div className="canvas-loading">{t('載入中…')}</div>}>
+        {remoteMatch ? <RemoteApp hostId={decodeURIComponent(remoteMatch[1])} /> : diagnosticsMode ? <DiagnosticsApp /> : audienceMode ? <AudienceApp /> : <App />}
+      </Suspense>
+    </ErrorBoundary>
   </React.StrictMode>,
 )

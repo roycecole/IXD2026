@@ -1,0 +1,14 @@
+/* 空氣品質（Open-Meteo / CAMS 模型資料）：今日海況卡的資料行、「模型資料」來源標籤、與揚塵選項的導引提示。
+   來源標籤用琥珀色（var(--amber)）——刻意與政府資料的綠色（var(--accent)）區隔，一眼看出這一筆不是政府觀測。 */
+.gov-air { margin: 0 0 8px; }
+.gov-air-line { margin: 4px 0 6px; overflow-wrap: anywhere; }
+.gov-air-src { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.gov-air-badge {
+  display: inline-block; max-width: 100%; padding: 3px 10px; border-radius: 999px;
+  border: 1px solid var(--amber); background: rgba(255, 157, 43, 0.12); color: var(--amber);
+  font-size: 11.5px; font-weight: 600; line-height: 1.4; letter-spacing: .01em; overflow-wrap: anywhere;
+}
+.gov-air-credit { font-size: 10.5px; line-height: 1.4; color: var(--dim); }
+.gov-air-credit a { color: var(--muted); text-decoration: underline; text-underline-offset: 2px; }
+.gov-air-credit a:hover { color: var(--accent); }
+.gov-air-hint { margin: 2px 0 8px; }

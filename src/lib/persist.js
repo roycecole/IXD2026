@@ -12,6 +12,10 @@ export const LS = {
   audio: 'ixd2026.audio',         // 聲音偏好：'off' = 使用者靜音過，不再自動開啟
   lang: 'ixd2026.lang',           // 語系：'zh' | 'en'（沒存過 → 依瀏覽器語言）
   tour: 'ixd2026.tour',           // 資料導覽偏好：{ auto: boolean }（閒置自動導覽；沒存過 → 預設，?kiosk=1 一律開）
+  seen: 'ixd2026.seen',           // 「來過了」：值 '1'。首次到訪以今天真實的海開場、舊使用者不被新手導覽打擾都靠它（App 載入 ocean.json 時讀；lib/onboarding.js 完成 / 略過導覽時寫）
+  onboarded: 'ixd2026.onboarded', // 新手導覽（一步一步）完成或略過：值 '1'。與 seen 成對寫入（見 lib/onboarding.js）
+  crashes: 'ixd2026.crashes',     // 展場防呆：崩潰紀錄（環狀最近 20 筆：時間 / 訊息 / stack 前 300 字 / build id / 網址旗標；見 lib/resilience.js）
+  monitor: 'ixd2026.monitor',     // 輸入輸出監看（系統事件）顯示偏好：'show' | 'hide'（沒存過 → 桌面顯示 / 手機隱藏；?log=1 / ?log=0 只覆寫一次、不寫入）
 }
 export const SS = {
   log: 'ixd2026.log',             // IN/OUT log（本 session）

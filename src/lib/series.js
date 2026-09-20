@@ -1,7 +1,7 @@
 // 資料 → 可播放的時間序列規格（純函式，無 I/O，可在 Node 測試）。
 // 規格 spec = { kind, name, label, unit, date, step, points[], target, extra, stats:{min,max,mean} }
-//   kind：'tide' 潮汐 · 'inflow' 進流量 · 'dust' 揚塵（CI 累積的歷史）· 'survey-birds' / 'survey-fish' 調查年表 · 'moon' 月出月沒
-//   points：tide/inflow → {h,v}；dust → {t,v,pm,w,tp,rh}（v＝主變數：PM10 或風速）；survey → {t,v,n,gap}（逐年稠密：gap=true 是「無調查」年，v 為前後調查年的線性內插）；moon → {t,v,rise,riseAz,transit,alt,altDir,set,setAz}
+//   kind：'tide' 潮汐 · 'inflow' 進流量 · 'dust' 揚塵（CI 累積的歷史）· 'air' 空氣品質（Open-Meteo / CAMS 模型資料）· 'survey-birds' / 'survey-fish' 調查年表 · 'moon' 月出月沒
+//   points：tide/inflow → {h,v}；dust → {t,v,pm,w,tp,rh}（v＝主變數：PM10 或風速）；air → {t,v,pm10,dust,aqi}（v＝PM2.5）；survey → {t,v,n,gap}（逐年稠密：gap=true 是「無調查」年，v 為前後調查年的線性內插）；moon → {t,v,rise,riseAz,transit,alt,altDir,set,setAz}
 // 每一步由 automationFor() 轉成參數自動化事件，走既有的錄製/播放引擎（可倍速、循環、soft-takeover 接管）。
 import { flockCount } from './birds.js'
 import { t, T, getLocale } from '../i18n/index.js'
@@ -159,6 +159,34 @@ export function seriesFromDust(dust, name = T('揚塵')) {
   })
 }
 
+// 空氣品質：Open-Meteo Air Quality（CAMS 全球大氣模型）的逐時 PM2.5 歷史——「模型資料」，不是政府觀測值（name 帶「模型資料」，extra.model = true）。
+// air.history：[{ t:'YYYY-MM-DDTHH:00:00+08:00', pm10, pm25, dust, aqi }, …] 逐時遞增（最近 120 小時）；PM2.5 缺值的小時略過，有效點不足 2 個 → null。
+// step：0.2 秒＝1 小時，120 點約 24 秒（與潮汐 24 點 × 1.1 秒同一個量級）。逐時的模型資料變化平滑（一小時多半只差 1–3 μg/m³），
+// 步子小、事件密，海況才是連續漂移而不是一格一格跳；倍速鈕（×0.5–×4）再往兩側調。
+const AIR_STEP = 0.2
+// PM2.5 以台灣常見範圍 0–100 μg/m³ 規一化：PM2.5 高 → 海水混濁、垃圾 / 懸浮物多、色相偏黃綠、輝光收斂。
+// 與 scripts/gov/air.mjs 的 airMap()（air-yunlin 選項的基準海況）同一組係數（src/lib/air.test.mjs 逐點比對）；洋流的風速沒有逐時資料 → 沿用選項基準，不在此自動化。
+export const AIR_PM_SCALE = 100
+export function airMapping(pm25) {
+  const n = clamp01(pm25 / AIR_PM_SCALE)
+  return { clarity: clamp01(0.95 - n * 0.85), trashCount: clamp01(0.06 + n * 0.6), hue: clamp01(0.5 - n * 0.14), glow: clamp01(0.72 - n * 0.42) }
+}
+export function seriesFromAir(air, name = T('空氣品質')) {
+  const hist = air && Array.isArray(air.history) ? air.history : []
+  const n = (x) => (typeof x === 'number' && Number.isFinite(x) ? x : null)
+  const points = []
+  for (const x of hist) {
+    const v = n(x && x.pm25)
+    if (v == null) continue
+    points.push({ t: fmtT(x.t), v: round1(v), pm10: n(x.pm10), dust: n(x.dust), aqi: n(x.aqi) })
+  }
+  if (points.length < 2) return null
+  return withStats({
+    kind: 'air', name: `${name}（${air.county ? air.county + ' · ' : ''}${T('模型資料')}）`, label: 'PM2.5', unit: 'μg/m³',
+    date: `${points[0].t} → ${points[points.length - 1].t}`, step: AIR_STEP, points, target: 'clarity', extra: { model: true },
+  })
+}
+
 // 月出月沒：days 每列 [日期, 月出, 月出方位, 中天, 中天仰角, 仰角方位N/S, 月沒, 月沒方位]
 export function seriesFromMoon(moon) {
   const days = moon && Array.isArray(moon.days) ? moon.days : []
@@ -194,6 +222,10 @@ export function automationFor(spec, i) {
       const out = [['clarity', clamp01(0.95 - pm / 220)], ['trashCount', clamp01(0.06 + pm / 450)], ['hue', clamp01(0.5 - pm / 600)]]
       if (p.w != null) out.push(['current', clamp01(p.w / 12)])
       return out
+    }
+    case 'air': {                                    // PM2.5 高 → 海水混濁、垃圾多、色相偏黃綠、輝光收斂（洋流留在選項基準：逐時風速沒有資料）
+      const m = airMapping(p.v)
+      return [['clarity', m.clarity], ['trashCount', m.trashCount], ['hue', m.hue], ['glow', m.glow]]
     }
     case 'survey-birds': {                           // 該年鳥種數相對全期平均 → 球外鳥群數（空窗年用內插的 v；mean 只含真實調查年）
       const rel = mean > 0 ? p.v / mean : 1
@@ -241,6 +273,13 @@ export function formatHud(meta, p, ctx = {}) {
       else if (p.pm != null) txt += ` · PM10 ${p.pm} μg/m³`
       if (p.tp != null) txt += ' · ' + t('氣溫 {v}°C', { v: p.tp })
       if (p.rh != null) txt += ' · ' + t('濕度 {v}%', { v: p.rh })
+      return txt
+    }
+    case 'air': {                                      // 模型資料：name 已帶「模型資料」；沙塵（模型的礦物沙塵濃度，台灣多半是 0）有值才顯示
+      let txt = t('{name} {time} · {label} {v}{unit}', { name, time: p.t, label, v: p.v, unit: nameText(meta.unit) })
+      if (p.pm10 != null) txt += ` · PM10 ${p.pm10} μg/m³`
+      if (p.aqi != null) txt += ` · US AQI ${p.aqi}`
+      if (p.dust != null && p.dust > 0) txt += ' · ' + t('沙塵 {v} μg/m³', { v: p.dust })
       return txt
     }
     case 'survey-birds': case 'survey-fish': {

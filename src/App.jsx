@@ -2,9 +2,10 @@ import { flagOn } from './lib/urlFlags.js'
 import { useEffect, useRef, useState, Suspense, lazy } from 'react'
 import ParamPanel from './ui/ParamPanel.jsx'
 import TopBar from './ui/TopBar.jsx'
-import Monitor from './ui/Monitor.jsx'
+import Monitor, { toggleMonitorVisible } from './ui/Monitor.jsx'
 import Splitter from './ui/Splitter.jsx'
 import Footer from './ui/Footer.jsx'
+import { useLayoutPrefs } from './lib/layoutPrefs.js'   // 輸入輸出監看（系統事件）顯示 / 隱藏偏好
 import InfoModal from './ui/InfoModal.jsx'
 import MultiModal from './ui/MultiModal.jsx'
 import VirtualController from './ui/VirtualController.jsx'
@@ -15,6 +16,8 @@ import KioskQR from './ui/KioskQR.jsx'
 import DataBoard from './ui/DataBoard.jsx'
 import InspectCard from './ui/InspectCard.jsx'
 import DevicesModal from './ui/DevicesModal.jsx'
+import Onboarding from './ui/Onboarding.jsx'
+import { isFirstVisit } from './lib/onboarding.js'
 import Services from './services/Services.jsx'
 import TourCaption from './ui/TourCaption.jsx'
 import { tourIdleTick, toggleTour } from './services/TourService.jsx'
@@ -81,12 +84,17 @@ export default function App() {
   const savedSizes = loadLS(LS.sizes, { panelW: 340, monitorH: 84, canvasVh: 46 })
   const [panelW, setPanelW] = useState(savedSizes.panelW || 340)
   const [monitorH, setMonitorH] = useState(savedSizes.monitorH || 84)
+  const monitorShown = useLayoutPrefs((s) => s.monitorShown)   // 隱藏時 Monitor 與其水平 Splitter 都不渲染，空間還給畫布 / 面板（日誌照常累積）
   // 手機：畫布高度(vh)，面板可拉高。手機預設縮到 40%（舊預設值 46 視為「沒調整過」），把空間讓給控制面板
   const [canvasVh, setCanvasVh] = useState(() => { const v = savedSizes.canvasVh; const narrow = typeof window !== 'undefined' && window.innerWidth <= 820; return narrow && (!v || v === 46) ? 40 : v || 46 })
   const [stage, setStage] = useState(KIOSK) // 演出模式：隱藏全部 UI，只留球體；?kiosk=1 直接進場
   const [showVK, setShowVK] = useState(false) // 虛擬控制器
-  const [showInfo, setShowInfo] = useState(() => { if (KIOSK) return false; try { return !localStorage.getItem('ixd2026.seen') } catch (e) { return true } })
-  const closeInfo = () => { setShowInfo(false); try { localStorage.setItem('ixd2026.seen', '1') } catch (e) {} }
+  // 首次進站不再自動彈出長篇說明：改由 <Onboarding/>（一步一步的新手導覽，見 lib/onboarding.js）帶；長篇說明留在「說明」鈕後面。
+  const [showInfo, setShowInfo] = useState(false)
+  const closeInfo = () => { setShowInfo(false); try { localStorage.setItem(LS.seen, '1') } catch (e) {} }   // 看過說明也算「來過了」（與過去相同）
+  // 「這次進站是不是首次到訪」：第一次 render 就記下來（載入 ocean.json 時用它決定要不要「以今天真實的海開場」）。
+  // 不能等 ocean.json 載入完才去讀 seen——導覽完成 / 略過 / 關閉說明都會寫 seen，若使用者在資料載入前就按了，開場的海就會被當成回訪而改變。
+  const [firstVisit] = useState(() => isFirstVisit())
   const [showMulti, setShowMulti] = useState(false)     // 多人合奏 QR
   const [showDevices, setShowDevices] = useState(false)   // 「裝置」面板（觀眾視窗 / 手勢 / 語音 / 觸覺 / 畫質 / AR 桌面）
   const [installEvt, setInstallEvt] = useState(null)    // PWA 加入主畫面
@@ -200,6 +208,7 @@ export default function App() {
       if (k === 'h' || k === 'H') { setStage((s) => !s); return }
       if (k === 'i' || k === 'I') { useStore.getState().toggleOverlays(); return }
       if ((k === 't' || k === 'T') && !e.ctrlKey && !e.metaKey && !e.altKey) { toggleTour(); return }   // T：開始 / 停止資料導覽
+      if ((k === 'l' || k === 'L') && !e.ctrlKey && !e.metaKey && !e.altKey) { toggleMonitorVisible(); return }   // L：顯示 / 隱藏輸入輸出監看（系統事件）
       if (k === '?') { setShowInfo(true); return }
       if (tag === 'BUTTON') return // 按鈕聚焦時交給原生（Enter/Space 觸發該鈕）
       const st = useStore.getState()
@@ -242,7 +251,7 @@ export default function App() {
       if (!d) return
       const st = useStore.getState()
       st.setGov(d)
-      const firstVisit = (() => { try { return !localStorage.getItem('ixd2026.seen') } catch (e) { return false } })()
+      // firstVisit：見上方 useState(() => isFirstVisit())（進站當下的判斷，不受載入期間才寫入的 seen 影響）
       const share = (() => { try { return parseShareContext(location.search, { optionIds: new Set((d.options || []).map((o) => o.id)) }) } catch (e) { return null } })()
       const hasShare = hasShareContext(share)
       if (hasShare) {
@@ -266,6 +275,7 @@ export default function App() {
     let n = 0
     const IDLE = 30000, STEP = 11000
     const loop = (now) => {
+      raf.current = requestAnimationFrame(loop) // 先排下一幀：中間任何一段丟錯，主迴圈（錄製 / 播放 / 導覽 / 存檔）也不會就此停擺
       const dt = Math.min(0.05, (now - last.current) / 1000)
       last.current = now
       const st = useStore.getState()
@@ -293,7 +303,6 @@ export default function App() {
       if (n % 6 === 0) audioUpdate()   // 背景音引擎（未開啟時為 no-op）
       if (n % 90 === 0) st.persistParams()
       if (n % 600 === 0) st.persistLog()
-      raf.current = requestAnimationFrame(loop)
     }
     raf.current = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(raf.current)
@@ -346,13 +355,14 @@ export default function App() {
         <div className="sheet-handle" onPointerDown={sheetDrag} title={t('拖曳調整面板高度')}><span /></div>
         <ParamPanel onVK={() => setShowVK(true)} />
       </main>
-      <Splitter axis="y" onDelta={(dy) => setMonitorH((h) => clamp(h - dy, 60, 340))} />
-      <Monitor />
+      {monitorShown && <Splitter axis="y" onDelta={(dy) => setMonitorH((h) => clamp(h - dy, 60, 340))} />}
+      {monitorShown && <Monitor />}
       <Footer onInfo={() => setShowInfo(true)} installEvt={installEvt} onInstall={doInstall} />
       {showVK && <VirtualController onClose={() => setShowVK(false)} />}
       {showInfo && <InfoModal onClose={closeInfo} />}
       {showMulti && <MultiModal onClose={() => setShowMulti(false)} />}
       {showDevices && <DevicesModal onClose={() => setShowDevices(false)} />}
+      <Onboarding />
       <Services />
       {updReady && (
         <button className="upd-toast" onClick={() => location.reload()} title={t('部署了新版本')}>

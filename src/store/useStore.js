@@ -7,7 +7,7 @@ import { setHud } from './hud.js'
 import { touch, touchGlow } from './activity.js'
 import { bumpStat } from './stats.js'
 import { SCENES } from '../timeline/scenes.js'
-import { seriesFromOption, seriesFromSurvey, seriesFromDust, seriesFromMoon, automationFor, fishParam } from '../lib/series.js'
+import { seriesFromOption, seriesFromSurvey, seriesFromDust, seriesFromMoon, seriesFromAir, automationFor, fishParam } from '../lib/series.js'
 import { birdSeasonal, flockCount } from '../lib/birds.js'
 import { surveyMonthText } from '../lib/describe.js'
 import { t, T } from '../i18n/index.js'
@@ -401,6 +401,7 @@ export const useStore = create((set, get) => ({
   playSurvey: (kind) => { const o = get().govOption(); const spec = seriesFromSurvey(o, kind); if (spec) get().playSeries(spec, o) },
   playDust: () => { const g = get().gov; const o = get().govOption(); const spec = seriesFromDust(g && g.dust, T('揚塵')); if (spec) get().playSeries(spec, o) },
   playMoon: () => { const g = get().gov; const o = get().govOption(); const spec = seriesFromMoon(g && g.moon); if (spec) get().playSeries(spec, o) },
+  playAir: () => { const g = get().gov; const o = get().govOption(); const spec = seriesFromAir(g && g.air, T('空氣品質')); if (spec) get().playSeries(spec, o) },   // Open-Meteo / CAMS 模型資料（逐時 PM2.5）
 
   // ---- 場景切換 / Marker 快照（nanoKONTROL2 Track ◀▶ / Marker 鍵）----
   sceneIdx: 0,

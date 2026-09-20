@@ -1,6 +1,7 @@
 import { useStore } from '../store/useStore.js'
 import { noteQueue } from './bus.js'
 import { purifyMeta } from '../store/events.js'
+import { nextDripTime } from './timing.js'
 
 let Tone = null // code-splitting：按下「聲音」才動態載入 Tone.js（不佔首載）
 
@@ -127,8 +128,12 @@ function purifyArp(v) {
 }
 
 // 溢流水滴：一顆短促的「噗」— 音高快速上揚 1.65 倍，隨機左右聲道
+// drip 是單音 Synth，Tone 的 Source 時間軸要求 start 時間單調遞增：隨機偏移若讓後一滴早於前一滴（同一輪連放兩滴、或 144Hz 螢幕上 audioUpdate 間隔只有 40ms），
+// 會丟「The time must be greater than or equal to the last scheduled time」。所以每滴至少晚於上一滴的自動收尾（起音 + 衰減 ≈ 0.112s）。
+let lastDripT = 0
 function dripOnce() {
-  const t = Tone.now() + Math.random() * 0.09
+  const t = nextDripTime(Tone.now(), lastDripT)
+  lastDripT = t
   const f = 780 + Math.random() * 900
   N.dripPan.pan.value = (Math.random() * 2 - 1) * 0.7
   N.drip.triggerAttackRelease(f, 0.05, t, 0.35 + Math.random() * 0.4)
@@ -151,8 +156,15 @@ function creatureCall(type) {
   }
 }
 
-// 由 App 主迴圈以約 10Hz 呼叫
+// 由 App 主迴圈以約 10Hz 呼叫。聲音是配角：任何排程錯誤（Tone 時間軸斷言、AudioContext 被系統中斷…）只記一次警告，絕不讓它往上拋、拖垮視覺主迴圈。
+let warnedAudio = ''
 export function audioUpdate() {
+  try { audioUpdateInner() } catch (e) {
+    const m = String((e && e.message) || e)
+    if (m !== warnedAudio) { warnedAudio = m; console.warn('[audio] 排程錯誤（已略過本輪）：' + m) }
+  }
+}
+function audioUpdateInner() {
   if (!N || muted) return
   const st = useStore.getState()
   const p = st.params

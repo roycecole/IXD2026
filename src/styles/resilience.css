@@ -1,0 +1,62 @@
+/* 展場防呆：錯誤復原畫面 + 提示（src/ErrorBoundary.jsx）與「裝置」面板的維運一節（src/ui/devices/OpsSection.jsx）。
+   復原畫面用 fallback 色值：即使 styles.css 的變數沒載入也看得見。 */
+
+/* ---- 錯誤復原畫面（整頁）---- */
+.res-crash {
+  position: fixed; inset: 0; z-index: 99999; display: flex; align-items: center; justify-content: center; padding: 20px;
+  background: var(--bg, #05060c); color: var(--text, #e8e9f2); font-family: var(--sans, system-ui, sans-serif);
+}
+.res-crash-card { width: 100%; max-width: 460px; text-align: center; }
+.res-crash-title { margin: 0 0 8px; font-size: 20px; font-weight: 600; line-height: 1.4; }
+.res-crash-count { margin: 6px 0 14px; font-size: 56px; line-height: 1; font-weight: 300; color: var(--accent, #5dcaa5); font-variant-numeric: tabular-nums; }
+.res-crash-msg { margin: 6px 0 14px; font-size: 14px; line-height: 1.7; color: #c8cbd8; }
+.res-crash-actions { display: flex; justify-content: center; margin: 4px 0 16px; }
+.res-crash-details { text-align: left; font-size: 12px; color: var(--muted, #8a8ea3); }
+.res-crash-details summary { cursor: pointer; text-align: center; padding: 4px; }
+.res-crash-details pre {
+  margin: 8px 0 0; padding: 10px 12px; max-height: 40vh; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  background: var(--panel, #10121b); border: 1px solid var(--line2, #343a4e); border-radius: 8px;
+  font: 11px/1.5 var(--mono, ui-monospace, Menlo, monospace); color: #c8cbd8; user-select: text;
+}
+.res-crash-build { margin: 14px 0 0; font: 11px/1.4 var(--mono, ui-monospace, Menlo, monospace); color: var(--dim, #5f6377); }
+
+.res-btn {
+  font: inherit; font-size: 13px; padding: 8px 18px; border-radius: 8px; cursor: pointer;
+  color: #062018; background: var(--accent, #5dcaa5); border: 1px solid var(--accent, #5dcaa5); font-weight: 500;
+}
+.res-btn:hover { filter: brightness(1.06); background: var(--accent, #5dcaa5); border-color: var(--accent, #5dcaa5); }
+
+/* ---- 畫面上的短暫提示（不擋操作：只有按鈕接收指標）---- */
+.res-notice {
+  position: fixed; left: 50%; top: 12px; transform: translateX(-50%); z-index: 9998; max-width: min(92vw, 520px);
+  display: flex; align-items: center; gap: 10px; padding: 7px 14px; border-radius: 18px;
+  background: rgba(5, 16, 28, .82); border: 1px solid var(--line2, #343a4e); color: var(--text, #e8e9f2);
+  font-size: 12.5px; line-height: 1.5; pointer-events: none; backdrop-filter: blur(4px);
+}
+.res-notice.warn { border-color: #e6c07a; color: #f3d9a4; }
+.res-notice .res-btn { pointer-events: auto; padding: 3px 12px; font-size: 12px; }
+
+/* ---- 「裝置」面板：維運一節 ---- */
+.ops-sec .ops-list { flex: 1 0 100%; margin: 0; padding: 0; display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; font-size: 12px; }
+.ops-sec .ops-list dt { color: var(--muted, #8a8ea3); white-space: nowrap; }
+.ops-sec .ops-list dd { margin: 0; color: var(--text, #e8e9f2); min-width: 0; overflow-wrap: anywhere; }
+.ops-sec .ops-list dd.mono { font-family: var(--mono, ui-monospace, Menlo, monospace); font-size: 11.5px; }
+.ops-sec .ops-guards { flex: 1 0 100%; margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted, #8a8ea3); }
+.ops-sec .ops-guards b { color: var(--text, #e8e9f2); font-weight: 500; }
+.ops-sec .ops-guards b::after { content: ' · '; font-weight: 400; color: var(--dim, #5f6377); }
+.ops-sec .ops-guards .off { opacity: .75; }
+.ops-sec .ops-actions { flex: 1 0 100%; display: flex; flex-wrap: wrap; gap: 6px; }
+.ops-sec .ops-actions button { padding: 4px 12px; font-size: 12px; }
+.ops-sec .ops-crashes { flex: 1 0 100%; font-size: 12px; color: var(--muted, #8a8ea3); }
+.ops-sec .ops-crashes summary { cursor: pointer; padding: 2px 0; }
+.ops-sec .ops-crashes ol { margin: 6px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.ops-sec .ops-crashes li { padding: 6px 8px; background: var(--panel2, #171a25); border-radius: 6px; border: 1px solid var(--line, #262a3a); }
+.ops-sec .ops-crash-head { display: flex; flex-wrap: wrap; gap: 4px 10px; color: var(--text, #e8e9f2); }
+.ops-sec .ops-crash-kind { color: #e6c07a; }
+.ops-sec .ops-crash-msg { margin-top: 2px; font: 11px/1.5 var(--mono, ui-monospace, Menlo, monospace); color: #c8cbd8; overflow-wrap: anywhere; }
+.ops-sec .ops-crash-meta { margin-top: 2px; font: 10.5px/1.4 var(--mono, ui-monospace, Menlo, monospace); color: var(--dim, #5f6377); overflow-wrap: anywhere; }
+
+@media (max-width: 480px) {
+  .ops-sec .ops-list { grid-template-columns: 1fr; gap: 0; }
+  .ops-sec .ops-list dt { margin-top: 5px; }
+}

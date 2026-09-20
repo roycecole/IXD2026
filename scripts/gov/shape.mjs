@@ -3,11 +3,12 @@
 // 讓兩支腳本輸出的鍵順序與文字一致，不會互相改來改去而在 git 裡留下無謂的 diff。
 import { dustParams } from './dust.mjs'
 import { MOON_PARAMS } from './moon.mjs'
+import { airParams } from './air.mjs'
 
 export const OPTION_KEYS = ['id', 'name', 'region', 'level', 'params', 'kind', 'birds', 'fish', 'series']
 export const TOP_KEYS = [
   'source', 'sourceShort', 'fetchedAt', 'station', 'weather', 'defaultOption', 'options', 'mapping',
-  'rivers', 'riversNote', 'birdsNote', 'dust', 'stations', 'moon',
+  'rivers', 'riversNote', 'birdsNote', 'dust', 'stations', 'moon', 'air',
 ]
 
 const orderBy = (o, keys) => {
@@ -27,6 +28,25 @@ export const GOV_OPTIONS = [
 export function ensureGovOptions(options) {
   for (const def of GOV_OPTIONS) if (!options.some((o) => o.id === def.id)) options.push(orderOption(structuredClone(def)))
   return options
+}
+
+// 「空氣品質 · 雲林」選項（Open-Meteo / CAMS 模型資料，不是政府觀測）。刻意不放進 GOV_OPTIONS：
+// 那份清單是 bake-static-data 一次性烘焙的政府資料選項（且有測試釘住 id 清單）；空氣品質由 fetch-ocean-data 的 refreshAir 成功後才補上，
+// 抓不到資料時不會憑空多出一個空選項。level / params 由 refreshAir 依最新 PM2.5 與風速重算。
+export const AIR_OPTION_ID = 'air-yunlin'
+export const AIR_OPTION = { id: AIR_OPTION_ID, name: '空氣品質 · 雲林', region: '中', level: 0, params: airParams({}), kind: 'air' }
+export const AIR_BASIN_OPTION_ID = 'dust-yunlin' // 雲林 = 濁水溪流域：birds / fish 沿用同流域的揚塵選項
+export function ensureAirOption(options) {
+  let o = options.find((x) => x && x.id === AIR_OPTION_ID)
+  if (!o) { o = orderOption(structuredClone(AIR_OPTION)); options.push(o) }
+  return o
+}
+// 套用刷新結果：level / params（給了才寫）；birds / fish 從同流域選項「複製」過來（不共用參照，之後各自修改也不會互相影響）。同流域選項沒有的就不動
+export function syncAirOption(airOpt, basinOpt, { level, params } = {}) {
+  if (level !== undefined) airOpt.level = level
+  if (params !== undefined) airOpt.params = params
+  for (const k of ['birds', 'fish']) if (basinOpt && basinOpt[k]) airOpt[k] = structuredClone(basinOpt[k])
+  return airOpt
 }
 
 // ── 說明文字 ──────────────────────────────────────────────────────────────
@@ -54,13 +74,18 @@ export const MAPPING_ADDITIONS = [
 ]
 export const appendParts = (text, parts, sep = ' · ') => [text, ...parts.filter((p) => !text.includes(p))].join(sep)
 
+// 空氣品質的說明（只在 air 資料存在時由 fetch-ocean-data 補上；不放進 MAPPING_ADDITIONS——那份會被 bake 無條件併入 mapping）
+export const AIR_MAPPING = '空氣品質（雲林，Open-Meteo／CAMS 模型資料）：PM2.5→清澈度／垃圾／色相／輝光、風速→洋流'
+// source 末尾的揭露句：空氣品質不是政府資料，不能落在「（政府資料 OGDL v1）」授權說明之前被讀成政府源
+export const AIR_SOURCE_DISCLOSURE = '；另含 Open-Meteo 空氣品質（CAMS 全球大氣模型資料，非政府觀測值；CC BY 4.0；Weather data by Open-Meteo.com）'
+
 // birdsNote：保留既有文字，於固定標記後接上新段落（重跑時先切掉舊段落再接，冪等）
 export const BIRDS_NOTE_MARKER = '【逐年與魚類】'
 export const BIRDS_NOTE_APPENDIX =
   'yearly＝各調查年度的相異物種數 s 與總隻次 n（該年有效紀錄≥90 筆才收；n 為 null＝該年 number 全空，例如花蓮溪 2017–2019 未記數量，故其 count 只含 2002 年）；各流域僅有 2–5 個調查年度，非連續時間序列。' +
   '魚類調查（水利署，data.gov.tw 25799，2001–2019）fish 結構相同，月／年需≥40 筆，同樣僅部分月份與年度有調查，近似單一年份快照。' +
   '物種以正規化中文名計（已處理字面「NULL」與別名順序），number=0 的訪談紀錄不算觀測。' +
-  '對應：翡翠／石門→淡水河、曾文／南化→曾文溪、花蓮外海／月亮→花蓮溪、揚塵→濁水溪、德基→大甲溪。'
+  '對應：翡翠／石門→淡水河、曾文／南化→曾文溪、花蓮外海／月亮→花蓮溪、揚塵／空氣品質（雲林）→濁水溪、德基→大甲溪。'
 export function withBirdsNoteAppendix(note, appendix) {
   const i = note.indexOf(BIRDS_NOTE_MARKER)
   const head = (i < 0 ? note : note.slice(0, i)).trimEnd()

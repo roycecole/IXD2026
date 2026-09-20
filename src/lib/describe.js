@@ -18,6 +18,28 @@ export function dustSummary(dust) {
   return { county: dust.county || '', n: st.length, pm10: avg(st.map((s) => s.pm10)), wind: avg(st.map((s) => s.wind)), temp: avg(st.map((s) => s.temp)), rh: avg(st.map((s) => s.rh)), t: st.map((s) => s.t).filter(Boolean).sort().pop() || '' }
 }
 
+// 空氣品質（Open-Meteo / CAMS 模型資料，不是政府觀測）：最新一筆「有 PM2.5」的小時；沒有 → null。history 依時間遞增，由後往前找
+export function airSummary(air) {
+  const hist = air && Array.isArray(air.history) ? air.history : []
+  for (let i = hist.length - 1; i >= 0; i--) {
+    const x = hist[i], pm25 = num(x && x.pm25)
+    if (pm25 != null) return { county: air.county || '', place: air.place || '', t: x.t || '', pm25, pm10: num(x.pm10), dust: num(x.dust), aqi: num(x.aqi, 0), n: hist.length }
+  }
+  return null
+}
+// 「雲林縣麥寮」（英文 'Mailiao, Yunlin County'）
+export function airWhereText(a) {
+  const c = a && a.county ? nameText(a.county) : '', p = a && a.place ? nameText(a.place) : ''
+  return getLocale() === 'en' ? [p, c].filter(Boolean).join(', ') : c + p
+}
+// 「PM2.5 21 · PM10 25 μg/m³ · US AQI 71」：數字 / 單位 / 指標名都不隨語系變。US AQI 是美國 EPA 指標（Open-Meteo 的 us_aqi），不是環境部 AQI。沒有 PM10 時單位跟在 PM2.5 後面
+export function airPmText(a) {
+  if (!a) return ''
+  const parts = [a.pm10 != null ? `PM2.5 ${a.pm25} · PM10 ${a.pm10} μg/m³` : `PM2.5 ${a.pm25} μg/m³`]
+  if (a.aqi != null) parts.push(`US AQI ${a.aqi}`)
+  return parts.join(' · ')
+}
+
 const fmtSpan = (d) => (d && d.yearly && d.yearly.length ? `${d.yearly[0].y}–${d.yearly[d.yearly.length - 1].y}` : '')
 // 調查年表中間的空窗年（沒有調查的年份區間，與年表時間軸 / 導覽字幕同一份：series.js 的 extra.gaps）：'2007–2013' / '2007–2013、2016'；沒有空窗 → ''
 function surveyGapText(opt, kind) {
@@ -68,6 +90,13 @@ export function describeBoard(gov, opt, ctx = {}) {
         ? t('PM10 ↑ → 海水清澈 {clarity} · 垃圾 {trash} · 洋流 {current}', P)
         : t('PM10 感測器回報無效值 → 以預設 40 μg/m³ 示意（清澈 {clarity} · 垃圾 {trash}）· 風速 → 洋流 {current}', P) })
     } else rows.push({ k: t('揚塵'), v: t('尚無資料') })
+  } else if (opt.kind === 'air') {
+    const a = airSummary(gov.air)
+    rows.push(a
+      ? { k: t('空氣品質'), v: `${airWhereText(a)} · ${airPmText(a)}${a.t ? ' · ' + String(a.t).slice(5, 16).replace('T', ' ') : ''}` }
+      : { k: t('空氣品質'), v: t('尚無資料') })
+    rows.push({ k: t('來源'), v: t('Open-Meteo（CAMS 全球大氣模型）· 模型資料，非政府觀測值') })
+    if (a) rows.push({ k: t('映射'), v: t('PM2.5 ↑ → 海水清澈 {clarity} · 垃圾 {trash} · 輝光 {glow}', { clarity: f2(p.clarity), trash: f2(p.trashCount), glow: f2(p.glow) }) })
   } else if (opt.kind === 'moon') {
     const m = gov.moon
     if (m && Array.isArray(m.days) && m.days.length) {

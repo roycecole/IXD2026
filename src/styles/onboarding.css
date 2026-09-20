@@ -1,0 +1,88 @@
+/* 新手導覽（ui/Onboarding.jsx）+ 說明視窗的重組（ui/InfoModal.jsx：快速上手 + 可摺疊主題）。 */
+
+/* ---- 導覽根元素 ----
+   同時帶 modal-backdrop（TourService 用 document.querySelector('.modal-backdrop') 判斷「有彈窗」→ 導覽進行中不會自動開始閒置導覽），
+   這裡把 .modal-backdrop 原本的置中 flex / 內距 / 深色底 / 模糊全部覆寫掉：它只是一個蓋住全螢幕、吃掉點擊的透明層（position: fixed，不影響版面）；
+   變暗由聚光的 box-shadow 負責（沒有目標時由 .no-spot 的底色負責）。用兩個 class 疊起來提高權重，不受 CSS 載入順序影響。 */
+.modal-backdrop.onboard-backdrop {
+  display: block; padding: 0; z-index: 70;   /* 高於一般彈窗（40）、更新提示（60）；ErrorBoundary / 恢復提示（9998+）仍在它上面 */
+  background: transparent; -webkit-backdrop-filter: none; backdrop-filter: none;
+  touch-action: none; overscroll-behavior: contain; cursor: default;
+  transition: background-color .28s ease;
+}
+.modal-backdrop.onboard-backdrop.no-spot { background: rgba(4, 6, 12, 0.74); }
+
+/* 聚光：透明的洞 + 往外鋪滿全螢幕的暗色陰影（100vmax 夠蓋住任何螢幕）；外框用 outline，跟著圓角走。不吃點擊。 */
+.onboard-spot {
+  position: fixed; box-sizing: border-box; pointer-events: none; border-radius: 12px;
+  box-shadow: 0 0 0 100vmax rgba(4, 6, 12, 0.74);
+  outline: 2px solid var(--accent); outline-offset: 0;
+  transition: left .28s ease, top .28s ease, width .28s ease, height .28s ease, opacity .22s ease;
+}
+/* 外圈呼吸：只動 opacity（不重排、不重畫那塊大陰影） */
+.onboard-spot::after {
+  content: ''; position: absolute; inset: -5px; border-radius: 16px; pointer-events: none;
+  border: 2px solid rgba(93, 202, 165, 0.5); animation: onboardPulse 2s ease-in-out infinite;
+}
+@keyframes onboardPulse { 0%, 100% { opacity: 0.15; } 50% { opacity: 0.9; } }
+
+/* ---- 提示卡 ---- */
+.onboard-card {
+  position: fixed; box-sizing: border-box; display: flex; flex-direction: column; gap: 8px;
+  padding: 14px 16px 12px; max-height: calc(100vh - 16px); max-height: calc(100dvh - 16px); overflow-y: auto;
+  background: var(--panel); color: var(--text); border: 1px solid var(--line2); border-radius: 14px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6); touch-action: manipulation;
+}
+.onboard-card.anim { transition: left .28s ease, top .28s ease, width .28s ease; }
+.onboard-card:focus { outline: none; }   /* 焦點程式性移進卡片（見 lib/modalFocus.js）：容器不畫外框，裡面的按鈕照常有焦點框 */
+.onboard-content { display: flex; flex-direction: column; gap: 8px; }
+.onboard-progress { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.onboard-dots { display: flex; align-items: center; gap: 5px; }
+.onboard-dot { display: block; width: 6px; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.2); transition: width .25s ease, background-color .25s ease; }
+.onboard-dot.done { background: rgba(93, 202, 165, 0.7); }
+.onboard-dot.cur { width: 18px; background: var(--accent); }
+.onboard-count { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.onboard-title { margin: 2px 0 0; font-size: 17px; font-weight: 600; letter-spacing: .01em; color: var(--accent); }
+.onboard-body { margin: 0; font-size: 13.5px; line-height: 1.7; color: #d5d8e4; }
+.onboard-actions { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.onboard-spacer { flex: 1 1 auto; }
+.onboard-skip { background: transparent; border-color: transparent; color: var(--muted); padding: 6px 8px; }
+.onboard-skip:hover { background: transparent; border-color: transparent; color: var(--text); }
+.onboard-next { background: var(--accent); border-color: var(--accent); color: #062018; font-weight: 500; min-width: 84px; }
+.onboard-next:hover { background: var(--accent); border-color: var(--accent); filter: brightness(1.07); }
+
+/* 手機（≤ 520px）：貼底（或貼頂）的 bottom sheet，撐滿寬度；按鈕加大好點 */
+@media (max-width: 520px) {
+  .onboard-card { border-radius: 16px; padding: 16px 16px calc(14px + env(safe-area-inset-bottom, 0px)); gap: 6px; }
+  .onboard-card[data-mode='sheet']::before { content: ''; align-self: center; width: 36px; height: 4px; margin: -6px 0 4px; border-radius: 2px; background: var(--line2); }
+  .onboard-title { font-size: 16px; }
+  .onboard-body { font-size: 14px; line-height: 1.65; }
+  .onboard-actions button { min-height: 44px; font-size: 14px; }
+  .onboard-next { min-width: 96px; }
+}
+
+/* 使用者要求減少動態：聚光 / 卡片不滑動、外圈不呼吸、進度點不變形 */
+@media (prefers-reduced-motion: reduce) {
+  .modal-backdrop.onboard-backdrop, .onboard-spot, .onboard-card, .onboard-card.anim, .onboard-dot { transition: none; }
+  .onboard-spot::after { animation: none; opacity: 0.6; }
+}
+
+/* ---- 說明視窗（InfoModal）：快速上手 + 可摺疊的主題區塊 ---- */
+.info-modal:focus { outline: none; }
+.info-replay { display: block; width: 100%; margin: 10px 0 0; padding: 9px 12px; border-color: var(--accent); color: var(--accent); background: #0f2a22; font-weight: 500; }
+.info-replay:hover { background: #133b30; border-color: var(--accent); }
+.modal h3.info-more { margin: 20px 0 4px; }   /* .modal h3（styles.css）權重相同、出現得早：疊一個 class 才蓋得過 */
+.info-group { border-top: 1px solid var(--line2); }
+.info-group:last-of-type { border-bottom: 1px solid var(--line2); }
+.info-group > summary {
+  display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 10px 2px; cursor: pointer; list-style: none;
+  font-size: 13.5px; font-weight: 500; color: var(--text); user-select: none;
+}
+.info-group > summary::-webkit-details-marker { display: none; }
+.info-group > summary::before { content: '▸'; flex: 0 0 auto; color: var(--accent); transition: transform .15s ease; }
+.info-group[open] > summary::before { transform: rotate(90deg); }
+.info-group > summary:hover { color: #fff; }
+.info-group-title { flex: 0 0 auto; }
+.info-group-hint { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 400; color: var(--dim); }
+.info-group > .modal-list, .info-group > .modal-p { padding-bottom: 12px; }
+@media (prefers-reduced-motion: reduce) { .info-group > summary::before { transition: none; } }

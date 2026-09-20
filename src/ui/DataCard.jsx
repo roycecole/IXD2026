@@ -3,10 +3,11 @@ import { useStore } from '../store/useStore.js'
 import SurveyTimeline from './SurveyTimeline.jsx'
 import { birdSeasonal } from '../lib/birds.js'
 import { ageFromLunar, moonAge, moonPhaseName } from '../lib/moon.js'
-import { seriesFromOption, seriesFromSurvey, seriesFromDust, seriesFromMoon } from '../lib/series.js'
-import { dustSummary } from '../lib/describe.js'
+import { seriesFromOption, seriesFromSurvey, seriesFromDust, seriesFromMoon, seriesFromAir } from '../lib/series.js'
+import { dustSummary, airSummary, airWhereText, airPmText } from '../lib/describe.js'
 import { useT, useLocale, T } from '../i18n/index.js'
 import { nameText, weatherText, lunarLabelText, tideRangeText } from '../i18n/data.js'
+import '../styles/air.css'
 
 // 資料區：選海況 → 套用 / 播放；鳥群 / 魚群調查卡（逐月圖 + 套用 / 連動 / 獨立控制 + 年表播放）；資料看板開關。
 const PID = { birds: 'birdCount', fish: 'fishCount' }
@@ -28,11 +29,12 @@ const KIND = {
   },
 }
 
-function optionLabel(o, t) {
+function optionLabel(o, t, gov) {
   const name = nameText(o.name)
   if (o.kind === 'tide') return t('{name}（潮汐）', { name })
   if (o.kind === 'dust') return o.level > 0 ? t('{name}（PM10 {level}）', { name, level: o.level }) : t('{name}（PM10 無效 · 看風速）', { name })   // level=0：來源 PM10 感測器回報無效值
   if (o.kind === 'moon') return t('{name}（月出月沒）', { name })
+  if (o.kind === 'air') return airSummary(gov && gov.air) ? t('{name}（PM2.5 {level}，模型）', { name, level: o.level }) : t('{name}（模型資料 · 尚無數值）', { name })   // Open-Meteo / CAMS 模型資料，不是政府觀測：選項標籤也標「模型」
   return t('{name}（水位 {level}%）', { name, level: o.level })
 }
 
@@ -124,6 +126,7 @@ export default function DataCard() {
   const playGovSeries = useStore((s) => s.playGovSeries)
   const playDust = useStore((s) => s.playDust)
   const playMoon = useStore((s) => s.playMoon)
+  const playAir = useStore((s) => s.playAir)
   const recMode = useStore((s) => s.rec.mode)
   const recSpeed = useStore((s) => s.rec.speed)
   const recLoop = useStore((s) => s.rec.loop)
@@ -139,7 +142,10 @@ export default function DataCard() {
   const moonSpec = opt.kind === 'moon' ? seriesFromMoon(gov.moon) : null
   const dust = opt.kind === 'dust' ? dustSummary(gov.dust) : null
   const dustHistN = opt.kind === 'dust' && gov.dust && Array.isArray(gov.dust.history) ? gov.dust.history.filter((x) => typeof x.pm10 === 'number' || typeof x.wind === 'number').length : 0
-  const anyPlay = !!(seriesSpec || dustSpec || moonSpec || opt.birds || opt.fish)
+  const airSpec = opt.kind === 'air' ? seriesFromAir(gov.air) : null
+  const air = opt.kind === 'air' ? airSummary(gov.air) : null
+  const airOpt = opt.kind === 'dust' ? gov.options.find((o) => o.kind === 'air') : null   // 揚塵選項的導引：有「空氣品質」選項才提示
+  const anyPlay = !!(seriesSpec || dustSpec || moonSpec || airSpec || opt.birds || opt.fish)
 
   // 月相（潮汐 / 月亮海況）：以 CWA 農曆日期推月齡，農曆日期過期則退回天文公式
   let moonLine = ''
@@ -164,13 +170,16 @@ export default function DataCard() {
       dust.rh != null ? t('濕度 {n}%', { n: dust.rh.toFixed(0) }) : null,
     ].filter((x) => x != null).join(' · ')
     : ''
+  // 空氣品質一行：「空氣品質 · 雲林縣麥寮 · PM2.5 21 · PM10 25 μg/m³ · US AQI 71」
+  const airLine = air ? t('空氣品質 · {where}', { where: airWhereText(air) }) + ' · ' + airPmText(air) : ''
+  const airLink = gov.air && typeof gov.air.sourceUrl === 'string' && /^https:\/\//.test(gov.air.sourceUrl) ? gov.air.sourceUrl : ''
 
   return (
     <div className="gov-card">
       <div className="gov-title">{t('今日海況')} <span className="dim">· {nameText(gov.sourceShort)}</span></div>
       {gov.weather && <div className="gov-metrics">{weatherText(gov.weather.weather)} · {gov.weather.airTemp}°C · {t('風 {n} m/s', { n: gov.weather.windSpeed })}</div>}
       <select className="gov-select" value={govOptionId || ''} onChange={(e) => setGovOption(e.target.value)} aria-label={t('選擇海況資料')}>
-        {gov.options.map((o) => <option key={o.id} value={o.id}>{optionLabel(o, t)}</option>)}
+        {gov.options.map((o) => <option key={o.id} value={o.id}>{optionLabel(o, t, gov)}</option>)}
       </select>
       <button className="gov-apply" onClick={applyGov}>{t('套用此海況')}</button>
       {dust && (
@@ -178,12 +187,30 @@ export default function DataCard() {
           {dustLine}
         </div>
       )}
+      {airOpt && (
+        <p className="hint gov-wait gov-air-hint">{t('若要看有變化的空品資料，請選「{name}」。', { name: nameText(airOpt.name) })}</p>
+      )}
+      {opt.kind === 'air' && (
+        <div className="gov-air">
+          <div className="gov-metrics gov-air-line" title={t('Open-Meteo Air Quality（CAMS 全球大氣模型）逐時資料：PM2.5 高 → 海水混濁、垃圾多、色相偏黃綠、輝光收斂；風速 → 洋流。US AQI 是美國 EPA 指標，不是環境部 AQI')}>
+            {airLine || t('空氣品質 · 尚無資料')}
+          </div>
+          <div className="gov-air-src" role="note">
+            <span className="gov-air-badge">{t('模型資料（Open-Meteo / CAMS），非政府觀測')}</span>
+            <span className="gov-air-credit">
+              {airLink
+                ? <a href={airLink} target="_blank" rel="noopener noreferrer">Weather data by Open-Meteo.com</a>
+                : 'Weather data by Open-Meteo.com'} · CC BY 4.0
+            </span>
+          </div>
+        </div>
+      )}
       {moonLine && <div className="gov-metrics gov-moon" title={t('潮汐是月亮的引力：背景月亮的盈虧與位置對應當日月齡與時刻')}>{t('月亮 · {v}', { v: moonLine })}</div>}
 
       {opt.birds && <SurveyCard kind="birds" opt={opt} />}
       {opt.fish && <SurveyCard kind="fish" opt={opt} />}
 
-      {(seriesSpec || opt.kind === 'dust' || moonSpec || opt.kind === 'moon') && (
+      {(seriesSpec || opt.kind === 'dust' || moonSpec || opt.kind === 'moon' || opt.kind === 'air') && (
         <div className="gov-plays">
           {seriesSpec && (
             <button className="gov-apply gov-series" onClick={playGovSeries} disabled={recMode !== 'idle'}
@@ -205,6 +232,12 @@ export default function DataCard() {
               ▶ {t('播放月出月沒 {n} 天', { n: moonSpec.points.length })}
             </button>
           )}
+          {opt.kind === 'air' && (airSpec
+            ? <button className="gov-apply gov-series" onClick={playAir} disabled={recMode !== 'idle'}
+                      title={t('播放最近的逐時 PM2.5（Open-Meteo / CAMS 模型資料，非政府觀測）：每一步＝一小時；PM2.5 越高，海水越混濁、垃圾越多、色相偏黃綠、輝光收斂')}>
+                ▶ {t('播放空氣品質 {n} 小時', { n: airSpec.points.length })}
+              </button>
+            : <p className="hint gov-wait">{t('空氣品質資料還不足（需要至少 2 個有效小時的 PM2.5）：排程每 3 小時向 Open-Meteo 抓取，取得後即可播放。')}</p>)}
         </div>
       )}
       {anyPlay && (

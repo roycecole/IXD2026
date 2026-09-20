@@ -1,5 +1,7 @@
-// 說明視窗的中文版正文（外殼在 ../InfoModal.jsx；英文版在 ./InfoEn.jsx，兩份段落順序與行內標記需一致）。
-// 追加內容：玩法多一條 → 在 PLAY 陣列加一筆 { id, body }；新增章節 → 在 SECTIONS 加一筆（list＝條列、text＝一段文字）。
+// 說明視窗的中文版正文（外殼在 ../InfoModal.jsx；英文版在 ./InfoEn.jsx，兩份的 id、分組與順序需一一對應，行內標記與事實也要一致）。
+// 結構：一段簡短導言 → 「快速上手」（QUICK，最多 5 條）→ 「完整說明」（GROUPS：依主題分組的可摺疊區塊，預設收合，摘要一行）。
+// 追加內容：玩法多一條 → 在 PLAY 陣列加一筆 { id, body }，並把它的 id 放進 GROUPS 裡某一組的 ids（每個 id 只能出現在一組）；
+//   新主題 → 在 GROUPS 加一組；英文版 InfoEn.jsx 也要同步。（lib/onboarding.test.mjs 會檢查兩份是否一一對應。）
 // 此檔在 scripts/i18n-check.mjs 的 ALLOW_FILES 內，允許直接寫中文。
 import { Fragment } from 'react'
 
@@ -25,23 +27,47 @@ const PLAY = [
   { id: 'lang-devices', body: <><b>語言與裝置</b>：右上「EN / 中文」鈕切換介面語言（也可在網址加 <code>?lang=en</code> 或 <code>?lang=zh</code> 指定）。「裝置」鈕集中放選用的裝置功能：<b>觀眾視窗</b>（雙螢幕）、<b>相機手勢</b>（張手＝平靜、捏合＝鯨魚）、<b>語音指令</b>（說「鯨魚」「大浪」「安靜」…）、<b>觸覺回饋</b>（手機與手把震動）、<b>畫質</b>（依 FPS 自動調整）和<b>AR 桌面</b>（支援的手機才會出現）。相機與麥克風只在你打開時才啟用，影像不上傳；語音辨識在 Chrome / Edge 由瀏覽器送到雲端服務。</> },
 ]
 
-const SECTIONS = [
-  { id: 'play', title: '怎麼玩', list: PLAY },
-  { id: 'eco', title: '海洋生態', text: <>垃圾變多 → 海水混濁、生物變少、魚群主動繞開垃圾、聲音轉暗調；清除垃圾 → 淨化波擴散、海水清澈、生物回歸、聲音回到明亮的大調。背景還有極慢的晝夜呼吸。</> },
+// 快速上手：5 條以內，每條一行內講完；細節都在下面的完整說明。
+const QUICK = [
+  { id: 'quick-turn', body: <><b>轉動與調整</b>：拖曳球體轉動；右側滑桿調海水高度、洋流與清澈；點動作鈕召喚鯨魚、海豚、海龜。</> },
+  { id: 'quick-data', body: <><b>真實資料</b>：右側選水庫、潮汐、月亮或揚塵，再按「播放」，球就依真實資料起伏。</> },
+  { id: 'quick-tour', body: <><b>資料導覽</b>：按 <code>T</code>，自動巡演今日的真實資料，畫面下方的字幕說明球為什麼長這樣。</> },
+  { id: 'quick-nomidi', body: <><b>沒有 MIDI 控制器</b>：開頂部「控制器」用虛擬 nanoKONTROL2，或按「多人」讓手機掃 QR 當遙控器。</> },
+  { id: 'quick-more', body: <><b>更多</b>：雙擊畫面進入演出模式；按 <code>?</code> 隨時打開這份說明；「裝置」有相機手勢、語音等選用功能。</> },
 ]
 
-export default function InfoZh() {
+// 完整說明的主題分組（title＝摘要那一行、hint＝摘要旁邊的灰字；ids 指向上面 PLAY 的 id）
+const GROUPS = [
+  { id: 'controls', title: '操控方式', hint: '滑鼠、鍵盤、觸控、觸控筆、手把', ids: ['mouse', 'keyboard', 'touch', 'pen', 'gamepad'] },
+  { id: 'midi-sound', title: 'MIDI 與聲音', hint: 'MIDI 控制器、藍牙 MIDI、背景音', ids: ['midi', 'ble', 'sound'] },
+  { id: 'data', title: '真實資料與導覽', hint: '資料卡、調查年表、資料導覽、資料出處', ids: ['data', 'timeline', 'tour', 'inspect'] },
+  { id: 'view', title: '畫面與實景', hint: '背景模糊、AR 實景、AR 桌面', ids: ['blur', 'ar', 'xr'] },
+  { id: 'share', title: '多人、分享與展場', hint: '手機遙控、分享連結、觀眾視窗', ids: ['multi', 'share', 'audience'] },
+  { id: 'devices', title: '語言與裝置', hint: '介面語言、相機手勢、語音、觸覺、畫質', ids: ['lang-devices'] },
+]
+const BY_ID = Object.fromEntries(PLAY.map((it) => [it.id, it.body]))
+
+const ECO = { id: 'eco', title: '海洋生態', hint: '垃圾如何影響海、生物與聲音', text: <>垃圾變多 → 海水混濁、生物變少、魚群主動繞開垃圾、聲音轉暗調；清除垃圾 → 淨化波擴散、海水清澈、生物回歸、聲音回到明亮的大調。背景還有極慢的晝夜呼吸。</> }
+
+// replay：外殼（InfoModal）傳進來的「重新看新手導覽」按鈕，放在快速上手下面
+export default function InfoZh({ replay = null }) {
   return (
     <>
       <p className="modal-lead">用 MIDI 控制器（或滑鼠 / 鍵盤 / 手機觸控）演奏一顆透明球體裡的線稿海洋——調海水、召喚鯨豚海龜、清理海洋垃圾，還能錄下整段演出並回放。</p>
-      {SECTIONS.map((s) => (
-        <Fragment key={s.id}>
-          <h3>{s.title}</h3>
-          {s.list
-            ? <ul className="modal-list">{s.list.map((it) => <li key={it.id}>{it.body}</li>)}</ul>
-            : <p className="modal-p">{s.text}</p>}
-        </Fragment>
+      <h3>快速上手</h3>
+      <ul className="modal-list">{QUICK.map((it) => <li key={it.id}>{it.body}</li>)}</ul>
+      {replay}
+      <h3 className="info-more">完整說明（點開查看）</h3>
+      {GROUPS.map((g) => (
+        <details key={g.id} className="info-group">
+          <summary><span className="info-group-title">{g.title}</span><span className="info-group-hint">{g.hint}</span></summary>
+          <ul className="modal-list">{g.ids.map((id) => <Fragment key={id}><li>{BY_ID[id]}</li></Fragment>)}</ul>
+        </details>
       ))}
+      <details className="info-group">
+        <summary><span className="info-group-title">{ECO.title}</span><span className="info-group-hint">{ECO.hint}</span></summary>
+        <p className="modal-p">{ECO.text}</p>
+      </details>
     </>
   )
 }

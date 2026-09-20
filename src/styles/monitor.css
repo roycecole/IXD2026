@@ -1,0 +1,78 @@
+/* 輸入輸出監看（Monitor）可隱藏：標題列的隱藏鈕 + Footer 的「系統事件」開關 + 隱藏時 Footer 那一行最新 OUT 事件。
+   選擇器都帶 .monitor / .footer 前綴，蓋得過 styles.css 的 button / @media (pointer: coarse) 規則，不受載入順序影響。 */
+
+/* ---- Monitor 標題列右側的隱藏鈕 ---- */
+.monitor .mhead-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.monitor .monitor-hide {
+  position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 16px; min-height: 0; padding: 0; margin: -3px -4px -3px 0;   /* 上下負邊界：不讓這顆鈕把標題列撐高 */
+  border: none; background: transparent; color: var(--dim); border-radius: 4px; line-height: 1;
+}
+.monitor .monitor-hide:hover { background: rgba(255, 255, 255, 0.08); color: var(--text); }
+/* 視覺上很小，點擊範圍往外擴到約 40px 高（手機手指抓得到），不影響版面 */
+.monitor .monitor-hide::after { content: ''; position: absolute; inset: -12px -8px; }
+
+/* ---- Footer：「系統事件」開關鈕（小型 switch + 文字；開 = 綠框） ---- */
+.footer { position: relative; }
+.footer .footer-log {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; margin-left: auto;
+  padding: 2px 9px; font-size: 11px; color: var(--muted);
+}
+.footer .footer-help { margin-left: 0; }   /* 「操作說明」原本靠 margin-left:auto 推到右邊；現在由前一顆切換鈕負責推，兩顆並排在右側 */
+.footer .footer-log.on { color: var(--accent); border-color: var(--accent); background: #0f2a22; }
+.footer .footer-log-sw {
+  position: relative; display: block; flex: none; width: 20px; height: 11px; border-radius: 6px;
+  background: var(--line2); transition: background .15s;
+}
+.footer .footer-log-sw::after {
+  content: ''; position: absolute; top: 1px; left: 1px; width: 9px; height: 9px; border-radius: 50%;
+  background: var(--muted); transition: transform .15s, background .15s;
+}
+.footer .footer-log.on .footer-log-sw { background: rgba(93, 202, 165, 0.35); }
+.footer .footer-log.on .footer-log-sw::after { transform: translateX(9px); background: var(--accent); }
+.footer .footer-log-short { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .footer .footer-log-sw, .footer .footer-log-sw::after { transition: none; }
+}
+
+/* ---- Footer：隱藏監看時的「最新一則 OUT 系統事件」（單行、截斷；日誌沒有時不佔位） ---- */
+.footer .footer-out {
+  flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 6px; overflow: hidden;
+  font-family: var(--mono); font-size: 10.5px; color: var(--muted);
+}
+/* 桌面：Footer 允許換行、高度自動（最小 26px = 原本的高度；一行放得下時外觀不變）。
+   最新事件至少要有 140px，這一行放不下（英文較長 / 有「加入主畫面」鈕）→ 「最新事件 + 切換鈕 + 操作說明」整段換到第二行，
+   而不是留下一小截殘片，更不會把既有內容（操作說明…）擠出去被 overflow 切掉。 */
+@media (min-width: 821px) {
+  .footer { height: auto; min-height: 26px; flex-wrap: wrap; row-gap: 2px; padding-top: 1px; padding-bottom: calc(1px + env(safe-area-inset-bottom)); }
+  .footer .footer-out { min-width: 140px; }
+  .footer .footer-install { padding: 2px 9px; font-size: 11px; }   /* 與「操作說明」同尺寸：原本 13px / 6px 內距比 26px 的 Footer 還高，被 overflow 切掉一截；高度改自動後不能讓它把 Footer 撐高 */
+  .footer .footer-out:not(:empty) { margin-left: 2px; padding-left: 10px; border-left: 1px solid var(--line2); }   /* 與左邊連結之間一條細分隔線（手機版獨佔一行，不需要） */
+}
+.footer .footer-out-tag { flex: none; color: var(--dim); letter-spacing: .04em; }
+.footer .footer-out-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 沒內容時：留在 DOM 裡（aria-live 區域要先存在，之後出現的內容才會被朗讀），但視覺上完全不佔位 */
+.footer .footer-out:empty {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip: rect(0, 0, 0, 0);
+  white-space: nowrap; flex: none; min-width: 0;
+}
+
+/* 窄螢幕：切換鈕縮成「開關 + 短字」；最新事件獨佔 Footer 上方一行（不擠掉團隊 / 活動連結 / 操作說明）；
+   Footer 允許換行——加上「加入主畫面」鈕時一行放不下，換到下一行而不是被切掉 */
+@media (max-width: 620px) {
+  .footer .footer-log-long { display: none; }
+  .footer .footer-log-short { display: inline; }
+}
+@media (max-width: 1100px) {   /* 英文字比較長（System events）→ 中等寬度就縮成 Events */
+  html[lang='en'] .footer .footer-log-long { display: none; }
+  html[lang='en'] .footer .footer-log-short { display: inline; }
+}
+@media (max-width: 820px) {
+  .footer { flex-wrap: wrap; row-gap: 0; column-gap: 6px; padding-top: 2px; }
+  .footer .footer-out { order: -1; flex: 1 0 100%; min-height: 20px; font-size: 11px; }
+  .footer .footer-out:empty { min-height: 0; }
+  .footer .footer-log { min-height: 40px; min-width: 44px; padding: 0 10px; justify-content: center; }   /* 觸控目標 ≥ 40px */
+  .footer .footer-log-sw { width: 22px; height: 12px; border-radius: 6px; }
+  .footer .footer-log-sw::after { width: 10px; height: 10px; }
+  .footer .footer-log.on .footer-log-sw::after { transform: translateX(10px); }
+}
