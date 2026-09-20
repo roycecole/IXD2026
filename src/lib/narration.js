@@ -371,6 +371,13 @@ export function createNarrator(deps = {}) {
     },
     pickVoice,
     dispose,
+    // 【iOS Safari 解鎖——介面契約，由旁白模組的實作者填入】
+    //   unlock(text?)                 → Promise<'done'|'error'|'unsupported'>：在「使用者手勢」內念一句很短的確認語（預設「旁白已開啟」/ "Narration on"），讓 iOS 之後的 speak() 被允許；成功後 isUnlocked() 為 true
+    //   isUnlocked()                  → boolean（這個頁面是否已成功念過一次）
+    //   unlockOnFirstGesture(win?)    → off()：註冊一次性的 capture pointerdown / keydown 監聽，第一次使用者手勢時無聲解鎖（念空白 / 極小音量，不出聲）；用於 ?speak=1 沒人碰過頁面的情況
+    unlock: () => Promise.resolve('unsupported'),
+    isUnlocked: () => false,
+    unlockOnFirstGesture: () => () => {},
   }
 }
 

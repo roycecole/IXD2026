@@ -16,6 +16,10 @@ export const LS = {
   onboarded: 'ixd2026.onboarded', // 新手導覽（一步一步）完成或略過：值 '1'。與 seen 成對寫入（見 lib/onboarding.js）
   crashes: 'ixd2026.crashes',     // 展場防呆：崩潰紀錄（環狀最近 20 筆：時間 / 訊息 / stack 前 300 字 / build id / 網址旗標；見 lib/resilience.js）
   monitor: 'ixd2026.monitor',     // 輸入輸出監看（系統事件）顯示偏好：'show' | 'hide'（沒存過 → 桌面顯示 / 手機隱藏；?log=1 / ?log=0 只覆寫一次、不寫入）
+  tourplan: 'ixd2026.tourplan',   // 導覽腳本（導覽員自訂的站序與每站備註；見 lib/tourPlan.js）
+  view: 'ixd2026.view',           // 取景偏好：'full'（完整含光暈）| 'fill'（球填滿寬度）；?fit=full|fill|0 只覆寫一次（見 lib/cameraFit.js）
+  diagnote: 'ixd2026.diagnote',   // 裝置診斷頁的「裝置備註」草稿（選填：型號 / 作業系統 / 瀏覽器 / 備註；只在使用者按複製 / 下載時才進報告）
+  oplight: 'ixd2026.oplight',     // 展場角落防呆指示燈顯示偏好：'on' | 'off'（沒存過 → 展場模式顯示、一般不顯示；?oplight=1/0 只覆寫一次）
 }
 export const SS = {
   log: 'ixd2026.log',             // IN/OUT log（本 session）

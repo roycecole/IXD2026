@@ -6,6 +6,7 @@ import GestureSection from './devices/GestureSection.jsx'
 import VoiceSection from './devices/VoiceSection.jsx'
 import HapticsSection from './devices/HapticsSection.jsx'
 import QualitySection from './devices/QualitySection.jsx'
+import ViewSection from './devices/ViewSection.jsx'
 import XrSection from './devices/XrSection.jsx'
 import DiagnosticsSection from './devices/DiagnosticsSection.jsx'
 import OpsSection from './devices/OpsSection.jsx'
@@ -33,6 +34,7 @@ export default function DevicesModal({ onClose }) {
         <VoiceSection />
         <HapticsSection />
         <QualitySection />
+        <ViewSection />
         <XrSection />
         <DiagnosticsSection />
         <OpsSection />
