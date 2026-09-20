@@ -96,8 +96,8 @@ export default function DataCard() {
   const recLoop = useStore((s) => s.rec.loop)
   const setRecSpeed = useStore((s) => s.setRecSpeed)
   const toggleRecLoop = useStore((s) => s.toggleRecLoop)
-  const showBoard = useStore((s) => s.showBoard)
-  const setShowBoard = useStore((s) => s.setShowBoard)
+  const overlays = useStore((s) => s.overlays)
+  const setOverlay = useStore((s) => s.setOverlay)
 
   if (!gov || !gov.options) return null
   const opt = gov.options.find((o) => o.id === govOptionId) || gov.options[0]
@@ -167,9 +167,18 @@ export default function DataCard() {
                   onClick={toggleRecLoop} title="播完自動從頭循環">循環</button>
         </div>
       )}
-      <label className="gov-board" title="在畫布左上角顯示目前海況背後的真實資料與映射（展場很好用）">
-        <input type="checkbox" checked={showBoard} onChange={(e) => setShowBoard(e.target.checked)} />在畫面顯示資料看板
-      </label>
+      <fieldset className="gov-overlays" aria-label="畫面顯示">
+        <legend>畫面顯示（快速鍵 I：全部隱藏 / 顯示）</legend>
+        <label title="畫布左上角：目前海況背後的真實資料與映射（展場很好用）">
+          <input type="checkbox" checked={overlays.board} onChange={(e) => setOverlay('board', e.target.checked)} />資料看板
+        </label>
+        <label title="畫布上緣 / 下緣：資料播放進度、參數數值、待接管旋鈕提示、AR 調整鈕、聲音提示">
+          <input type="checkbox" checked={overlays.hud} onChange={(e) => setOverlay('hud', e.target.checked)} />播放與參數提示
+        </label>
+        <label title="演出模式（H / 雙擊）：角落的掃碼 QR 與合奏統計；關閉後不會自動啟動多人主機">
+          <input type="checkbox" checked={overlays.qr} onChange={(e) => setOverlay('qr', e.target.checked)} />掃碼 QR（演出模式）
+        </label>
+      </fieldset>
     </div>
   )
 }

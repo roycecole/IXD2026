@@ -148,6 +148,7 @@ export default function App() {
   // 預設聲音開啟：瀏覽器規定音訊必須在使用者手勢後才能啟動，所以「預設開啟」＝第一次點 / 觸碰 / 按鍵時自動啟動；
   // 使用者按「聲音」靜音後會記住（下次不再自動開）。第一下若剛好點在「聲音」鈕上，交給按鈕自己處理，避免先開又關。
   const audioOn = useStore((s) => s.audioOn)
+  const overlays = useStore((s) => s.overlays)
   useEffect(() => {
     if (loadLS(LS.audio, null) === 'off') return
     const evs = ['pointerup', 'touchend', 'keydown', 'click']
@@ -175,6 +176,7 @@ export default function App() {
       if (/INPUT|TEXTAREA|SELECT/.test(tag)) return
       const k = e.key
       if (k === 'h' || k === 'H') { setStage((s) => !s); return }
+      if (k === 'i' || k === 'I') { useStore.getState().toggleOverlays(); return }
       if (k === '?') { setShowInfo(true); return }
       if (tag === 'BUTTON') return // 按鈕聚焦時交給原生（Enter/Space 觸發該鈕）
       const st = useStore.getState()
@@ -291,12 +293,12 @@ export default function App() {
         <div className={'canvas-wrap' + (arOn ? ' ar-on' : '')} onDoubleClick={() => setStage((s) => !s)} onWheel={onWheel} title="雙擊演出模式 · 滾輪縮放">
           <video ref={videoRef} className="ar-video" playsInline muted aria-hidden="true" />
           <Suspense fallback={<div className="canvas-loading">載入海洋…</div>}><Scene3D /></Suspense>
-          <ParamHUD />
-          <TakeoverHint />
-          <DataHUD />
+          {overlays.hud && <ParamHUD />}
+          {overlays.hud && <TakeoverHint />}
+          {overlays.hud && <DataHUD />}
           <DataBoard />
-          {!audioOn && !stage && loadLS(LS.audio, null) !== 'off' && <div className="audio-hint">點一下畫面即開啟聲音</div>}
-          {arOn && (
+          {overlays.hud && !audioOn && !stage && loadLS(LS.audio, null) !== 'off' && <div className="audio-hint">點一下畫面即開啟聲音</div>}
+          {arOn && overlays.hud && (
             <div className="ar-ctrl" aria-label="AR 背景調整">
               <label>模糊<input type="range" min="0" max="1" step="0.01" value={bgBlur ?? 0}
                      onChange={(e) => useStore.getState().input('bgBlur', parseFloat(e.target.value))} /></label>
@@ -307,8 +309,8 @@ export default function App() {
               </label>
             </div>
           )}
-          {stage && (KIOSK || multiState.on) && <KioskQR />}
-          {stage && <StageStats />}
+          {stage && overlays.qr && (KIOSK || multiState.on) && <KioskQR />}
+          {stage && overlays.qr && <StageStats />}
         </div>
         <Splitter axis="x" onDelta={(dx) => setPanelW((w) => clamp(w - dx, 260, 640))} />
         <div className="sheet-handle" onPointerDown={sheetDrag} title="拖曳調整面板高度"><span /></div>

@@ -11,6 +11,25 @@ import { seriesFromOption, seriesFromSurvey, seriesFromDust, seriesFromMoon, aut
 import { birdSeasonal, flockCount } from '../lib/birds.js'
 
 // 資料播放中的「資料時刻」資訊（DataHUD / MoonSky 每幀讀取，非反應式）
+// 畫布上的資訊面板分三組，各自可關：board=資料看板、hud=播放 / 參數 / 待接管提示（含 AR 調整鈕、聲音提示）、qr=展場掃碼 QR 與統計。
+// 網址覆寫（展場 / 錄影用，不寫入偏好）：?hud=0 關 board+hud、?board=0、?qr=0。
+const OVERLAY_KEYS = ['board', 'hud', 'qr']
+function initOverlays() {
+  const narrow = typeof window !== 'undefined' && window.innerWidth <= 820
+  const o = { board: !narrow, hud: true, qr: true }
+  const saved = loadLS(LS.overlays, null)
+  if (saved && typeof saved === 'object') OVERLAY_KEYS.forEach((k) => { if (typeof saved[k] === 'boolean') o[k] = saved[k] })
+  else { const legacy = loadLS(LS.board, null); if (legacy != null) o.board = !!legacy }
+  try {
+    const q = new URLSearchParams(location.search)
+    if (q.get('hud') === '0') { o.board = false; o.hud = false }
+    if (q.get('board') === '0') o.board = false
+    if (q.get('qr') === '0') o.qr = false
+  } catch (e) {}
+  return o
+}
+let overlaysBeforeHide = null // 「全部隱藏」前的組合，再按一次還原成原樣
+
 export const seriesMeta = { active: false, kind: '', name: '', label: '', unit: '', date: '', step: 1.1, points: [], target: '', extra: {}, lunar: '', lunarLabel: '', range: '', events: [] }
 
 const haptic = (ms) => { try { navigator.vibrate && navigator.vibrate(ms) } catch (e) {} }
@@ -65,8 +84,21 @@ export const useStore = create((set, get) => ({
   surveyLink: { birds: true, fish: false, ...loadLS(LS.surveyLink, {}) }, // 鳥 / 魚數量參數是否「連動」調查資料（手動調參數會自動脫鉤 = 獨立控制）
   audioOn: false,                                // 背景音是否開啟（預設：第一次使用者手勢時自動開；使用者靜音後記住）
   setAudioOn: (on) => set({ audioOn: !!on }),
-  showBoard: (() => { const v = loadLS(LS.board, null); return v == null ? (typeof window !== 'undefined' && window.innerWidth > 820) : !!v })(), // 資料看板（畫布上顯示目前資料）
-  setShowBoard: (v) => { saveLS(LS.board, !!v); set({ showBoard: !!v }) },
+  overlays: initOverlays(),                      // 畫布上的資訊面板顯示狀態（見 initOverlays）
+  setOverlay: (k, v) => {
+    if (!OVERLAY_KEYS.includes(k)) return
+    const o = { ...get().overlays, [k]: !!v }
+    saveLS(LS.overlays, o); set({ overlays: o })
+  },
+  toggleOverlays: () => {                        // 主控開關：任一顯示中 → 全部隱藏；全部隱藏 → 還原 / 全開
+    const cur = get().overlays
+    const any = OVERLAY_KEYS.some((k) => cur[k])
+    let next
+    if (any) { overlaysBeforeHide = { ...cur }; next = { board: false, hud: false, qr: false } }
+    else next = overlaysBeforeHide && OVERLAY_KEYS.some((k) => overlaysBeforeHide[k]) ? overlaysBeforeHide : { board: true, hud: true, qr: true }
+    saveLS(LS.overlays, next); set({ overlays: next })
+    get().pushLog('out', '畫面資訊面板：' + (any ? '隱藏' : '顯示'))
+  },
 
   // ---- 參數 ----
   setParam: (pid, v) => set((s) => ({ params: { ...s.params, [pid]: clamp01(v) } })),

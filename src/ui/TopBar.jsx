@@ -31,6 +31,8 @@ export default function TopBar({ onConnect, onBle, onInfo, onVK, vkOn, onMulti, 
   const audioOn = useStore((s) => s.audioOn)
   const setAudioOn = useStore((s) => s.setAudioOn)
   const [micOn, setMicOn] = useState(false)
+  const overlaysOn = useStore((s) => s.overlays.board || s.overlays.hud || s.overlays.qr)
+  const toggleOverlays = useStore((s) => s.toggleOverlays)
   const [hz, setHz] = useState(0)
 
   // 聲音開啟時每 0.5s 更新根音 Hz 顯示
@@ -113,6 +115,8 @@ export default function TopBar({ onConnect, onBle, onInfo, onVK, vkOn, onMulti, 
         <button onClick={doShareImage} title="分享星球：擷取此刻的海 → 分享 / 下載圖片">分享星球</button>
         <button className={'conn' + (multiOn ? ' on' : '')} onClick={onMulti} title="多人合奏：手機掃 QR 當遙控器">多人</button>
         <button className={'conn' + (arOn ? ' on' : '')} onClick={onAR} title="AR 實景：相機當背景，球體浮在真實世界；可調背景模糊 / 清澈">實景</button>
+        <button className={'conn' + (overlaysOn ? ' on' : '')} aria-pressed={overlaysOn} onClick={toggleOverlays}
+                title="顯示 / 隱藏畫布上的資訊面板：資料看板、播放與參數提示、QR（快速鍵 I）">資訊</button>
         <button onClick={doCapture} disabled={capturing} title="錄製球體 10 秒並下載影片">
           {capturing ? `錄影 ${capPct}%` : '錄影'}
         </button>

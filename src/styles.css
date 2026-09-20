@@ -388,6 +388,10 @@ input[type="range"] { accent-color: var(--accent); width: 100%; height: 16px; }
 .gov-plays .gov-series { margin-top: 0; }
 .gov-board { display: flex; align-items: center; gap: 7px; margin-top: 10px; font-size: 11.5px; color: var(--muted); cursor: pointer; }
 .gov-board input { width: auto; accent-color: var(--accent); }
+.gov-overlays { margin: 10px 0 0; padding: 6px 10px 8px; border: 1px solid var(--line2); border-radius: 8px; display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.gov-overlays legend { padding: 0 6px; font-size: 10.5px; color: var(--muted); }
+.gov-overlays label { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); cursor: pointer; }
+.gov-overlays input { width: auto; accent-color: var(--accent); }
 .gov-wait { margin: 2px 0 0; line-height: 1.5; }
 .gov-dust { color: #e6d79a; }
 
@@ -397,7 +401,11 @@ input[type="range"] { accent-color: var(--accent); width: 100%; height: 16px; }
   background: rgba(8, 12, 22, 0.5); backdrop-filter: blur(4px); border: 1px solid var(--line2); border-radius: 10px;
   padding: 7px 10px 8px; font-size: 11px; line-height: 1.55; pointer-events: none;
 }
-.data-board-title { color: var(--accent); font-size: 11.5px; margin-bottom: 3px; letter-spacing: .04em; }
+.data-board-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 3px; }
+.data-board-title { color: var(--accent); font-size: 11.5px; letter-spacing: .04em; }
+.data-board-x { pointer-events: auto; flex: none; width: 26px; height: 26px; min-width: 0; min-height: 0; padding: 0; margin: -5px -7px -6px 0; line-height: 24px; text-align: center;
+  font-size: 16px; border: none; background: transparent; color: var(--muted); border-radius: 50%; cursor: pointer; }
+.data-board-x:hover { color: var(--text); background: rgba(255, 255, 255, 0.12); }
 .data-board-row { display: grid; grid-template-columns: 34px 1fr; gap: 8px; color: #c8cbd8; }
 .data-board-row .k { color: var(--muted); }
 .audio-hint {
@@ -439,17 +447,18 @@ html, body { overscroll-behavior: none; }
   .toolstrip .tools { display: contents; }
   .toolstrip button, .toolstrip .conn { flex: 0 0 auto; white-space: nowrap; min-height: 40px; padding: 0 14px; font-size: 13px; scroll-snap-align: start; }
   .toolstrip .toast { flex: 0 0 auto; white-space: nowrap; }
-  /* 手機上的按鈕優先序：聲音（預設開啟、最常要靜音）→ 分享 → 多人 → 實景 → 分享星球 → 錄影 → 麥克風 → 說明 → 控制器 → 匯出LOG → MIDI / 藍牙 */
+  /* 手機上的按鈕優先序：聲音（預設開啟、最常要靜音）→ 分享 → 多人 → 實景 → 資訊 → 分享星球 → 錄影 → 麥克風 → 說明 → 控制器 → 匯出LOG → MIDI / 藍牙 */
   .toolstrip [data-audio-btn] { order: -10; }
   .toolstrip .tools > button:nth-child(1) { order: -9; }   /* 分享 */
   .toolstrip .tools > button:nth-child(3) { order: -8; }   /* 多人 */
   .toolstrip .tools > button:nth-child(4) { order: -7; }   /* 實景 */
-  .toolstrip .tools > button:nth-child(2) { order: -6; }   /* 分享星球 */
-  .toolstrip .tools > button:nth-child(5) { order: -5; }   /* 錄影 */
-  .toolstrip .tools > button:nth-child(10) { order: -4; }  /* 麥克風 */
-  .toolstrip .tools > button:nth-child(8) { order: -3; }   /* 說明 */
-  .toolstrip .tools > button:nth-child(7) { order: -2; }   /* 控制器 */
-  .toolstrip .tools > button:nth-child(6) { order: -1; }   /* 匯出LOG */
+  .toolstrip .tools > button:nth-child(5) { order: -6; }   /* 資訊（畫布上的面板顯示 / 隱藏） */
+  .toolstrip .tools > button:nth-child(2) { order: -5; }   /* 分享星球 */
+  .toolstrip .tools > button:nth-child(6) { order: -4; }   /* 錄影 */
+  .toolstrip .tools > button:nth-child(11) { order: -3; }  /* 麥克風 */
+  .toolstrip .tools > button:nth-child(9) { order: -2; }   /* 說明 */
+  .toolstrip .tools > button:nth-child(8) { order: -1; }   /* 控制器 */
+  .toolstrip .tools > button:nth-child(7) { order: 0; }    /* 匯出LOG（與 MIDI / 藍牙同序，DOM 順序在前） */
 
   /* 主區：畫布在上、面板在下（可拖把手拉高） */
   .stage { flex-direction: column; }

@@ -7,7 +7,8 @@ export const LS = {
   markers: 'ixd2026.markers',     // Marker 場景快照（實體 Marker 鍵存的參數組）
   stats: 'ixd2026.stats',         // 展場統計（掃碼人數 / 演出次數）
   surveyLink: 'ixd2026.surveyLink', // 鳥 / 魚數量是否連動調查資料
-  board: 'ixd2026.board',         // 資料看板顯示開關
+  board: 'ixd2026.board',         // （舊）資料看板顯示開關，遷移到 overlays
+  overlays: 'ixd2026.overlays',   // 畫布上的資訊面板顯示開關 { board, hud, qr }
   audio: 'ixd2026.audio',         // 聲音偏好：'off' = 使用者靜音過，不再自動開啟
 }
 export const SS = {
