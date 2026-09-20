@@ -1,7 +1,7 @@
 // 資料 → 可播放的時間序列規格（純函式，無 I/O，可在 Node 測試）。
 // 規格 spec = { kind, name, label, unit, date, step, points[], target, extra, stats:{min,max,mean} }
 //   kind：'tide' 潮汐 · 'inflow' 進流量 · 'dust' 揚塵（CI 累積的歷史）· 'survey-birds' / 'survey-fish' 調查年表 · 'moon' 月出月沒
-//   points：tide/inflow → {h,v}；dust → {t,v,w,tp,rh}；survey → {t,v,n}；moon → {t,v,rise,riseAz,transit,alt,altDir,set,setAz}
+//   points：tide/inflow → {h,v}；dust → {t,v,pm,w,tp,rh}（v＝主變數：PM10 或風速）；survey → {t,v,n}；moon → {t,v,rise,riseAz,transit,alt,altDir,set,setAz}
 // 每一步由 automationFor() 轉成參數自動化事件，走既有的錄製/播放引擎（可倍速、循環、soft-takeover 接管）。
 import { flockCount } from './birds.js'
 
@@ -41,14 +41,22 @@ export function seriesFromSurvey(o, kind) {
   })
 }
 
-// 揚塵：CI 每 6 小時累積的最新值歷史（至少 2 筆才能播放；第一天只有 1 筆時回傳 null，UI 會顯示「累積中」）
+// 揚塵：CI 每 3 小時累積的最新值歷史（至少 2 筆有效才能播放；不足時回傳 null，UI 會顯示「累積中」）。
+// 主變數＝PM10；來源的 PM10 感測器常回傳哨兵值（4999.4，被腳本判為無效 → null），此時改用「風速」（風是揚塵的成因），仍可播放。
 export function seriesFromDust(dust, name = '揚塵') {
-  const h = dust && Array.isArray(dust.history) ? dust.history.filter((x) => typeof x.pm10 === 'number') : []
-  if (h.length < 2) return null
-  const points = h.map((x) => ({ t: fmtT(x.t), v: round1(x.pm10), w: x.wind == null ? null : x.wind, tp: x.temp == null ? null : x.temp, rh: x.rh == null ? null : x.rh }))
+  const hist = dust && Array.isArray(dust.history) ? dust.history : []
+  const n = (x) => (typeof x === 'number' && Number.isFinite(x) ? x : null)
+  const withPm = hist.filter((x) => n(x && x.pm10) != null)
+  const withWind = hist.filter((x) => n(x && x.wind) != null)
+  const metric = withPm.length >= 2 ? 'pm10' : withWind.length >= 2 ? 'wind' : null
+  if (!metric) return null
+  const points = (metric === 'pm10' ? withPm : withWind).map((x) => ({
+    t: fmtT(x.t), v: round1(metric === 'pm10' ? x.pm10 : x.wind), pm: n(x.pm10), w: n(x.wind), tp: n(x.temp), rh: n(x.rh),
+  }))
   return withStats({
-    kind: 'dust', name: `${name}${dust.county ? '（' + dust.county + '）' : ''}`, label: 'PM10', unit: 'μg/m³',
-    date: `${points[0].t} → ${points[points.length - 1].t}`, step: 0.7, points, target: 'clarity', extra: {},
+    kind: 'dust', name: `${name}${dust.county ? '（' + dust.county + '）' : ''}`,
+    label: metric === 'pm10' ? 'PM10' : '風速', unit: metric === 'pm10' ? 'μg/m³' : 'm/s',
+    date: `${points[0].t} → ${points[points.length - 1].t}`, step: 0.7, points, target: metric === 'pm10' ? 'clarity' : 'current', extra: { metric },
   })
 }
 
@@ -78,8 +86,12 @@ export function automationFor(spec, i) {
       const n = clamp01(p.v / (max || 1))
       return [['current', clamp01(0.15 + n * 0.8)], ['fishCount', clamp01(0.3 + n * 0.6)], ['swimSpeed', clamp01(0.35 + n * 0.5)]]
     }
-    case 'dust': {                                   // PM10 高 → 海水混濁、垃圾多、色相偏黃綠；風速 → 洋流
-      const pm = p.v
+    case 'dust': {
+      if (spec.extra && spec.extra.metric === 'wind') {   // PM10 無效 → 風速驅動：風越大 → 洋流越急、海水越混、懸浮物越多
+        const n = clamp01(p.v / 12)
+        return [['current', clamp01(0.15 + n * 0.8)], ['clarity', clamp01(0.92 - n * 0.4)], ['trashCount', clamp01(0.06 + n * 0.3)], ['hue', clamp01(0.5 - n * 0.12)]]
+      }
+      const pm = p.v                                   // PM10 高 → 海水混濁、垃圾多、色相偏黃綠；風速 → 洋流
       const out = [['clarity', clamp01(0.95 - pm / 220)], ['trashCount', clamp01(0.06 + pm / 450)], ['hue', clamp01(0.5 - pm / 600)]]
       if (p.w != null) out.push(['current', clamp01(p.w / 12)])
       return out
@@ -123,8 +135,9 @@ export function formatHud(meta, p, ctx = {}) {
       return txt
     }
     case 'dust': {
-      let txt = `${meta.name} ${p.t} · PM10 ${p.v}${meta.unit}`
-      if (p.w != null) txt += ` · 風 ${p.w} m/s`
+      let txt = `${meta.name} ${p.t} · ${meta.label} ${p.v}${meta.unit}`
+      if (meta.label === 'PM10') { if (p.w != null) txt += ` · 風 ${p.w} m/s` }
+      else if (p.pm != null) txt += ` · PM10 ${p.pm} μg/m³`
       if (p.tp != null) txt += ` · 氣溫 ${p.tp}°C`
       if (p.rh != null) txt += ` · 濕度 ${p.rh}%`
       return txt

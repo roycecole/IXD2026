@@ -3,6 +3,10 @@
 // 於 GitHub Actions 排程執行（refresh-data.yml）。Node 18+ 內建 fetch。
 //   氣象：有 CWA_KEY（repo secret）→ 中央氣象署 opendata 觀測站；否則 / 失敗 → Open-Meteo。
 //   潮汐：有 CWA_KEY → datastore API；否則 / 失敗 → CWA 公開檔（免金鑰）；再失敗 → 保留舊 series。
+//   揚塵：水利署 IoW 最新值 + 基本資料（免金鑰）→ dust.stations、滾動累積 dust.history、dust-yunlin 的 level / params。
+//   月亮：CWA A-B0063-001 月出月沒（CWA_KEY，沒有就用公開示範金鑰）→ moon（今日前 2 日起 180 天的滾動視窗）。
+//   （歷史靜態資料 stations / fish / birds.yearly 由 bake-static-data.mjs 一次性烘焙，CI 只原樣保留。）
+// 每個資料集各自 try/catch：失敗時 console.error 並保留舊資料，不會擋住其他資料集。
 import { readFile, writeFile } from 'node:fs/promises'
 import { realpathSync } from 'node:fs'
 import { resolve as resolvePath } from 'node:path'
@@ -11,6 +15,11 @@ import {
   TIDE_FILE_URL, tideApiUrl, findTideForecasts, pickLocation, flattenEvents,
   buildTideSeries, dayMeta, lunarLabel, taipeiDate, taipeiHour,
 } from './tide.mjs'
+import { getJson, retry } from './gov/http.mjs'
+import { buildDust, dustLevel, dustParams, appendHistory, DUST_LATEST_URL, DUST_META_URL, DUST_NOTE, DUST_COUNTY } from './gov/dust.mjs'
+import { buildMoon, moonApiUrl, moonWindow, moonKeyCandidates, MOON_NOTE, MOON_COUNTY } from './gov/moon.mjs'
+import { ensureGovOptions, orderOption, orderTop, appendParts, SOURCE_LABEL, BASE_MAPPING, MAPPING_ADDITIONS } from './gov/shape.mjs'
+import { stringifyOcean } from './gov/json.mjs'
 
 const LAT = 24.0, LON = 121.6
 const clamp01 = (v) => Math.max(0, Math.min(1, v))
@@ -36,12 +45,6 @@ function optionParams(w, level) {
     swimSpeed: r2(clamp01(0.4 + current * 0.4)),
     spin: 0.28, zoom: 0.5,
   }
-}
-
-async function getJson(url, ms = 90000) {
-  const res = await fetch(url, { signal: AbortSignal.timeout(ms) })
-  if (!res.ok) throw new Error(`HTTP ${res.status} ${url.replace(/Authorization=[^&]+/, 'Authorization=***')}`)
-  return res.json()
 }
 
 // 中央氣象署開放資料（政府源）：自動氣象站 O-A0001-001，取花蓮站
@@ -109,11 +112,50 @@ async function refreshTide(cur, now) {
   }
 }
 
+// 揚塵：IoW 最新值 + 基本資料（sensorid join）→ dust 區塊 + dust-yunlin 選項的 level / params。
+// 最新值只有一筆，history 在此滾動累積（最新時戳不在 history 才追加，保留最近 120 筆）。
+// 注意：水利署 opendata「並行」請求時實測約 1/4 會回錯置（A 端點回 B 資料集內容）、空白或截斷的 JSON，依序請求則 60/60 正常
+// → 這裡一律依序抓，不用 Promise.all；仍出現異常（沒有時戳、join 為空、空內容…）就整段重試（最多 3 次，間隔 10 / 20 秒），
+// 仍失敗才保留舊資料。
+async function refreshDust(cur) {
+  return retry(async () => {
+    const latest = await getJson(DUST_LATEST_URL, 60000)
+    const meta = await getJson(DUST_META_URL, 60000)
+    const { stations, summary, stats } = buildDust(latest, meta)
+    if (!stations.length) throw new Error('no dust stations (latest/meta join is empty)')
+    if (!summary.t) throw new Error(`no dust timestamp; sample row: ${JSON.stringify((Array.isArray(latest) ? latest : [])[0])}`)
+    return {
+      dust: { county: DUST_COUNTY, note: DUST_NOTE, stations, history: appendHistory(cur?.dust?.history, summary) },
+      level: dustLevel(summary.pm10),
+      params: dustParams(summary),
+      summary, stats,
+    }
+  }, { attempts: 3, delayMs: 10000, label: 'dust' })
+}
+
+// 月出月沒：CWA A-B0063-001（花蓮縣）。以 timeFrom/timeTo 取「今日前 2 日起 180 天」，才會涵蓋今天
+//（不帶時間參數只回 2025-01-01 起的 180 天）。先用 CWA_KEY，失敗再用公開示範金鑰。
+async function refreshMoon(now) {
+  const { from, to } = moonWindow(now)
+  const errors = []
+  for (const key of moonKeyCandidates(process.env.CWA_KEY)) {
+    try {
+      const json = await retry(() => getJson(moonApiUrl(key, from, to), 60000), { attempts: 2, delayMs: 5000, label: 'moon' }) // 401（金鑰錯）不重試，直接換下一把
+      const m = buildMoon(json, MOON_COUNTY)
+      if (!m) throw new Error(`no ${MOON_COUNTY} days for ${from}..${to}`)
+      return { county: m.county, from: m.from, to: m.to, note: MOON_NOTE, days: m.days }
+    } catch (e) { errors.push(e.message) }
+  }
+  throw new Error(errors.join(' | ') || 'no CWA key')
+}
+
 const FALLBACK = [
   { id: 'feitsui', name: '翡翠水庫', region: '北', level: 77.3 },
   { id: 'shimen', name: '石門水庫', region: '北', level: 100 },
   { id: 'zengwen', name: '曾文水庫', region: '南', level: 100 },
 ]
+// 揚塵／月亮選項的參數來自各自的資料集而非天氣：沿用上次值（揚塵刷新成功時再覆寫）
+const OWN_PARAMS_KINDS = new Set(['dust', 'moon'])
 
 async function main() {
   // pathToFileURL(resolve(...))：路徑含 # ? 空白或為 Windows 路徑都安全（字串拼 file:// 會錯）
@@ -140,13 +182,9 @@ async function main() {
   }
 
   const base = (cur?.options && cur.options.length ? cur.options : FALLBACK)
-  const options = base.map((o) => {
-    const next = { id: o.id, name: o.name, region: o.region, level: o.level, params: optionParams(w, o.level) }
-    if (o.kind) next.kind = o.kind     // 潮汐等特殊海況
-    if (o.birds) next.birds = o.birds  // 鳥類調查（球外鳥群）
-    if (o.series) next.series = o.series // 保留時間序列（資料播放用）
-    return next
-  })
+  // 其餘欄位（kind 特殊海況、birds / fish 調查、series 時間序列…）一律原樣帶過，不再逐欄列舉而漏掉新欄位
+  const options = base.map((o) => orderOption({ ...o, params: OWN_PARAMS_KINDS.has(o.kind) && o.params ? o.params : optionParams(w, o.level) }))
+  ensureGovOptions(options) // 舊檔還沒有揚塵／月亮選項時補上（放在既有選項之後）
 
   // 潮汐 series 每次刷新（失敗則保留舊的）
   let tideVia = ''
@@ -164,22 +202,48 @@ async function main() {
     } catch (e) { console.error('tide refresh failed, keep old series:', e.message) }
   }
 
+  // 揚塵（每次刷新；失敗則保留舊的 dust 與 dust-yunlin 的 level / params）
+  let dust = cur?.dust
+  const dustOpt = options.find((o) => o.kind === 'dust')
+  try {
+    const r = await refreshDust(cur)
+    dust = r.dust
+    if (dustOpt) { dustOpt.level = r.level; dustOpt.params = r.params }
+    const s = r.summary
+    console.log(`dust refreshed ${s.t} pm10=${s.pm10} wind=${s.wind} temp=${s.temp} rh=${s.rh} invalid=${r.stats.invalidTotal}/${r.stats.sensors} history=${r.dust.history.length}`)
+  } catch (e) { console.error('dust refresh failed, keep old data:', e.message) }
+
+  // 月出月沒（每次刷新；失敗則保留舊的 moon）
+  let moon = cur?.moon
+  try {
+    moon = await refreshMoon(Date.now())
+    console.log(`moon refreshed ${moon.county} ${moon.from}..${moon.to} days=${moon.days.length}`)
+  } catch (e) { console.error('moon refresh failed, keep old data:', e.message) }
+
   const parts = [w.gov ? '中央氣象署 CWA 觀測站' : 'Open-Meteo 即時氣象', '水利署水庫水情']
   if (tideVia || tideOpt?.series) parts.push('CWA 潮汐預報')
   if (cur?.rivers) parts.push('水利署河川水位')
   if (cur?.birdsNote) parts.push('水利署鳥類調查')
+  if (dust) parts.push(SOURCE_LABEL.dust)
+  if (cur?.stations) parts.push(SOURCE_LABEL.stations)
+  if (options.some((o) => o.fish)) parts.push(SOURCE_LABEL.fish)
+  if (moon) parts.push(SOURCE_LABEL.moon)
   const out = {
     source: parts.join(' + ') + (w.gov ? '（政府開放資料 OGDL v1）' : '（政府資料 OGDL v1；氣象備援 Open-Meteo CC BY 4.0）'),
     sourceShort: w.gov ? 'CWA · 水利署' : '水利署 · CWA潮汐 · Open-Meteo',
     fetchedAt: w.time, station: w.gov ? '花蓮' : '花蓮外海',
     weather: { airTemp: w.airTemp, humidity: w.humidity, windSpeed: w.windSpeed, windDir: w.windDir, precip: w.precip, weather: w.weather },
     defaultOption: cur?.defaultOption || options[0].id, options,
-    mapping: cur?.mapping || '水庫水位%→海水高度（滿庫=滿球、溢流）· 風速→洋流 · 晴雨→清澈 · 氣溫→水母 · 進流量時序→資料播放',
+    mapping: cur?.mapping || appendParts(BASE_MAPPING, MAPPING_ADDITIONS),
   }
   if (cur?.rivers) { out.rivers = cur.rivers; out.riversNote = cur.riversNote }   // 河川水位（銀河濃度）
   if (cur?.birdsNote) out.birdsNote = cur.birdsNote
+  if (dust) out.dust = dust
+  if (moon) out.moon = moon
+  // 其餘既有的頂層鍵（stations 等烘焙資料）原樣保留，不因為這支腳本不認得就丟掉
+  for (const [k, v] of Object.entries(cur || {})) if (!(k in out)) out[k] = v
   // TODO: 可加 WRA opendata 25768 即時水位刷新 rivers（公開、免金鑰；limit>=373 才涵蓋東南部站）
-  await writeFile(url, JSON.stringify(out, null, 2) + '\n')
+  await writeFile(url, stringifyOcean(orderTop(out)))
   console.log('refreshed', options.length, 'options @', w.time)
 }
 

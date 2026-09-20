@@ -1198,18 +1198,26 @@ function MoonSky() {
     const ymax = Math.max(1.5, halfH - 1.6)
     const o = st.govOption && st.govOption()
     const tide = o && o.kind === 'tide' && o.series          // 潮汐海況：月亮盈虧 = 當日農曆（CWA），位置 = 月中天 × 時刻
-    const moonMode = !!(o && o.kind === 'moon')              // 月亮海況：閒置時同上（天文公式），播放時用 CWA 月出月沒真實資料
+    const moonMode = !!(o && o.kind === 'moon')              // 月亮海況：用 CWA 月出月沒真實資料（播放＝逐日；閒置＝今日 × 現在時刻；資料窗不含今日才退回天文公式）
     const S = s.current
     let wantAlpha = 0, tx = S.x, ty = S.y, tPhase = S.phase
     const realPlay = seriesMeta.active && seriesMeta.kind === 'moon' && st.rec.mode === 'playing' && seriesMeta.points.length > 0 && seriesMeta.extra && seriesMeta.extra.days
+    let idleDays = null, idleIdx = -1, idleHour = 0                    // 閒置：資料窗涵蓋今天 → 今日的月出 / 中天 / 月沒 × 現在時刻
+    if (moonMode && !realPlay && st.gov && st.gov.moon && Array.isArray(st.gov.moon.days)) {
+      const nd = new Date()
+      const ds = `${nd.getFullYear()}-${String(nd.getMonth() + 1).padStart(2, '0')}-${String(nd.getDate()).padStart(2, '0')}`
+      idleIdx = st.gov.moon.days.findIndex((d) => d[0] === ds)
+      if (idleIdx >= 0) { idleDays = st.gov.moon.days; idleHour = nd.getHours() + nd.getMinutes() / 60 }
+    }
     if ((tide || moonMode) && !arState.on) {
-      if (realPlay) {
-        // 真實資料：每一步＝一天。用當日（含前後日）月出 / 中天 / 月沒時刻、方位與中天仰角，推「當晚 21:00」月亮的方位與仰角；
-        // 月相用該日期的天文月齡（月出月沒表本身不含月相）。21:00 在地平線下 → 貼著將升起 / 剛落下的一側淡淡地掛著。
-        const days = seriesMeta.extra.days
-        const idx = Math.max(0, Math.min(days.length - 1, Math.floor(st.rec.playhead / seriesMeta.step)))
-        const r = moonAltAz(days, idx, 21)
-        tPhase = moonPhaseAngle(moonAge(dateAtHour(days[idx][0], 21)))
+      if (realPlay || idleDays) {
+        // 真實資料：播放時每一步＝一天，用當日（含前後日）月出 / 中天 / 月沒時刻、方位與中天仰角，推「當晚 21:00」月亮的方位與仰角；
+        // 閒置時用今天 × 現在時刻。月相用該日期的天文月齡（月出月沒表本身不含月相）。
+        // 該時刻在地平線下 → 貼著將升起 / 剛落下的一側淡淡地掛著。
+        const days = realPlay ? seriesMeta.extra.days : idleDays
+        const idx = realPlay ? Math.max(0, Math.min(days.length - 1, Math.floor(st.rec.playhead / seriesMeta.step))) : idleIdx
+        const r = moonAltAz(days, idx, realPlay ? 21 : idleHour)
+        tPhase = moonPhaseAngle(moonAge(realPlay ? dateAtHour(days[idx][0], 21) : new Date()))
         if (r.up) { const pos = moonScreenFromAltAz(r.az, r.alt, xr); tx = pos.x; ty = Math.min(ymax, pos.y); wantAlpha = 1 }
         else { tx = (r.az < 180 ? -1 : 1) * xr; ty = 0.6; wantAlpha = 0.3 }
       } else {
@@ -1498,7 +1506,7 @@ function BackdropFX() {
       camera.layers.set(BG_LAYER)
       gl.setRenderTarget(null); gl.autoClear = true
       gl.render(scene, camera)
-      gl.copyFramebufferToTexture(_fxZero, fx.fb)
+      gl.copyFramebufferToTexture(fx.fb, _fxZero)
       // 3) Kawase 雙濾波：降採樣 n 層 → 升採樣回第 1 層。n 與 spread 由 blur 連續決定（層數加一 = 半徑約 ×2，spread 2 ≈ 下一層 spread 1，所以拉動時無跳變）
       const t = Math.min(0.999, blur) * 3
       const n = 1 + Math.floor(t), spread = 1 + (t - Math.floor(t))

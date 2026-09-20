@@ -1,9 +1,10 @@
 // 「輸出顯示資料」：把目前海況背後的真實資料整理成一列列可讀文字（純函式，可在 Node 測試）。
 // 資料看板（畫布上）與 OUT 監看（底部日誌）共用，讓使用者看得到「這個畫面是哪筆資料、映射成什麼」。
 import { birdSeasonal, flockCount } from './birds.js'
-import { ageFromLunar, moonAge, moonPhaseName } from './moon.js'
+import { ageFromLunar, moonAge, moonAltAz, moonPhaseName } from './moon.js'
 
 const num = (v, d = 1) => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v * 10 ** d) / 10 ** d : null)
+const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 const f2 = (v) => (typeof v === 'number' && Number.isFinite(v) ? v.toFixed(2) : '—')
 const avg = (arr) => { const a = arr.filter((v) => typeof v === 'number' && Number.isFinite(v)); return a.length ? a.reduce((s, v) => s + v, 0) / a.length : null }
 
@@ -39,12 +40,24 @@ export function describeBoard(gov, opt, ctx = {}) {
   } else if (opt.kind === 'dust') {
     const d = dustSummary(gov.dust)
     if (d) {
-      rows.push({ k: '揚塵', v: `${d.county} ${d.n} 站 · PM10 ${d.pm10 != null ? num(d.pm10) + ' μg/m³' : '—'}${d.wind != null ? ' · 風 ' + num(d.wind) + ' m/s' : ''}${d.temp != null ? ' · ' + num(d.temp) + '°C' : ''}` })
-      rows.push({ k: '映射', v: `PM10 ↑ → 海水清澈 ${f2(p.clarity)} · 垃圾 ${f2(p.trashCount)} · 洋流 ${f2(p.current)}` })
+      rows.push({ k: '揚塵', v: `${d.county} ${d.n} 站 · PM10 ${d.pm10 != null ? num(d.pm10) + ' μg/m³' : '無效'}${d.wind != null ? ' · 風 ' + num(d.wind) + ' m/s' : ''}${d.rh != null ? ' · 濕度 ' + num(d.rh, 0) + '%' : ''}${d.temp != null ? ' · ' + num(d.temp) + '°C' : ''}` })
+      rows.push({ k: '映射', v: d.pm10 != null
+        ? `PM10 ↑ → 海水清澈 ${f2(p.clarity)} · 垃圾 ${f2(p.trashCount)} · 洋流 ${f2(p.current)}`
+        : `PM10 感測器回報無效值 → 以預設 40 μg/m³ 示意（清澈 ${f2(p.clarity)} · 垃圾 ${f2(p.trashCount)}）· 風速 → 洋流 ${f2(p.current)}` })
     } else rows.push({ k: '揚塵', v: '尚無資料' })
   } else if (opt.kind === 'moon') {
     const m = gov.moon
-    rows.push({ k: '月亮', v: m ? `${m.county} ${m.from} → ${m.to}（${(m.days || []).length} 天月出月沒）` : '尚無資料' })
+    if (m && Array.isArray(m.days) && m.days.length) {
+      const idx = m.days.findIndex((d) => d[0] === ymd(now))
+      if (idx >= 0) {
+        const d = m.days[idx]
+        rows.push({ k: '月亮', v: `${m.county} 今日 · 月出 ${d[1] || '—'} · 中天 ${d[3] || '—'}${d[4] != null ? `（仰角 ${d[4]}°${d[5] || ''}）` : ''} · 月沒 ${d[6] || '—'}` })
+        const r = moonAltAz(m.days, idx, now.getHours() + now.getMinutes() / 60)
+        rows.push({ k: '位置', v: r.up ? `現在 方位 ${Math.round(r.az % 360)}° · 仰角 ${Math.round(r.alt)}°（依月出 / 中天 / 月沒時刻內插）` : '現在在地平線下' })
+      } else rows.push({ k: '月亮', v: `${m.county} 月出月沒表 ${m.from} → ${m.to} 不含今日，改用天文公式` })
+      const age = moonAge(now)
+      rows.push({ k: '月相', v: `${moonPhaseName(age)} · 月齡 ${age.toFixed(1)} 天 · 資料 ${m.from} → ${m.to}（${m.days.length} 天）` })
+    } else rows.push({ k: '月亮', v: '尚無資料' })
   } else {
     rows.push({ k: '水庫', v: `${opt.name} 水位 ${opt.level}% → 海水高度 ${f2(p.seaLevel)}${(p.seaLevel ?? 0) > 0.97 ? '（滿庫溢流）' : ''}` })
   }

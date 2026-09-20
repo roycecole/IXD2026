@@ -105,6 +105,7 @@ export default function DataCard() {
   const dustSpec = opt.kind === 'dust' ? seriesFromDust(gov.dust) : null
   const moonSpec = opt.kind === 'moon' ? seriesFromMoon(gov.moon) : null
   const dust = opt.kind === 'dust' ? dustSummary(gov.dust) : null
+  const dustHistN = opt.kind === 'dust' && gov.dust && Array.isArray(gov.dust.history) ? gov.dust.history.filter((x) => typeof x.pm10 === 'number' || typeof x.wind === 'number').length : 0
   const anyPlay = !!(seriesSpec || dustSpec || moonSpec || opt.birds || opt.fish)
 
   // 月相（潮汐 / 月亮海況）：以 CWA 農曆日期推月齡，農曆日期過期則退回天文公式
@@ -128,9 +129,10 @@ export default function DataCard() {
       </select>
       <button className="gov-apply" onClick={applyGov}>套用此海況</button>
       {dust && (
-        <div className="gov-metrics gov-dust" title="水資源物聯網（IoW）揚塵感測站最新值：PM10 高 → 海水混濁、垃圾多、色相偏黃綠；風速 → 洋流">
-          揚塵 · {dust.county} {dust.n} 站 · PM10 {dust.pm10 != null ? dust.pm10.toFixed(1) : '—'} μg/m³
+        <div className="gov-metrics gov-dust" title="水資源物聯網（IoW）揚塵感測站最新值：PM10 高 → 海水混濁、垃圾多、色相偏黃綠；風速 → 洋流。PM10 感測器常回傳無效的哨兵值，此時海況以預設 40 μg/m³ 示意、歷史播放改用風速">
+          揚塵 · {dust.county} {dust.n} 站 · PM10 {dust.pm10 != null ? dust.pm10.toFixed(1) + ' μg/m³' : '無效'}
           {dust.wind != null && <> · 風 {dust.wind.toFixed(1)} m/s</>}
+          {dust.rh != null && <> · 濕度 {dust.rh.toFixed(0)}%</>}
         </div>
       )}
       {moonLine && <div className="gov-metrics gov-moon" title="潮汐是月亮的引力：背景月亮的盈虧與位置對應當日月齡與時刻">月亮 · {moonLine}</div>}
@@ -147,8 +149,8 @@ export default function DataCard() {
             </button>
           )}
           {opt.kind === 'dust' && (dustSpec
-            ? <button className="gov-apply gov-series" onClick={playDust} disabled={recMode !== 'idle'} title="播放 CI 累積的揚塵歷史（PM10 / 風速）：每一步＝一次 3 小時取樣">▶ 播放揚塵歷史 {dustSpec.points.length} 筆</button>
-            : <p className="hint gov-wait">揚塵歷史累積中（{(gov.dust && gov.dust.history ? gov.dust.history.length : 0)} 筆）：資料來源只提供「最新值」，排程每 3 小時累積一筆，累積 2 筆後即可播放。</p>)}
+            ? <button className="gov-apply gov-series" onClick={playDust} disabled={recMode !== 'idle'} title={`播放 CI 累積的揚塵歷史（${dustSpec.label}）：每一步＝一次 3 小時取樣${dustSpec.label === '風速' ? '；PM10 感測器目前無效，改以風速驅動洋流與海水混濁' : ''}`}>▶ 播放揚塵歷史（{dustSpec.label}）{dustSpec.points.length} 筆</button>
+            : <p className="hint gov-wait">揚塵歷史累積中（{dustHistN} 筆有效）：資料來源只提供「最新值」，排程每 3 小時累積一筆，累積 2 筆有效資料後即可播放（PM10 無效時改用風速）。</p>)}
           {opt.kind === 'moon' && moonSpec && (
             <button className="gov-apply gov-series" onClick={playMoon} disabled={recMode !== 'idle'}
                     title="CWA 月出月沒表：每一步＝一天；月亮依真實月出 / 中天 / 月沒時刻與方位在天空移動，中天越高海水越高（示意）">
