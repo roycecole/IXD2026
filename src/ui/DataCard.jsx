@@ -125,15 +125,6 @@ function SurveyCard({ kind, opt }) {
   )
 }
 
-// 驅動海況的是環境部觀測時，「靜態」的海況（套用此海況 / 換選項）也用觀測的最新 PM2.5：選項本身的 params 是模型的最新值（資料端算的）
-function applyAirStatic() {
-  const st = useStore.getState(), g = st.gov
-  if (!g || !g.air || resolveAirSource(g.air, g.airDrive || 'auto') !== 'obs') return
-  const spec = seriesFromAir(g.air, undefined, { source: 'obs' })
-  const last = spec && spec.points[spec.points.length - 1]
-  if (last) st.applyParams(airMapping(last.v))
-}
-
 export default function DataCard() {
   const t = useT()   // 訂閱語系：describe.js / moon.js 等純函式讀「當下語系」，切換時本元件要重繪
   const gov = useStore((s) => s.gov)
@@ -209,10 +200,10 @@ export default function DataCard() {
     <div className="gov-card">
       <div className="gov-title">{t('今日海況')} <span className="dim">· {nameText(gov.sourceShort)}</span></div>
       {gov.weather && <div className="gov-metrics">{weatherText(gov.weather.weather)} · {gov.weather.airTemp}°C · {t('風 {n} m/s', { n: gov.weather.windSpeed })}</div>}
-      <select className="gov-select" value={govOptionId || ''} onChange={(e) => { const id = e.target.value; setGovOption(id); const o2 = gov.options.find((x) => x.id === id); if (o2 && o2.kind === 'air') applyAirStatic() }} aria-label={t('選擇海況資料')}>
+      <select className="gov-select" value={govOptionId || ''} onChange={(e) => setGovOption(e.target.value)} aria-label={t('選擇海況資料')}>
         {gov.options.map((o) => <option key={o.id} value={o.id}>{optionLabel(o, t, gov)}</option>)}
       </select>
-      <button className="gov-apply" onClick={() => { applyGov(); if (opt.kind === 'air') applyAirStatic() }}>{t('套用此海況')}</button>
+      <button className="gov-apply" onClick={() => applyGov()}>{t('套用此海況')}</button>
       {dust && (
         <div className="gov-metrics gov-dust" title={t('水資源物聯網（IoW）揚塵感測站最新值：PM10 高 → 海水混濁、垃圾多、色相偏黃綠；風速 → 洋流。PM10 感測器常回傳無效的哨兵值，此時海況以預設 40 μg/m³ 示意、歷史播放改用風速')}>
           {dustLine}

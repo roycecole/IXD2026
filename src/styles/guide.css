@@ -83,7 +83,8 @@
 .multi-guide-warn { margin: 0; font-size: 11.5px; line-height: 1.6; color: var(--amber); }
 
 /* ---------- 展場 QR：按 G 顯示導覽員 QR（60 秒後自動換回）---------- */
-.kiosk-qr.is-guide { border-color: var(--amber); background: rgba(24, 16, 6, .78); }
+.kiosk-qr.is-guide { border-color: var(--amber); background: rgba(24, 16, 6, .78); max-width: 174px; }   /* 174 = 156 畫布 + 16 內距 + 2 邊框：英文說明較長（'Guide QR · presenters only' / 'Back to the regular QR in 60 s'）時在盒內換行，不把盒子撐寬——撐寬會讓右緣往右移、蓋不到的字幕預留量就不夠（tour.css 的字幕預留量是照這個寬度算的） */
+.kiosk-qr.is-guide .kiosk-qr-cap, .kiosk-qr.is-guide .kiosk-qr-count { text-align: center; }
 .kiosk-qr.is-guide canvas { width: 156px; height: 156px; }
 .kiosk-qr.is-guide .kiosk-qr-cap { color: var(--amber); font-weight: 600; }
 .kiosk-qr.is-guide .kiosk-qr-count { color: var(--muted); font-family: var(--mono); }

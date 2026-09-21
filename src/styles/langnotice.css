@@ -1,0 +1,10 @@
+/* 語言鈕的載入 / 失敗提示（i18n/LangNotice.jsx）。主畫面 / 手機遙控頁 / 診斷頁共用，所以顏色都帶備用值（診斷頁沒有這些變數）。 */
+[data-k='lang'][aria-busy='true'], .remote-lang[aria-busy='true'], .diag-lang[aria-busy='true'] { opacity: 0.55; cursor: progress; }
+.lang-notice.is-sr {                       /* 載入中 / 平常：只給螢幕閱讀器（視覺上看不到） */
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+}
+.lang-notice.is-failed {                   /* 失敗：畫面上方置中的短暫提示（約 6 秒後由狀態歸零而消失）；不收指標，不擋操作 */
+  position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 70;
+  max-width: min(92vw, 520px); padding: 8px 14px; border-radius: 10px; text-align: center; font-size: 13px; line-height: 1.5;
+  color: var(--amber, #e6c07a); background: rgba(8, 12, 22, 0.94); border: 1px solid #6b5a2e; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45); pointer-events: none;
+}

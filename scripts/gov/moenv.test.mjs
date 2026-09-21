@@ -4,7 +4,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  MOENV_BASE, MOENV_CURRENT_ID, MOENV_HISTORY_ID, OBS_SOURCE, OBS_SOURCE_URL, OBS_LICENSE, OBS_MAX_KM, OBS_HISTORY_MAX, OBS_STALE_HOURS, OBS_PAGE_LIMIT,
+  MOENV_BASE, MOENV_CURRENT_ID, MOENV_HISTORY_ID, OBS_SOURCE, OBS_SOURCE_URL, OBS_LICENSE, OBS_MAX_KM, OBS_HISTORY_MAX, OBS_STALE_HOURS, OBS_FRESH_HOURS, OBS_PAGE_LIMIT,
   normalizeKey, maskKey, buildMoenvUrl, haversineKm, pmValue, aqiValue, windValue, obsTimeMs, extractRecords, readMoenvResponse,
   pickStation, filterStationRecords, buildObsHistory, mergeObsHistory, retainObs, fetchAirObs,
 } from './moenv.mjs'
@@ -187,6 +187,24 @@ test('pickStation：缺 siteid → id 為 null；欄位大小寫不拘（SiteNam
   assert.equal(pickStation([site({ sitename: 'A' }), site({ sitename: 'B' })], { lat: AIR_LAT, lon: AIR_LON }).name, 'A')
 })
 
+test('pickStation：最近的站「狀態非空、目前 PM2.5 卻是空的」（設備維護 / 停測中）→ 改選次近且有值的站；範圍內都沒有值 → 退回最近的有狀態測站；有值的最近站不受影響', () => {
+  const blank = (o = {}) => site({ status: '設備維護', 'pm2.5': '', ...o })
+  const maint = CURRENT.map((r) => (r.sitename === '麥寮' ? blank() : r))                          // 麥寮 4 km 停測；台西 11 km、崙背 12 km 有值
+  assert.equal(pickStation(maint, { lat: AIR_LAT, lon: AIR_LON }).name, '台西')
+  for (const bad of ['ND', 'NR', '-', '*', '12#', '   ', undefined]) {                                // 各種「無效」寫法都算沒有值
+    const one = CURRENT.map((r) => (r.sitename === '麥寮' ? blank({ 'pm2.5': bad }) : r))
+    assert.equal(pickStation(one, { lat: AIR_LAT, lon: AIR_LON }).name, '台西', String(bad))
+  }
+  const allBlank = CURRENT.map((r) => ({ ...r, status: r.sitename === '基隆' ? '' : '設備維護', 'pm2.5': '' }))
+  assert.equal(pickStation(allBlank, { lat: AIR_LAT, lon: AIR_LON }).name, '麥寮', '全部沒有值 → 最近的有狀態測站（新鮮度由 fetchAirObs 把關）')
+  assert.equal(pickStation(CURRENT, { lat: AIR_LAT, lon: AIR_LON }).name, '麥寮', '最近的站有值 → 不變')
+  const farValid = [blank(), site({ sitename: '斗六', siteid: '58', longitude: '120.541', latitude: '23.711' })]   // 有值的斗六 31 km > 25 km：不在範圍內 → 仍是（停測的）麥寮
+  assert.equal(pickStation(farValid, { lat: AIR_LAT, lon: AIR_LON }).name, '麥寮')
+  assert.equal(pickStation(farValid, { lat: AIR_LAT, lon: AIR_LON, maxKm: 35 }).name, '斗六', '放寬範圍後有值的斗六勝過停測的麥寮')
+  const tie = pickStation([blank({ sitename: 'A' }), site({ sitename: 'B' }), site({ sitename: 'C' })], { lat: AIR_LAT, lon: AIR_LON })
+  assert.equal(tie.name, 'B', '同距離：有值的先出現者')
+})
+
 // ================= 歷史過濾 / 組裝 =================
 test('filterStationRecords：有 siteid 就依 siteid（其他測站、同名不同 id 都排除）', () => {
   const recs = [MAILIAO(1), hist('61', '雲林（崙背）', '雲林縣', hourAgo(1), '9'), hist('99', '雲林（麥寮）', '雲林縣', hourAgo(1), '99')]   // 99：同名但不同 id
@@ -268,6 +286,22 @@ test('mergeObsHistory / retainObs：新蓋舊、缺欄位保留舊值、舊檔�
   assert.ok(retainObs(obs(iso(NOW + 60000)), NOW)); assert.equal(retainObs(obs(iso(NOW + 3600e3)), NOW), null)   // 時鐘超前 1 分鐘可、1 小時不行
   for (const bad of [undefined, null, 5, 'x', {}, obs('nope'), obs(h(1), { history: 'x' }), obs(h(1), { history: [] }), obs(h(1), { station: null }), obs(undefined)]) assert.equal(retainObs(bad, NOW), null, JSON.stringify(bad))
   const src = obs(h(1)); const before = structuredClone(src); retainObs(src, NOW); assert.deepEqual(src, before)
+})
+
+test('retainObs：fetchedAt 很新但「最新的有效 PM2.5 小時」超過期限（測站停測、一直抓到舊資料）→ 不保留；沒有任何有效 PM2.5 的小時 → 不保留；期限內照舊保留', () => {
+  const mk = (fetchedAt, history) => ({ source: OBS_SOURCE, station: { name: '麥寮', id: '60' }, fetchedAt, history })
+  const h = (n) => iso(NOW - n * HOUR)
+  const row = (hoursAgo, pm25 = 8) => ({ t: iso(hourAgo(hoursAgo)), pm25, pm10: null, aqi: null, wind: null })
+  assert.ok(retainObs(mk(h(1), [row(100), row(3)]), NOW), '最新有效小時 3 小時前 → 保留')
+  assert.equal(retainObs(mk(h(1), [row(100), row(60)]), NOW), null, '最新有效小時 60 小時前（> 48）→ 不保留，即使 fetchedAt 是 1 小時前')
+  assert.equal(retainObs(mk(h(1), [row(200), row(150)]), NOW), null)
+  assert.ok(retainObs(mk(h(1), [row(45)]), NOW), '45 小時前 ≤ 48 → 保留')
+  assert.equal(retainObs(mk(h(1), [row(49)]), NOW), null, '49 小時前 > 48 → 不保留')
+  assert.equal(retainObs(mk(h(1), [row(2, null), row(3, null)]), NOW), null, '只有 pm10 / aqi / wind、沒有 PM2.5 → 不保留（前端也不會用）')
+  const withPm10Newer = mk(h(1), [row(100), { t: iso(hourAgo(1)), pm25: null, pm10: 30, aqi: null, wind: null }])
+  assert.equal(retainObs(withPm10Newer, NOW), null, '最新一列沒有 PM2.5 → 往前找有效 PM2.5 的小時，那是 100 小時前')
+  assert.ok(retainObs(mk(h(1), [row(60)]), NOW, 72), 'maxHours 可調')
+  const src = mk(h(1), [row(60)]); const before = structuredClone(src); retainObs(src, NOW); assert.deepEqual(src, before, '不動原物件')
 })
 
 // ================= 整條管線（假伺服器）=================
@@ -413,6 +447,29 @@ test('fetchAirObs：obs 寫進 ocean.json 時 history 每列收成單行（AIR_I
   assert.deepEqual(JSON.parse(text), { air }); assert.ok(!text.includes(KEY))
 })
 
+test('fetchAirObs：最近的站停測多日（狀態「設備維護」、目前 PM2.5 空白，歷史只剩 100 小時以前的小時）→ 拒絕（stale），不會拿幾天前的觀測當現在；最新有效小時在 12 小時內仍可用', async () => {
+  const maint = (o = {}) => [site({ status: '設備維護', 'pm2.5': '', pm10: '', aqi: '', wind_speed: '', ...o })]      // 只有一站、停測：pickStation 退回它
+  const old100 = Array.from({ length: 20 }, (_, i) => MAILIAO(100 + i))                                              // 100–119 小時前
+  const e = await run(server({ current: maint(), history: old100 })).catch((x) => x)
+  assert.ok(e instanceof Error && /stale/.test(e.message) && /麥寮/.test(e.message), String(e && e.message))
+  assert.ok(!e.message.includes(KEY), '錯誤訊息不含金鑰'); assert.match(e.message, /latest PM2\.5 hour 2026-09-1\d/)
+  assert.ok(OBS_FRESH_HOURS === 12)
+  // 邊界：最新有效小時距 nowMs（21:30）恰好 12 小時以內 → 可用；超過 → 拒絕
+  const ok = await run(server({ current: maint(), history: [MAILIAO(11), MAILIAO(12)] }))                            // 10:00 / 09:00（NOW = 21:30 → 11.5 / 12.5 小時前）
+  assert.equal(ok.obs.history.length, 2); assert.equal(ok.obs.history.at(-1).t.slice(11, 13), '10')
+  await assert.rejects(run(server({ current: maint(), history: [MAILIAO(12), MAILIAO(13)] })), /stale/)              // 09:00 = 12.5 小時前
+  // 最新的小時只有 pm10 沒有 PM2.5（歷史列 PM2.5 無效）→ 看「有效 PM2.5」的最新小時，不是最新的一列
+  const pm10Only = [MAILIAO(1, ''), MAILIAO(2, ''), ...old100]
+  await assert.rejects(run(server({ current: maint(), history: pm10Only })), /stale/)
+  // 舊 obs 不能「救」過期的新抓結果（檢查在合併之前）：同一測站、舊歷史很新，新抓的卻過期 → 仍拒絕
+  const oldFresh = { ...oldObs(2), history: [{ t: iso(hourAgo(1)), pm25: 9, pm10: null, aqi: null, wind: null }] }
+  await assert.rejects(run(server({ current: maint(), history: old100 }), { old: oldFresh }), /stale/)
+  // 有另一個有值的站 → 不必走過期路徑（pickStation 已改選它）
+  const two = [site({ status: '設備維護', 'pm2.5': '' }), site({ sitename: '台西', siteid: '59', longitude: '120.202', latitude: '23.704' })]
+  const t2 = await run(server({ current: two, history: [hist('59', '雲林（台西）', '雲林縣', hourAgo(1), '18'), hist('59', '雲林（台西）', '雲林縣', hourAgo(0), '19')] }))
+  assert.equal(t2.stats.station, '台西'); assert.equal(t2.obs.station.id, '59'); assert.equal(t2.obs.history.at(-1).pm25, 21)   // 目前值那一筆（台西 21）併在最新一小時
+})
+
 // ================= refreshAirObs（fetch-ocean-data.mjs）=================
 const withEnv = async (val, fn) => {
   const saved = process.env.MOENV_KEY
@@ -488,4 +545,21 @@ test('說明文字：有 obs 才補的 source / mapping 句子（政府觀測與
   assert.equal(withoutObsMapping(withObs, true), withObs)                                                     // 有 obs → 保留
   assert.equal(withoutObsMapping(withoutObsMapping(withObs, false), false), appendParts('A · B', [AIR_MAPPING]))
   assert.equal(withoutObsMapping(undefined, false), undefined); assert.equal(withoutObsMapping('A · B', false), 'A · B')
+})
+
+test('refreshAirObs：最近的站停測多日（新鮮度檢查失敗）→ 有舊 obs 且 fetchedAt ≤ 48h、最新有效小時也在期限內 → kept；舊 obs 已超過 48h / 舊資料本身太舊 → dropped；沒有舊的 → none；訊息不含金鑰', async () => {
+  const stale = server({ current: [site({ status: '設備維護', 'pm2.5': '', pm10: '', aqi: '', wind_speed: '' })], history: Array.from({ length: 20 }, (_, i) => MAILIAO(100 + i)) })
+  const call = (cur, errs = []) => refreshAirObs(cur, NOW, { key: KEY, fetch: stale, retryOpts: FAST, log: () => {}, error: (m) => errs.push(m) })
+  const errs = []
+  const kept = await call({ air: { obs: oldObs(30) } }, errs)
+  assert.equal(kept.status, 'kept'); assert.equal(kept.obs.station.name, '麥寮'); assert.match(kept.error, /stale/)
+  assert.ok(errs.length === 1 && /keep old obs/.test(errs[0]) && !leak(errs) && !leak(kept.error), String(errs))
+  const dropped = await call({ air: { obs: oldObs(49) } })
+  assert.equal(dropped.status, 'dropped'); assert.equal(dropped.obs, null)
+  const none = await call({})
+  assert.equal(none.status, 'none'); assert.equal(none.obs, null); assert.match(none.error, /stale/)
+  // 舊 obs 的 fetchedAt 很新、但它裡面最新有效小時已經是好幾天前（前幾輪就一直在抓停測站的舊資料）→ 不保留，也就是不會把過期的觀測一路續命
+  const rotten = { ...oldObs(1), history: [{ t: iso(hourAgo(100)), pm25: 8, pm10: 9, aqi: 40, wind: 2 }, { t: iso(hourAgo(99)), pm25: 9, pm10: 9, aqi: 40, wind: 2 }] }
+  const r2 = await call({ air: { obs: rotten } })
+  assert.equal(r2.status, 'dropped'); assert.equal(r2.obs, null)
 })

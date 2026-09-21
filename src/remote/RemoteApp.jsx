@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { PEER_CONFIG } from '../lib/ice.js'
 import { askSensorPermission, startTilt, startShake } from '../lib/sensors.js'
-import { useT, useLocale, T, translate, toggleLocale } from '../i18n/index.js'
+import { useT, useLocale, useLocaleLoading, T, translate, toggleLocale } from '../i18n/index.js'
+import LangNotice from '../i18n/LangNotice.jsx'
 import { helloMsg, guideCmd, guideView, countdownView, reduceGuideMsg, GUIDE_HELLO_WAIT_MS } from '../lib/tourRemote.js'
 import { createRemoteLink } from '../lib/remoteReconnect.js'
 import { holdScreenAwake } from '../lib/wakeLockLite.js'
@@ -173,6 +174,7 @@ export function GuidePanel({ v, ok, cmd, t, at = 0, now, wake = '' }) {
       <div className="guide-now" aria-live="polite">
         {!ok ? <p className="guide-msg">{t('連線中斷 · 按鈕暫時無法使用')}</p>
           : v.noData ? <p className="guide-msg">{t('主畫面還沒載入海況資料')}</p>
+          : v.busy ? <p className="guide-msg">{t('等錄製 / 播放結束後才能導覽')}</p>
           : v.running ? (
             <>
               <div className="guide-stop">{stopName(v.stopId, v.index)}</div>
@@ -197,7 +199,8 @@ export function GuidePanel({ v, ok, cmd, t, at = 0, now, wake = '' }) {
       </div>
       <div className="guide-nav">
         <button className="guide-btn" onClick={() => cmd('prev')} disabled={!v.canNav}>{t('上一站')}</button>
-        <button className={'guide-btn' + (v.paused ? ' on' : '')} aria-pressed={v.paused} onClick={() => cmd(v.paused ? 'resume' : 'pause')} disabled={!v.canNav}>
+        {/* 暫停 / 繼續是「動作鈕」：可見文字會換（暫停 ⇄ 繼續），所以不設 aria-pressed（「繼續，已按下」在暫停中會被讀反）；目前是否暫停由上面 aria-live 區的「已暫停」念出 */}
+        <button className={'guide-btn' + (v.paused ? ' on' : '')} onClick={() => cmd(v.paused ? 'resume' : 'pause')} disabled={!v.canNav}>
           {v.paused ? t('繼續') : t('暫停')}
         </button>
         <button className="guide-btn" onClick={() => cmd('next')} disabled={!v.canNav}>{t('下一站')}</button>
@@ -226,6 +229,7 @@ export function GuidePanel({ v, ok, cmd, t, at = 0, now, wake = '' }) {
 export default function RemoteApp({ hostId, guide: guideToken = null }) {
   const t = useT()
   const locale = useLocale()
+  const langBusy = useLocaleLoading()   // 等英文字典時語言鈕顯示忙碌；失敗提示在 <LangNotice />
   const [status, setStatus] = useState(T('連線中…'))
   const [statusP, setStatusP] = useState(null)
   const [ok, setOk] = useState(false)
@@ -361,10 +365,11 @@ export default function RemoteApp({ hostId, guide: guideToken = null }) {
       <header className="remote-head">
         <div className="remote-toprow">
           <span className="remote-title">{t('MidiSea 遙控器')}</span>
-          <button className="remote-lang" onClick={toggleLocale} lang={locale === 'zh' ? 'en' : 'zh-Hant'}
+          <button className="remote-lang" onClick={toggleLocale} lang={locale === 'zh' ? 'en' : 'zh-Hant'} aria-busy={langBusy || undefined}
                   title={'Switch language / ' + translate('zh', '切換語言')} aria-label={locale === 'zh' ? 'Switch to English' : translate('zh', '切換為中文')}>
             {locale === 'zh' ? 'EN' : translate('zh', '中文')}
           </button>
+          <LangNotice />
         </div>
         <span className={'remote-status' + (ok ? ' ok' : '')}>{t(status, statusP)}</span>
         {!wrapPlay && roleLine}

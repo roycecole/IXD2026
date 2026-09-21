@@ -6,6 +6,7 @@ import assert from 'node:assert/strict'
 import { readFileSync, existsSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import config, { manualChunk, makeBuildId, buildInfo, versionPlugin, listCodeFiles } from '../vite.config.js'
 
 const nm = (p) => `/Users/x/IXD2026/node_modules/${p}`
@@ -64,6 +65,12 @@ test('makeBuildId：12 位小寫 hex；同一份程式碼（不論建置幾次�
     assert.equal(makeBuildId(f.root), id, '只換 public/data/ 下的資料 → id 不變（不重載）')
     f.put('src/lib/notes.md', '# 文件\n'); f.put('src/lib/a.test.mjs', 'test\n'); f.put('README.md', 'x\n')
     assert.equal(makeBuildId(f.root), id, '測試檔與文件不算程式碼')
+    f.put('src/lib/tourTestEnv.mjs', 'export const helper = 1\n')
+    assert.equal(makeBuildId(f.root), id, '測試專用的輔助檔（tourTestEnv.mjs，不會被打包）也不算——回歸：只改它會讓所有展場視窗白白重載')
+    f.put('src/lib/tourTestEnv.mjs', 'export const helper = 2 // 又改了一次\n'); f.put('src/services/tourTestEnv.mjs', 'x\n')
+    assert.equal(makeBuildId(f.root), id, '改它、或別的資料夾同名的輔助檔，id 都不變')
+    f.put('src/lib/tourTestEnvUtil.mjs', 'export const x = 1\n')
+    assert.notEqual(makeBuildId(f.root), id, '只有那一個檔名被排除：名字相近的檔案（可能是真的程式）仍算')
   } finally { f.done() }
 })
 
@@ -103,6 +110,15 @@ test('listCodeFiles（真實專案）：含 src / public 的程式與靜態檔�
   assert.ok(!files.some((f) => f.startsWith('public/data/')), '資料快照不算程式碼')
   assert.ok(!files.some((f) => /\.test\.[cm]?js$/.test(f)), '測試檔不算')
   assert.ok(!files.some((f) => /\.md$/.test(f)), '文件不算')
+  assert.ok(!files.includes('src/lib/tourTestEnv.mjs'), '測試專用的輔助檔不算（回歸：以前只擋 .test. 與 .md，它被算進 build id）')
+  // 通則：算進 build id 的 .mjs 必須真的被某個「非測試」的模組匯入（會被打包）；只被測試匯入的輔助檔不該讓 id 變——之後再加 fooTestEnv.mjs 之類的檔案會被這條抓到
+  const root = fileURLToPath(new URL('..', import.meta.url))
+  const nonTest = files.filter((f) => /\.(m?js|jsx)$/.test(f) && f.startsWith('src/'))
+  const codeText = nonTest.map((f) => { try { return readFileSync(join(root, f), 'utf8') } catch (e) { return '' } }).join('\n')
+  for (const m of files.filter((f) => f.startsWith('src/') && f.endsWith('.mjs'))) {
+    const base = m.split('/').pop().replace(/\.mjs$/, '')
+    assert.ok(new RegExp("from\\s+['\"][^'\"]*" + base + "(\\.mjs)?['\"]|import\\(['\"][^'\"]*" + base).test(codeText), `${m} 算進了 build id，但沒有任何非測試模組匯入它（是測試輔助檔？請加進 vite.config.js 的 SKIP_FILE）`)
+  }
   assert.ok(!files.some((f) => f.includes('\\')), 'POSIX 分隔')
   assert.deepEqual(files, [...files].sort())
   assert.match(makeBuildId(), /^[0-9a-f]{12}$/); assert.equal(makeBuildId(), makeBuildId(), '真實專案連算兩次相同')
@@ -206,7 +222,7 @@ test('manualChunks：src/i18n/en/*.js 與 src/i18n/en-all.js 歸 i18n-en；i18n 
 
 test('main.jsx 啟動流程：最前面就 bootLocale()（英文字典載入與路由 chunk 並行），第一次 render 等它（.then(mount, mount)：不論成功 / 逾時 / 失敗都 render），render 只出現在 mount 裡；不靜態載入字典', () => {
   const src = readFileSync(new URL('../src/main.jsx', import.meta.url), 'utf8')
-  assert.match(src, /import \{ t, bootLocale \} from '\.\/i18n\/index\.js'/)
+  assert.match(src, /import \{ t, bootLocale, prefetchEnglish \} from '\.\/i18n\/index\.js'/)
   const iBoot = src.indexOf('const localeReady = bootLocale()')
   assert.ok(iBoot > 0, '有 bootLocale() 啟動')
   assert.ok(iBoot < src.indexOf('const parseRemote') && iBoot < src.indexOf("lazy(() => import('./App.jsx'))"), 'bootLocale() 在路由設定之前（最前面就開始載入）')

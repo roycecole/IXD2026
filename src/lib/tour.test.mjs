@@ -20,7 +20,7 @@ import { makeNarrator, makeUnlockNarrator, withStorage } from './tourTestEnv.mjs
 import {
   buildTour, captionText, speedFor, tourTotalMs, createTourRunner, useTourStore, resolveAutoIdle, resolveSpeak, isAudienceSearch, resolveStopIndex,
   setAutoIdle, setSpeak, supportsNarration, captionNote, captionSpeech, setSpeakFromGesture,
-  MIN_SPEED, MAX_SPEED, TOUR_MS, PAUSE_SPEED, NARRATION_MAX_WAIT_MS, SPEAK_DEFAULT, AUTO_PAUSE_MAX_MS,
+  MIN_SPEED, MAX_SPEED, TOUR_MS, PAUSE_SPEED, NARRATION_MAX_WAIT_MS, NARRATION_NOTE_EXTRA_MAX_MS, narrationWaitMs, SPEAK_DEFAULT, AUTO_PAUSE_MAX_MS,
 } from './tour.js'
 
 const { dict } = await loadEnDict()
@@ -1206,6 +1206,59 @@ test('旁白：該站時間到、旁白還沒念完 → 延後換站（最多再
   assert.equal(h.runner.current().index, 2, '滿 6 秒不再等，換站')
 }))
 
+// 備註（導覽腳本）接在說明後面一起念，但站的停留時間只看說明：該站時間到、旁白還沒念完時，等待要隨備註的預估朗讀時間加長（有上限）
+test('narrationWaitMs：沒有備註 = 6 秒（與過去相同）；有備註 = 6 秒 + 字數 × 每字毫秒（zh 260 / en 75，與 narration.js 同一組），上限 +25 秒；壞輸入 = 6 秒', () => {
+  const stopWith = (note) => ({ caption: { key: 'air', p: note === undefined ? {} : { note } } })
+  assert.equal(narrationWaitMs(stopWith(undefined), 'zh'), NARRATION_MAX_WAIT_MS); assert.equal(narrationWaitMs(stopWith(''), 'zh'), NARRATION_MAX_WAIT_MS); assert.equal(narrationWaitMs(stopWith('   \n '), 'zh'), NARRATION_MAX_WAIT_MS)
+  assert.equal(narrationWaitMs(stopWith('三十字'.repeat(10)), 'zh'), NARRATION_MAX_WAIT_MS + 30 * 260)
+  assert.equal(narrationWaitMs(stopWith('a'.repeat(60)), 'en'), NARRATION_MAX_WAIT_MS + 60 * 75); assert.equal(narrationWaitMs(stopWith('a'.repeat(60)), 'en-US'), NARRATION_MAX_WAIT_MS + 60 * 75)
+  assert.equal(narrationWaitMs(stopWith('字'.repeat(120)), 'zh'), NARRATION_MAX_WAIT_MS + NARRATION_NOTE_EXTRA_MAX_MS, '120 字（上限）：加成封頂')
+  assert.equal(NARRATION_NOTE_EXTRA_MAX_MS, 25000)
+  for (const bad of [null, undefined, {}, { caption: null }, { caption: 'x' }, { caption: { key: 'air', p: { note: 5 } } }]) assert.equal(narrationWaitMs(bad, 'zh'), NARRATION_MAX_WAIT_MS, JSON.stringify(bad))
+  assert.equal(narrationWaitMs(stopWith('字'.repeat(10))), NARRATION_MAX_WAIT_MS + 10 * 260, '沒給語系 → 用目前語系（zh）')
+})
+
+test('旁白：站有備註 → 時間到之後等到備註念完（預估）為止，念完就換；沒有備註的站仍是最多 6 秒；上一個有備註的站不影響下一站', () => withSpeak(() => {
+  const NOTE = '字'.repeat(60)                                                          // 60 字 ≈ 15.6 秒的朗讀
+  const plan = { stops: [{ id: 'reservoir', note: NOTE }, { id: 'tide' }, { id: 'air', note: NOTE }] }
+  const wait = NARRATION_MAX_WAIT_MS + Math.min(NARRATION_NOTE_EXTRA_MAX_MS, 60 * 260)
+  const nar = makeNarrator()                                                            // 旁白永遠念不完（除非 finish）
+  const h = harness({ narrator: nar })
+  const dwell = (from) => { let n = 0; while (h.runner.current() && h.runner.current().index === from && n < 200000) { h.step(100); n += 100 } return n }   // 這一站待了多久（100ms 為單位，與 tick 對齊）
+  assert.equal(h.run({ opts: { plan } }), true); assert.equal(h.runner.current().index, 0)
+  assert.equal(dwell(0), TOUR_MS.reservoir + wait, '有備註：停留時間 + 6 秒 + 備註預估（舊做法只有 + 6 秒，備註念到一半被切斷）')
+  assert.equal(dwell(1), TOUR_MS.tide + NARRATION_MAX_WAIT_MS, '沒有備註的站：仍是最多再等 6 秒（等待長度由這一站決定，不沿用上一站的）')
+  assert.equal(h.runner.current().index, 2)
+  // 念完就換：有備註的站在等待中旁白結束 → 下一個 tick 換站（不必等滿）
+  h.step(TOUR_MS.air + 100); h.step(NARRATION_MAX_WAIT_MS + 1000)
+  assert.equal(h.runner.current().index, 2, '最後一站有備註：還在等')
+  nar.finish(); h.step(200)
+  assert.equal(h.runner.isRunning(), false, '旁白念完 → 導覽結束（最後一站之後）')
+}))
+
+test('旁白：備註很長（≥ 上限）→ 等待封頂在 6 秒 + 25 秒，不會無限等（旁白引擎卡住 / 一直在念也一樣）', () => withSpeak(() => {
+  const plan = { stops: [{ id: 'reservoir', note: '字'.repeat(120) }, { id: 'tide' }] }
+  const nar = makeNarrator()
+  const h = harness({ narrator: nar })
+  h.run({ opts: { plan } }); h.step(TOUR_MS.reservoir + 100)
+  h.step(NARRATION_MAX_WAIT_MS + NARRATION_NOTE_EXTRA_MAX_MS - 400); assert.equal(h.runner.current().index, 0)
+  h.step(500); assert.equal(h.runner.current().index, 1, '封頂後換站')
+}))
+
+test('旁白：有備註的站——等待中暫停 / 跳站照樣結束等待；沒開旁白時不等（備註不影響停留時間 durationMs）', () => withSpeak(() => {
+  const plan = { stops: [{ id: 'reservoir', note: '字'.repeat(60) }, { id: 'tide' }] }
+  const nar = makeNarrator()
+  const h = harness({ narrator: nar })
+  h.run({ opts: { plan } }); h.step(TOUR_MS.reservoir + 3000)
+  assert.equal(h.runner.current().index, 0); h.runner.goto(1); assert.equal(h.runner.current().index, 1, '跳站：結束等待')
+  const st = buildTour(mkGov(), { now: NOW, plan })
+  assert.equal(st[0].durationMs, TOUR_MS.reservoir, '備註不改站的停留時間（remote 倒數 / speedFor 都靠它）')
+  useTourStore.setState({ speak: false })
+  const h2 = harness({ narrator: makeNarrator() })
+  h2.run({ opts: { plan } }); h2.step(TOUR_MS.reservoir + 200)
+  assert.equal(h2.runner.current().index, 1, '沒開旁白：時間到就換，不因備註而等')
+}))
+
 test('旁白：等待中暫停 / 中止 / 跳站都會結束這段等待；暫停後繼續 = 重念並重新給 6 秒', () => withSpeak(() => {
   const nar = makeNarrator()
   const h = harness({ narrator: nar })
@@ -1483,6 +1536,19 @@ test('模型 vs 觀測：有觀測（airCompare 非 null）→ p.cmp = { bias, m
   assert.equal(zh.title, base.title); assert.equal(zh.body, base.body + '。與環境部麥寮站觀測相比，模型平均高估 8.2 μg/m³')
   assert.equal(en.title, baseEn.title); assert.equal(en.body, baseEn.body + '. Versus MOENV’s Mailiao station observations, the model overestimates by 8.2 μg/m³ on average')
   assert.ok(a.kind === 'series' && a.series === 'air' && a.optionId === 'air-yunlin', '其餘站欄位不變')
+})
+
+test('模型 vs 觀測：帶比較句的說明比 3 行的容量長很多（手機 12px 字、內寬 ≈ 312px：英文每行約 50 字、中文約 26 字）——所以 CSS 的 data-long="cmp" 在手機放寬到 ≥ 5 行（captionCss.test.mjs 守住）', () => {
+  const PER_LINE = { en: 50, zh: 26 }
+  for (const [bias, mae] of [[8.24, 9.11], [0.4, 12.5], [0.4, 4.24]]) {          // 高估 / 平均差很小但逐時落差大 / 大致吻合
+    for (const loc of ['zh', 'en']) {
+      const body = cap(airWith(cmpOf({ bias, mae })), loc).body
+      const lines = Math.ceil(Array.from(body).length / PER_LINE[loc])
+      assert.ok(lines >= 4, `${loc} ${bias}/${mae}：估計 ${lines} 行（${Array.from(body).length} 字）——3 行放不下，結論會被省略號吃掉`)
+    }
+  }
+  // 沒有比較句的英文說明（基準字幕）不需要放寬：與過去一樣走 LONG_BODY 的判斷，這裡只確認比較句確實讓它變長
+  assert.ok(cap(airWith(cmpOf()), 'en').body.length > cap(baseAir(), 'en').body.length + 60)
 })
 
 test('模型 vs 觀測：模型低估 → 「低估」（顯示正數）；|偏差| < 1 且逐時誤差不大 → 「大致吻合」；|偏差| < 1 但逐時誤差大 → 「平均差僅…但逐時落差明顯」（不說大致吻合）；結論與 airCompareVerdict 同一份說法', () => {

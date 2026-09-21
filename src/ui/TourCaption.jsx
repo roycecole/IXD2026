@@ -18,6 +18,7 @@ import '../styles/tourplan.css'
 // 空氣品質站字幕若帶了「模型 vs 環境部測站觀測」（caption.p.cmp），字幕下方附一行小字出處與授權（政府資料開放授權條款－第1版）。
 // 導覽腳本的備註（caption.p.note，導覽員輸入的原文、不翻譯）顯示在說明下方：較小字、另一種顏色、最多兩行（超出省略）；主視窗與觀眾視窗（經 mirror）都看得到。
 // 說明比平常長（例如空氣品質站多了「模型 vs 觀測」一句）時 data-long 讓說明放寬到 3 行，誠實的比較句才不會被省略號吃掉。
+// 帶了比較句的說明（cmp）標成 data-long="cmp"：桌面同樣 3 行，手機 / 橫放矮螢幕每行字少、英文要 4–6 行，CSS 再放寬到 6 行（比較結論「模型平均高估 / 低估 x μg/m³」在句尾，被吃掉就白加了）。
 // 淡入用 setTimeout（不是 rAF）：內嵌 / 背景面板的 rAF 會被節流。
 const stopDbl = (e) => e.stopPropagation()   // .canvas-wrap 的雙擊 = 切換演出模式：連點進度點不該把演出模式切掉
 
@@ -74,7 +75,7 @@ export default function TourCaption() {
           {paused && <span className="tour-paused">{t('已暫停')}</span>}
           <div className="tour-cap-text" role="status" aria-live="polite" aria-label={t('資料導覽字幕')}>
             <div className="tour-cap-title">{txt.title}</div>
-            <div className="tour-cap-body" data-long={txt.body.length > (locale === 'en' ? LONG_BODY.en : LONG_BODY.zh) ? 'true' : undefined}>{txt.body}</div>
+            <div className="tour-cap-body" data-long={cmpSrc ? 'cmp' : txt.body.length > (locale === 'en' ? LONG_BODY.en : LONG_BODY.zh) ? 'true' : undefined}>{txt.body}</div>
             {cmpSrc && <div className="tour-cap-src">{t('資料來源：環境部測站觀測（政府資料開放授權條款－第1版）')}</div>}
             {note && <div className="tour-cap-note">{note}</div>}
             <span className="tour-sr">{t('第 {n} / {total} 站', { n: view.index + 1, total: view.total })}</span>

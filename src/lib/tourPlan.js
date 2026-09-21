@@ -260,6 +260,16 @@ export function resolveInitialPlan({ search = '', lib = emptyStore() } = {}) {
 export const findPlan = (store, id) => (store && Array.isArray(store.plans) && typeof id === 'string' ? store.plans.find((p) => p.id === id) || null : null)
 const nextId = (store) => { for (let n = 1; ; n++) { const id = 'p' + n; if (!store.plans.some((p) => p.id === id)) return id } }
 
+// 「另存新腳本」沒打名字時的預設名稱：最小的 n，使 fmt(n)（呼叫端用「當下語系」的「腳本 n」）還沒被已存腳本用掉。
+// 以前用「目前份數 + 1」：存了「腳本 1」「腳本 2」、刪掉「腳本 1」後再存，會得到第二個「腳本 2」，下拉選單分不出誰是誰（id 是唯一的，名稱不是）。
+// 只管自動產生的預設名稱；使用者自己打的名字不做去重。已存腳本最多 5 份，迴圈一定會結束（保底 1000）。
+export function defaultPlanName(store, fmt) {
+  const used = new Set(store && Array.isArray(store.plans) ? store.plans.map((p) => (p && typeof p.name === 'string' ? p.name : '')) : [])
+  const f = typeof fmt === 'function' ? fmt : (n) => String(n)
+  for (let n = 1; n <= 1000; n++) { const name = f(n); if (!used.has(name)) return name }
+  return f(1)
+}
+
 // 以下都是不可變的操作：回傳新的 store，不改傳入的物件。
 export function savePlanAs(store, plan) {
   const p = normalizePlan(plan)

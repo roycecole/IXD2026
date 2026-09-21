@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { useT, T } from './i18n/index.js'
-import { NOTE_LIMITS, clampNote, clearNote, detectDeviceInfo, noteIsEmpty } from './lib/diagnosticsNote.js'
+import { NOTE_LIMITS, clampNote, clearNote, detectDeviceInfo, mergeDetected, noteIsEmpty } from './lib/diagnosticsNote.js'
 
 // 「裝置備註」（選填）：頁首與導引開始前各有一份（同一份狀態）。
 //   · 只有填了的欄位才會進報告，只在使用者按「複製報告 / 下載 JSON」時才產生；不上傳。草稿存在這台裝置的 localStorage（App 那邊負責存取）。
-//   · 「帶入偵測值」只在使用者按下時才呼叫 navigator.userAgentData.getHighEntropyValues（見 lib/diagnosticsNote.js）；失敗退回解析 UA。
+//   · 「帶入偵測值」只在使用者按下時才呼叫 navigator.userAgentData.getHighEntropyValues（見 lib/diagnosticsNote.js）；失敗退回解析 UA。合併規則見 mergeDetected：UA 推測只補空白欄位，不蓋掉已填的。
 //   note：{ model, os, browser, tester, memo }；setNote：React 的 setState（接受函式）。
 const FIELDS = [
   { id: 'model', label: T('裝置型號'), ph: 'iPhone 15 / Pixel 8 / MacBook Air' },
@@ -28,7 +28,7 @@ export default function DeviceNote({ note, setNote, env, defaultOpen = false, id
     if (!alive.current) return
     setBusy(false)
     if (!info || info.source === 'none') { setMsg(t('偵測不到裝置資訊，請手動填寫。')); return }
-    setNote((n) => clampNote({ ...n, model: info.model || n.model, os: info.os || n.os, browser: info.browser || n.browser }))
+    setNote((n) => mergeDetected(n, info))   // UA 推測只補空白欄位、不蓋掉使用者已填的；client-hints（精確）才覆寫
     setMsg(info.source === 'client-hints' ? t('已帶入偵測值（來自瀏覽器提供的裝置資訊），請確認是否正確。') : t('已帶入偵測值（由 UA 字串推測，型號常常抓不到），請確認並補上。'))
   }
   const clear = () => { clearNote(); setNote(clampNote({})); setMsg(t('已清除裝置備註。')) }

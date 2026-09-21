@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { useStore } from '../store/useStore.js'
+import { useStore, seriesMeta } from '../store/useStore.js'
 import { SCENES } from '../timeline/scenes.js'
 import { buildShareUrl, shareContextOf } from '../lib/share.js'
 import { captureCanvas, downloadBlob, shareSnapshot } from '../lib/capture.js'
@@ -9,8 +9,10 @@ import { audioToggle, audioState } from '../audio/engine.js'
 import { micToggle } from '../audio/mic.js'
 import { bleSupported } from '../lib/blemidi.js'
 import { describeBoard } from '../lib/describe.js'
+import { airSourceOf } from '../lib/series.js'
 import { LS, saveLS } from '../lib/persist.js'
-import { useT, useLocale, toggleLocale, translate } from '../i18n/index.js'
+import { useT, useLocale, useLocaleLoading, toggleLocale, translate } from '../i18n/index.js'
+import LangNotice from '../i18n/LangNotice.jsx'
 
 function fmt(t) {
   const m = Math.floor(t / 60), s = Math.floor(t % 60)
@@ -20,6 +22,7 @@ function fmt(t) {
 export default function TopBar({ onConnect, onBle, onInfo, onVK, vkOn, onMulti, multiOn, onAR, arOn, onDevices, devicesOn }) {
   const t = useT()
   const locale = useLocale()
+  const langBusy = useLocaleLoading()   // 等英文字典時語言鈕顯示忙碌（aria-busy + 變暗）；失敗提示在 <LangNotice />
   const rec = useStore((s) => s.rec)
   const midi = useStore((s) => s.midi)
   const startRecording = useStore((s) => s.startRecording)
@@ -95,7 +98,8 @@ export default function TopBar({ onConnect, onBle, onInfo, onVK, vkOn, onMulti, 
 
   const doShareImage = async () => {
     const st = useStore.getState()
-    const rows = describeBoard(st.gov, st.govOption())          // 分享圖帶上目前海況的資料列
+    const airDrive = st.rec.mode === 'playing' && seriesMeta.active && seriesMeta.kind === 'air' ? airSourceOf({ extra: seriesMeta.extra }) : undefined   // 與資料看板同一個判斷：播放中的空氣品質序列用哪個來源，分享圖就照實說
+    const rows = describeBoard(st.gov, st.govOption(), { airDrive })          // 分享圖帶上目前海況的資料列
     const url = buildShareUrl(st.params, shareContextOf(st, locale))   // 文案「我在 MidiSea 演了一片海 [網址]」的網址：帶目前視覺狀態與資料脈絡
     const r = await shareSnapshot({ lines: rows.slice(0, 3).map((x) => `${x.k}｜${x.v}`), ar: arContext(st.params), url }) // 實景時連真實背景一起輸出
     if (!r.ok) { flash(t('分享失敗：{why}', { why: r.why })); pushLog('out', t('分享星球失敗：{why}', { why: r.why })) }
@@ -157,8 +161,9 @@ export default function TopBar({ onConnect, onBle, onInfo, onVK, vkOn, onMulti, 
         </button>
         <button data-k="devices" className={'conn' + (devicesOn ? ' on' : '')} onClick={onDevices}
                 title={t('裝置：觀眾視窗、相機手勢、語音、觸覺、畫質、AR 桌面')}>{t('裝置')}</button>
-        <button data-k="lang" className="conn lang-btn" onClick={toggleLocale} lang={locale === 'zh' ? 'en' : 'zh-Hant'}
+        <button data-k="lang" className="conn lang-btn" onClick={toggleLocale} lang={locale === 'zh' ? 'en' : 'zh-Hant'} aria-busy={langBusy || undefined}
                 title={'Switch language / ' + translate('zh', '切換語言')} aria-label={locale === 'zh' ? 'Switch to English' : translate('zh', '切換為中文')}>{locale === 'zh' ? 'EN' : translate('zh', '中文')}</button>
+        <LangNotice />
       </div>
 
       <button className={'conn' + (midi.connected ? ' on' : '')} onClick={onConnect}>

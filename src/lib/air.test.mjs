@@ -486,6 +486,42 @@ test('store：playAir 依 gov.airDrive 選來源（沒設 = auto：有觀測就�
   } finally { S().stopPlayback(); assert.equal(getLocale(), 'zh') }
 })
 
+test('store.applyGov（air + obs）：驅動海況是觀測時，靜態海況（網址 ?o= / 首次到訪 / 資料卡選單與「套用此海況」都走它）用觀測的最新 PM2.5，資料看板的「映射」列與實際參數逐位相符；airDrive=model / 沒有 obs → 選項原本的 params', async () => {
+  const { useStore, seriesMeta } = await import('../store/useStore.js')
+  const S = () => useStore.getState()
+  const KEYS = ['clarity', 'trashCount', 'glow', 'hue']
+  const load = (gov) => { S().stopPlayback(); seriesMeta.active = false; useStore.setState({ log: [] }); S().setGov({ defaultOption: 'air-yunlin', ...gov }); S().applyParams({ clarity: 0.1, trashCount: 0.9, glow: 0.2, hue: 0.9 }); S().setGovOption('air-yunlin') }
+  const picked = () => Object.fromEntries(KEYS.map((k) => [k, S().params[k]]))
+  const want = (pm) => { const m = airMapping(pm); return Object.fromEntries(KEYS.map((k) => [k, m[k]])) }
+  const boardMapping = (gov) => describeBoard(gov, OPT, { now: new Date(2026, 8, 20, 12, 0) }).find((r) => r.k === '映射').v
+  const f2 = (n) => n.toFixed(2)
+  try {
+    // obs 可用、沒有偏好（auto）→ 觀測最新 PM2.5（orow(11, 40) → 40）；選項的 params 是模型最新值（0.54 / 0.35 / 0.52 / 0.43）
+    load(GOV_OBS)
+    assert.deepEqual(picked(), want(40)); assert.notEqual(S().params.clarity, OPT.params.clarity)
+    const p = S().params
+    assert.equal(boardMapping(S().gov), `PM2.5 ↑ → 海水清澈 ${f2(p.clarity)} · 垃圾 ${f2(p.trashCount)} · 輝光 ${f2(p.glow)}`, '看板的映射列 = 實際畫面的參數')
+    // 「套用此海況」（不換選項、只重套用）走同一條路
+    S().applyParams({ clarity: 0.1, trashCount: 0.9, glow: 0.2, hue: 0.9 }); S().applyGov(); assert.deepEqual(picked(), want(40))
+    // 顯式 obs 一樣；顯式 model → 選項原 params
+    load({ ...GOV_OBS, airDrive: 'obs' }); assert.deepEqual(picked(), want(40))
+    load({ ...GOV_OBS, airDrive: 'model' }); for (const k of ['clarity', 'trashCount', 'glow', 'hue']) assert.equal(S().params[k], OPT.params[k], k)
+    // 沒有 obs / 觀測不到 2 個有效小時 → 與過去相同（選項原 params）
+    load(GOV); for (const k of KEYS) assert.equal(S().params[k], OPT.params[k], k)
+    load({ ...GOV, air: { ...AIR, obs: { ...OBS, history: [orow(9, 8)] } } }); for (const k of KEYS) assert.equal(S().params[k], OPT.params[k], k)
+    // 不是空氣品質選項 → 不套用觀測（換去別的海況不會被空氣品質的觀測蓋掉）
+    const other = { id: 'zeng', name: '曾文水庫', kind: 'reservoir', level: 60, params: { clarity: 0.33, trashCount: 0.2, glow: 0.4, hue: 0.5, current: 0.3 } }
+    S().stopPlayback(); S().setGov({ defaultOption: 'zeng', ...GOV_OBS, options: [other, OPT] }); S().setGovOption('zeng')
+    for (const k of KEYS) assert.equal(S().params[k], other.params[k], k)
+    // 日誌只有「套用海況」一行（不新增行）、不含 undefined / NaN
+    // 分享圖（TopBar doShareImage）的資料列與資料看板同一個判斷：播放中的空氣品質序列用哪個來源，前 3 列就照實說
+    const top = readFileSync(new URL('../ui/TopBar.jsx', import.meta.url), 'utf8')
+    assert.match(top, /const airDrive = st\.rec\.mode === 'playing' && seriesMeta\.active && seriesMeta\.kind === 'air' \? airSourceOf\(\{ extra: seriesMeta\.extra \}\) : undefined/)
+    assert.match(top, /describeBoard\(st\.gov, st\.govOption\(\), \{ airDrive \}\)/)
+    load(GOV_OBS); const lines = S().log.map((l) => l.text).filter((x) => /套用海況|Applied/.test(x)); assert.equal(lines.length, 1); assert.ok(!/undefined|NaN/.test(lines[0]))
+  } finally { S().stopPlayback(); seriesMeta.active = false }
+})
+
 test('誠實（觀測並列）：模型序列 / 模型標籤 / 模型列的任何文字都沒有「政府觀測」（只有「非政府觀測」）也沒有「環境部」；觀測序列 / 標籤沒有「模型」；英文同理', () => {
   const m = sAir(AIR_WITH_OBS), o = sAir(AIR_WITH_OBS, undefined, { source: 'obs' })
   const modelZh = [m.name, ...m.points.map((p) => formatHud(m, p)), ...describeBoard({ ...GOV_OBS, airDrive: 'model' }, OPT).filter((r) => ['空氣品質', '來源', '映射', '驅動'].includes(r.k)).map((r) => r.v)].join('\n')

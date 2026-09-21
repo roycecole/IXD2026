@@ -156,6 +156,121 @@ test('setLocale：載入失敗 → 維持中文、不丟例外、console 記一�
   } finally { w.restore(); resetLocale() }
 })
 
+// ---- 英文載入失敗的畫面回饋（回歸：以前只有 console.warn，按 EN 沒有任何回應；語言鈕的忙碌狀態 useLocaleLoading 也沒有元件使用）----
+test('載入失敗的畫面提示：硬失敗 → failed = "reload"、逾時 → "retry"；新的嘗試開始 / 載入成功 → 歸零；提示約 FAIL_NOTICE_MS 後自己消失', async () => {
+  const w = muteWarn()
+  const realSet = globalThis.setTimeout, timers = []
+  const d = deferred(); let n = 0
+  try {
+    i18n.__setEnglishLoader(() => { n += 1; return n === 1 ? Promise.reject(new Error('Failed to fetch dynamically imported module')) : n === 2 ? Promise.reject(new Error('load timeout')) : d.promise.then(() => { registerEn({ '載入失敗提示測試字串': 'Failure test' }) }) })
+    assert.equal(i18n.getLocaleFailed(), false)
+    globalThis.setTimeout = (fn, ms) => { const h = { fn, ms, unref() {} }; timers.push(h); return h }
+    setLocale('en'); await tick()
+    assert.equal(getLocale(), 'zh'); assert.equal(i18n.isLocaleLoading(), false)
+    assert.equal(i18n.getLocaleFailed(), 'reload', '硬失敗（chunk 404 / 離線 / 連線重設）→ 之後要整頁重新載入')
+    assert.equal(timers.at(-1).ms, i18n.FAIL_NOTICE_MS); assert.equal(i18n.FAIL_NOTICE_MS, 6000)
+    timers.at(-1).fn(); assert.equal(i18n.getLocaleFailed(), false, '提示過了 FAIL_NOTICE_MS 自己消失')
+    setLocale('en'); await tick()                                              // 第二次：逾時
+    assert.equal(i18n.getLocaleFailed(), 'retry', '逾時（還在跑、只是太慢）→ 再按一次重試就好，不必重新載入')
+    const p = i18n.setLocaleAsync('en')                                        // 第三次：新的嘗試一開始，舊的失敗提示就收掉
+    assert.equal(i18n.isLocaleLoading(), true); assert.equal(i18n.getLocaleFailed(), false, '新的嘗試開始 → 提示收掉')
+    d.resolve(); await p
+    assert.equal(getLocale(), 'en'); assert.equal(i18n.getLocaleFailed(), false, '成功 → 沒有失敗狀態')
+  } finally { globalThis.setTimeout = realSet; w.restore(); resetLocale() }
+})
+
+test('toggleLocale：上一次是「硬失敗」而字典仍未載入 → 再按 EN 存好偏好與網址的 ?lang=en 後整頁重新載入（不再對同一個 import() 網址重試）；逾時失敗 / 載入中 / 已載入 / 切回中文都不重新載入', async () => {
+  const w = muteWarn(); const realSet = globalThis.setTimeout
+  const hadLoc = Object.getOwnPropertyDescriptor(globalThis, 'location'), hadHist = Object.getOwnPropertyDescriptor(globalThis, 'history'), hadLs = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  const store = new Map(); let reloads = 0
+  Object.defineProperty(globalThis, 'location', { value: new URL('https://midisea.example/?kiosk=1&lang=zh#x'), configurable: true, writable: true })
+  Object.defineProperty(globalThis, 'history', { value: { state: null, replaceState(st, _t, url) { globalThis.location = new URL(String(url)) } }, configurable: true, writable: true })
+  Object.defineProperty(globalThis, 'localStorage', { value: { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => { store.set(k, String(v)) }, removeItem: (k) => { store.delete(k) } }, configurable: true, writable: true })
+  const restoreReload = i18n.__setReloader(() => { reloads += 1 })
+  const d = deferred(); let loads = 0; const errs = [new Error('Failed to fetch dynamically imported module'), new Error('load timeout')]
+  try {
+    globalThis.setTimeout = (fn, ms) => ({ fn, ms, unref() {} })
+    i18n.__setEnglishLoader(() => { loads += 1; return loads <= 2 ? Promise.reject(errs[loads - 1]) : d.promise.then(() => { registerEn({ '重新載入測試字串': 'Reload test' }) }) })
+    assert.equal(i18n.toggleLocale(), 'zh'); await tick()                        // 第一次按：正常嘗試 → 硬失敗
+    assert.equal(loads, 1); assert.equal(i18n.getLocaleFailed(), 'reload'); assert.equal(reloads, 0)
+    assert.equal(i18n.toggleLocale(), 'zh')                                       // 第二次按：整頁重新載入，不再 import
+    assert.equal(reloads, 1, '整頁重新載入'); assert.equal(loads, 1, '沒有再對同一個網址重試')
+    assert.equal(JSON.parse(store.get('ixd2026.lang')), 'en', '偏好先存好：重載後開機就載入英文')
+    assert.equal(globalThis.location.searchParams.get('lang'), 'en', '網址的 ?lang= 也改成 en（?lang= 優先於偏好，不改的話重載又被蓋回中文）')
+    assert.equal(globalThis.location.searchParams.get('kiosk'), '1', '其他參數不動'); assert.equal(globalThis.location.hash, '#x')
+    // 網址原本沒有 ?lang= 也補上（隱私模式存不了偏好時才有效）
+    globalThis.location = new URL('https://midisea.example/?kiosk=1'); i18n.toggleLocale()
+    assert.equal(reloads, 2); assert.equal(globalThis.location.searchParams.get('lang'), 'en')
+    // 逾時失敗：再按 = 重試（不重新載入）
+    i18n.__resetLocaleFailure(); reloads = 0; loads = 1
+    i18n.toggleLocale(); await tick()                                             // loads = 2 → 逾時
+    assert.equal(loads, 2); assert.equal(i18n.getLocaleFailed(), 'retry')
+    i18n.toggleLocale()                                                           // 第三次嘗試：載入中
+    assert.equal(loads, 3); assert.equal(reloads, 0, '逾時後再按是重試，不是重新載入'); assert.equal(i18n.isLocaleLoading(), true)
+    i18n.toggleLocale(); assert.equal(loads, 3); assert.equal(reloads, 0, '載入中連按：共用同一次載入')
+    d.resolve(); await tick(); assert.equal(getLocale(), 'en'); assert.equal(i18n.getLocaleFailed(), false)
+    // 已載入：切回中文 / 再切英文都不會重新載入
+    i18n.toggleLocale(); assert.equal(getLocale(), 'zh'); i18n.toggleLocale(); assert.equal(getLocale(), 'en'); assert.equal(reloads, 0)
+  } finally {
+    restoreReload(); globalThis.setTimeout = realSet; w.restore(); resetLocale()
+    for (const [k, dsc] of [['location', hadLoc], ['history', hadHist], ['localStorage', hadLs]]) { if (dsc) Object.defineProperty(globalThis, k, dsc); else delete globalThis[k] }
+  }
+})
+
+test('toggleLocale：沒有 reloader（Node / 沒有載入器）→ 硬失敗後再按仍是重試（行為與以前相同）；reloader 丟例外 → 不外洩、退回重試', async () => {
+  const w = muteWarn(); let loads = 0
+  i18n.__setEnglishLoader(() => { loads += 1; return Promise.reject(new Error('chunk 404')) })
+  const restore = i18n.__setReloader(null)
+  try {
+    i18n.toggleLocale(); await tick(); assert.equal(i18n.getLocaleFailed(), 'reload')
+    i18n.toggleLocale(); await tick(); assert.equal(loads, 2, '沒有 reloader：照舊重試')
+    restore(); const r2 = i18n.__setReloader(() => { throw new Error('reload blocked') })
+    try { assert.doesNotThrow(() => i18n.toggleLocale()); await tick(); assert.equal(loads, 3, 'reloader 丟例外 → 退回重試') } finally { r2() }
+  } finally { w.restore(); resetLocale() }
+})
+
+test('prefetchEnglish（Node 沒有載入器）：什麼都不做；語言鈕 / 提示元件接上了 useLocaleLoading / useLocaleFailed（三處語言鈕都有 aria-busy 與 <LangNotice />）', () => {
+  assert.equal(i18n.prefetchEnglish(), false)
+  const read = (p) => readFileSync(new URL(p, import.meta.url), 'utf8')
+  for (const f of ['../ui/TopBar.jsx', '../remote/RemoteApp.jsx', '../DiagnosticsApp.jsx']) {
+    const code = read(f).replace(/\/\/.*$/gm, '')
+    assert.match(code, /useLocaleLoading\(\)/, `${f} 用 useLocaleLoading（語言鈕忙碌狀態）`)
+    assert.match(code, /aria-busy=\{langBusy \|\| undefined\}/, `${f} 的語言鈕有 aria-busy`)
+    assert.match(code, /<LangNotice \/>/, `${f} 渲染失敗提示`)
+    assert.match(code, /import LangNotice from '(\.\.\/|\.\/)i18n\/LangNotice\.jsx'/, f)
+  }
+  // 預抓：main.jsx 在畫面出來之後呼叫；手機遙控頁與診斷頁不預抓；requestIdleCallback 以 window 的方法呼叫（不存成變數再呼叫：瀏覽器的 Illegal invocation）
+  const main = read('../main.jsx').replace(/\/\/.*$/gm, '')
+  assert.match(main, /import \{ t, bootLocale, prefetchEnglish \} from '\.\/i18n\/index\.js'/)
+  assert.match(main, /if \(!remoteMatch && !diagnosticsMode\) localeReady\.then\(\(\) => \{ prefetchEnglish\(\) \}, \(\) => \{\}\)/)
+  const idx = read('./index.js').replace(/\/\/.*$/gm, '')
+  assert.match(idx, /window\.requestIdleCallback\(fn, \{ timeout: 10000 \}\)/); assert.doesNotMatch(idx, /=\s*window\.requestIdleCallback\b(?!\()/)
+  assert.match(idx, /navigator\.connection[^;]*;[^;]*saveData/)
+  // Service Worker 不必改：預抓的請求經過 SW 既有的 stale-while-revalidate 進快取（離線也切得過去）；/version.json 仍不攔截
+  const sw = read('../../public/sw.js')
+  assert.match(sw, /if \(url\.pathname\.endsWith\('\/version\.json'\)\) return/); assert.match(sw, /const CACHE = 'midisea-v7'/)
+  const notice = read('./LangNotice.jsx')
+  assert.match(notice, /useLocaleLoading\(\)/); assert.match(notice, /useLocaleFailed\(\)/); assert.match(notice, /role="status" aria-live="polite"/)
+  const css = read('../styles/langnotice.css')
+  assert.match(css, /aria-busy='true'/); assert.match(css, /\.lang-notice\.is-failed \{[^}]*position: fixed/); assert.match(css, /pointer-events: none/)
+  // 提示文字：失敗的是英文字典，所以是「英文 / 中文」雙語字面量（英文半句在程式裡、中文走 translate('zh')）
+  const html = renderNotice({ failed: 'reload' }); assert.match(html, /English failed to load — press EN again to reload the page \/ 英文載入失敗，再按一次「EN」會重新整理頁面/)
+  assert.match(renderNotice({ failed: 'retry' }), /English failed to load — press EN again to retry \/ 英文載入失敗，再按一次「EN」重試/)
+  assert.match(renderNotice({ loading: true }), /is-sr[^>]*>Loading English… \/ 載入英文中…</)
+  assert.doesNotMatch(renderNotice({}), /English/); assert.match(renderNotice({}), /role="status"/, '沒事時仍渲染同一個 live region（內容是空的）')
+})
+
+// 用 SSR 渲染 LangNotice：先把忙碌 / 失敗狀態真的設進 store，再 liveSsr（zustand 的 SSR 讀的是 store 建立當下的初始狀態物件，見 tourTestEnv.liveSsr）
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { importJsx, liveSsr } from '../lib/tourTestEnv.mjs'
+const { default: LangNotice } = await importJsx(new URL('./LangNotice.jsx', import.meta.url).href)
+function renderNotice({ loading = false, failed = false }) {
+  const set = (st) => { i18n.useLocaleBusyStore.setState(st); liveSsr(i18n.useLocaleBusyStore) }
+  set({ loading, failed })
+  try { return renderToStaticMarkup(createElement(LangNotice)) } finally { set({ loading: false, failed: false }) }
+}
+
 test('setLocaleAsync：回傳 Promise<切換後生效的語系>（永遠 resolve）；Node 預設也是', async () => {
   assert.equal(await i18n.setLocaleAsync('en'), 'en'); assert.equal(await i18n.setLocaleAsync('zh'), 'zh'); assert.equal(await i18n.setLocaleAsync('fr'), 'zh')
   const w = muteWarn()

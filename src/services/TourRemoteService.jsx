@@ -14,13 +14,15 @@ import { createGuideHost, createGuideSync, countdownExtra } from '../lib/tourRem
 import { tourRunner } from './tourCore.js'
 import { t } from '../i18n/index.js'
 
-// 狀態酬載的附加欄位：旁白偏好 / 這台有沒有語音合成 / 海況資料是否已載入（遙控頁據此顯示「開始導覽」能不能按）
+// 狀態酬載的附加欄位：旁白偏好 / 這台有沒有語音合成 / 海況資料是否已載入 / 主畫面是否正在錄製或播放（busy：導覽開不起來，tour.js 的 start 會回 false）（遙控頁據此顯示「開始導覽」能不能按與原因）
 //   + 倒數（選用）：這一站還剩多少毫秒（tourRunner.remainingMs()，暫停時凍結）與這一站的總長（current().stop.durationMs）——遙控頁據此顯示倒數與進度條。
 //   不另外開計時器：換站 / 暫停 / 繼續時 tourStore 一變就推（createGuideSync），其餘由每 2 秒的補推帶著。沒在跑 / 取不到 → 不帶這兩個欄位（舊版遙控頁 / 舊版主畫面的行為不變）。
 function guideExtra() {
   let ready = false
   try { const g = useStore.getState().gov; ready = !!(g && Array.isArray(g.options) && g.options.length) } catch (e) { /* 取不到就當沒資料 */ }
-  return { speak: !!useTourStore.getState().speak, canSpeak: supportsNarration(), ready, ...countdownExtra(tourRunner) }   // countdownExtra 取不到 / 丟例外都回 {}：不能影響導覽狀態推送
+  let busy = false
+  try { busy = useStore.getState().rec.mode !== 'idle' } catch (e) { /* 取不到就當沒有在忙 */ }
+  return { speak: !!useTourStore.getState().speak, canSpeak: supportsNarration(), ready, busy, ...countdownExtra(tourRunner) }   // countdownExtra 取不到 / 丟例外都回 {}：不能影響導覽狀態推送
 }
 
 function guideLog(event, n) {

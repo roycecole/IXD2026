@@ -38,6 +38,10 @@ export default {
   // 語言鈕（永遠以固定語言顯示；這裡只是讓字典完整）
   '切換語言': 'Switch language',
   '切換為中文': 'Switch to Chinese',
+  // 語言鈕旁的載入 / 失敗提示（i18n/LangNotice.jsx：英文半句寫在程式裡——失敗的正是英文字典；這裡的英文值只是給 i18n 檢查與英文模式下的同一句）
+  '載入英文中…': 'Loading English…',
+  '英文載入失敗，再按一次「EN」重試': 'English failed to load — press EN again to retry',
+  '英文載入失敗，再按一次「EN」會重新整理頁面': 'English failed to load — press EN again to reload the page',
   '中文': 'Chinese',
   '連線 MIDI': 'Connect MIDI',
   '● MIDI 已連線': '● MIDI on',

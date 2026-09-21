@@ -82,6 +82,7 @@ export function OpsLightBody({ defaultPinned = false }) {
   const rootRef = useRef(null)
   const hideTimer = useRef(0)
   const popId = useId()
+  const open = hover || focus || pinned            // 三種展開方式（滑鼠 hover / 鍵盤聚焦 / 點一下釘住）任一個成立就展開：Esc 也要對三種都有效（必須在 hooks 區、早於 !show 的 return）
 
   // 崩潰紀錄：狀態有變（新增事件）就重讀，另外每 30 秒重讀一次（讓「近 10 分鐘」過期、也撈到合併重複錯誤的最新時間）
   useEffect(() => {
@@ -98,16 +99,22 @@ export function OpsLightBody({ defaultPinned = false }) {
     return () => { if (window.__opsStatus === opsStatus) delete window.__opsStatus }
   }, [])
 
-  // 點一下釘住：一段時間沒動作 / 點別處 / Esc → 收起
+  // 點一下釘住：一段時間沒動作 / 點別處 → 收起
   useEffect(() => {
     if (!pinned) return undefined
     const id = setTimeout(() => setPinned(false), PIN_MS)
     const onDown = (e) => { if (rootRef.current && !rootRef.current.contains(e.target)) setPinned(false) }
-    const onKey = (e) => { if (e.key === 'Escape') setPinned(false) }
     document.addEventListener('pointerdown', onDown, true)
-    document.addEventListener('keydown', onKey)
-    return () => { clearTimeout(id); document.removeEventListener('pointerdown', onDown, true); document.removeEventListener('keydown', onKey) }
+    return () => { clearTimeout(id); document.removeEventListener('pointerdown', onDown, true) }
   }, [pinned])
+  // Esc：展開中（不論是 hover / 鍵盤聚焦 / 釘住）都收起。以前只在「釘住」時才登記監聽，Tab 聚焦展開後按 Esc 沒有反應（與檔頭與 README 寫的不符）。
+  // 不 stopPropagation：導覽（tourCore）與彈窗自己的 Esc 處理照常運作；焦點留在圓點上，下次聚焦（Tab 離開再回來）才會再展開。
+  useEffect(() => {
+    if (!open) return undefined
+    const onKey = (e) => { if (e.key === 'Escape') { clearTimeout(hideTimer.current); setHover(false); setFocus(false); setPinned(false) } }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [open])
   useEffect(() => () => clearTimeout(hideTimer.current), [])
   // 偏好被關掉 / 指示燈隱藏時，展開狀態一併重置（不留下卡住的 hover / 釘住）
   useEffect(() => { if (!show) { setHover(false); setFocus(false); setPinned(false) } }, [show])
@@ -118,7 +125,6 @@ export function OpsLightBody({ defaultPinned = false }) {
   const line = texts.slice(0, 2).join(' · ')
   const levelLabel = t(LEVEL_LABEL[derived.level])
   const label = derived.level === 'ok' ? levelLabel : `${levelLabel} · ${texts.join(' · ')}`
-  const open = hover || focus || pinned
   const canOpenOps = open ? !!findOpsButton() : false
 
   const mouseLike = (e) => e.pointerType === 'mouse' || e.pointerType === 'pen' || e.pointerType === undefined   // 觸控點一下會補發 hover：只認滑鼠 / 手寫筆

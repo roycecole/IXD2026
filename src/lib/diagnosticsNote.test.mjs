@@ -4,7 +4,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  NOTE_FIELDS, NOTE_LIMITS, EMPTY_NOTE, NOTE_KEY, cleanField, clampNote, noteForReport, noteIsEmpty, loadNote, saveNote, clearNote, parseUserAgent, fromClientHints, detectDeviceInfo,
+  NOTE_FIELDS, NOTE_LIMITS, EMPTY_NOTE, NOTE_KEY, cleanField, clampNote, noteForReport, noteIsEmpty, loadNote, saveNote, clearNote, parseUserAgent, fromClientHints, detectDeviceInfo, mergeDetected,
 } from './diagnosticsNote.js'
 import { LS } from './persist.js'
 
@@ -185,4 +185,41 @@ test('帶入偵測值：只在呼叫時才用 getHighEntropyValues（以方法�
   assert.equal((await detectDeviceInfo({ nav: boom })).source, 'none', '存取 navigator 任何屬性都丟例外也不崩')
   // 預設計時器（沒注入 setTimeout）：以方法呼叫全域計時器，也不丟例外
   assert.equal((await detectDeviceInfo({ nav: nav0 })).source, 'client-hints')
+})
+
+test('mergeDetected：UA 推測（粗略）只補空白欄位、不蓋掉使用者已填的；client-hints（精確）才覆寫；none / 沒有 info → 原樣；tester / memo 一律不碰；永遠是完整五個欄位', () => {
+  const typed = { model: 'iPhone 15 Pro', os: 'iOS 17.5.1', browser: 'Safari 17.5 (Web Inspector)', tester: 'Cas', memo: '在展場測' }
+  const ua = { model: 'iPhone', os: 'iOS 17.5', browser: 'Safari 17.5', source: 'ua' }
+  // 回歸：UA 推測的粗略值（型號只有 iPhone）不能把精確的手填值蓋掉
+  assert.deepEqual(mergeDetected(typed, ua), typed)
+  // 只補空白 / 全空白字串的欄位；已填的維持
+  assert.deepEqual(mergeDetected({ ...typed, os: '', browser: '   ' }, ua), { ...typed, os: 'iOS 17.5', browser: 'Safari 17.5' })
+  assert.deepEqual(mergeDetected({}, ua), { model: 'iPhone', os: 'iOS 17.5', browser: 'Safari 17.5', tester: '', memo: '' })
+  assert.deepEqual(mergeDetected(null, ua), mergeDetected({}, ua)); assert.deepEqual(mergeDetected(undefined, { ...ua, model: '' }), { ...EMPTY_NOTE, os: 'iOS 17.5', browser: 'Safari 17.5' })
+  // UA 沒偵測到的欄位（空字串）不會把已填的清掉
+  assert.deepEqual(mergeDetected(typed, { model: '', os: '', browser: '', source: 'ua' }), typed)
+  // client-hints：有偵測到的欄位就覆寫（讓過期的草稿被刷新）；沒偵測到的欄位保留
+  const ch = { model: 'iPhone 15 Pro Max', os: 'iOS 18.1', browser: 'Safari 18.1', source: 'client-hints' }
+  assert.deepEqual(mergeDetected(typed, ch), { ...typed, model: 'iPhone 15 Pro Max', os: 'iOS 18.1', browser: 'Safari 18.1' })
+  assert.deepEqual(mergeDetected(typed, { ...ch, model: '' }), { ...typed, os: 'iOS 18.1', browser: 'Safari 18.1' })
+  // none / 壞 info：原樣（clampNote 過）
+  for (const bad of [null, undefined, 'x', 5, { source: 'none', model: 'X', os: 'Y', browser: 'Z' }]) assert.deepEqual(mergeDetected(typed, bad), typed, JSON.stringify(bad))
+  // tester / memo 不受偵測影響（即使 info 帶了這些欄位）
+  assert.deepEqual(mergeDetected({ tester: 'A', memo: 'B' }, { ...ch, tester: 'evil', memo: 'evil' }), { model: 'iPhone 15 Pro Max', os: 'iOS 18.1', browser: 'Safari 18.1', tester: 'A', memo: 'B' })
+  // 結果一律經 clampNote：多餘欄位丟掉、超長截斷、控制字元清掉
+  assert.deepEqual(Object.keys(mergeDetected({ extra: 1 }, ua)).sort(), [...NOTE_FIELDS].sort())
+  assert.equal(Array.from(mergeDetected({}, { model: 'x'.repeat(200), source: 'client-hints' }).model).length, NOTE_LIMITS.model)
+  // 不改原物件
+  const src0 = { ...typed, os: '' }, before = structuredClone(src0); mergeDetected(src0, ua); assert.deepEqual(src0, before)
+  // 與 detectDeviceInfo 的實際輸出接得起來（UA 路徑：source 'ua'）
+  const real = parseUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1')
+  assert.deepEqual(mergeDetected(typed, { ...real, source: 'ua' }), typed)
+})
+
+test('DiagnosticsNote.jsx：「帶入偵測值」用 mergeDetected 合併（不再自己 `info.x || n.x` 覆寫）', async () => {
+  const { readFileSync } = await import('node:fs')
+  const code = readFileSync(new URL('../DiagnosticsNote.jsx', import.meta.url), 'utf8')
+  assert.match(code, /setNote\(\(n\) => mergeDetected\(n, info\)\)/)
+  assert.doesNotMatch(code.replace(/\/\/.*$/gm, ''), /info\.model \|\| n\.model|info\.os \|\| n\.os|info\.browser \|\| n\.browser/)
+  assert.match(code, /import \{[^}]*mergeDetected[^}]*\} from '\.\/lib\/diagnosticsNote\.js'/)
 })

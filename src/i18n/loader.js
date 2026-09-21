@@ -11,6 +11,8 @@
 // 瀏覽器專屬陷阱（過去踩過的 Illegal invocation）：這裡不把 setTimeout / clearTimeout 存成物件屬性再脫離 globalThis 呼叫——預設計時器一律是「呼叫當下才去 globalThis 上取」的箭頭函式。
 
 export const LOAD_STATE = Object.freeze({ IDLE: 'idle', LOADING: 'loading', READY: 'ready', FAILED: 'failed' })
+// 看門狗判定「載入逾時」時 reject 的錯誤訊息（呼叫端據此分辨「還在跑、只是太慢」與「硬失敗」——後者的 import() 失敗在瀏覽器的模組表裡可能被快取，同一個網址再 import 一次不會重新請求）
+export const LOAD_TIMEOUT_MESSAGE = 'load timeout'
 
 // 預設計時器：每次呼叫才讀 globalThis（不存原生函式參考）。注入的計時器（測試用假物件，或 globalThis 本身）
 // 一律「在原物件上」呼叫（保留 this）——瀏覽器的原生 setTimeout 若被掛到別的物件上再呼叫會丟 Illegal invocation。
@@ -66,7 +68,7 @@ export function createLoader({ load = null, onReady = null, onError = null, atte
         safe(onError, e)
         reject(e)
       }
-      if (finitePositive(attemptTimeoutMs)) timer = tm.setTimeout(() => { timer = null; fail(new Error('load timeout')) }, attemptTimeoutMs)
+      if (finitePositive(attemptTimeoutMs)) timer = tm.setTimeout(() => { timer = null; fail(new Error(LOAD_TIMEOUT_MESSAGE)) }, attemptTimeoutMs)
       let r
       try { r = Promise.resolve(load()) } catch (e) { r = Promise.reject(e) }
       r.then(ok, fail)
@@ -161,3 +163,31 @@ export function createLocaleSwitcher({ getLocale, applyLocale, english, initialD
 
   return { request, boot, getDesired: () => desired, isPending: () => pending > 0 }
 }
+
+// ---------------------------------------------------------------------------------------------
+// prefetchWhenIdle：畫面出來之後，趁閒置把英文字典預抓進來（記憶體 + Service Worker 快取）。
+//   為什麼：英文字典是動態載入的 chunk；中文使用者按 EN 時才第一次去抓，展場網路不穩 / 離線（PWA 離線可開）時會失敗，而 SW 沒有預先快取它。
+//   預抓之後：(1) 按 EN 是同步生效，不再依賴當下的網路；(2) chunk 經過 SW 的 stale-while-revalidate 進了快取，離線也切得過去。
+//   環境全部注入（Node 可測）：
+//     english   { isReady(), load() }（createLoader 的回傳值）
+//     idle(fn)  排一個「閒置時執行」的回呼（瀏覽器：requestIdleCallback；沒有就用計時器）——不是函式 → 不預抓
+//     saveData() / online()  省流量模式（回 true → 不預抓）/ 是否在線（回 false → 不預抓；回傳 undefined = 不知道，照抓）
+//   預抓失敗完全靜默（使用者沒有要求它）：不記錄成「載入失敗」——之後使用者按 EN 才是真正的嘗試（失敗會有畫面提示）。
+//   回傳：有排程 = true；不需要 / 不能排 = false。任何環境的例外都不外洩。
+// ---------------------------------------------------------------------------------------------
+export function prefetchWhenIdle(deps) {
+  try {
+    const { english, idle, saveData, online } = deps || {}
+    if (!english || typeof english.isReady !== 'function' || typeof english.load !== 'function') return false
+    if (english.isReady() || typeof idle !== 'function') return false
+    if (call(saveData) === true) return false
+    idle(() => {
+      try {
+        if (english.isReady() || call(online) === false) return
+        Promise.resolve(english.load()).then(() => {}, () => {})
+      } catch (e) { /* 預抓出錯不影響任何事 */ }
+    })
+    return true
+  } catch (e) { return false }
+}
+const call = (fn) => { if (typeof fn !== 'function') return undefined; try { return fn() } catch (e) { return undefined } }

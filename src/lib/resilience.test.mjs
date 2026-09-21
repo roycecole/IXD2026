@@ -1400,6 +1400,25 @@ test('ResilienceService：閒置狀態讀 activity / store.rec / 導覽 / 彈窗
     assert.equal(g.__fake.store.params.seaLevel, 0.3)
     mod.applyGovData({ fetchedAt: 'x', defaultOption: 'feitsui', options: [{ id: 'feitsui' }] })
     assert.equal(g.__fake.sets.at(-1).govOptionId, 'feitsui', '選的海況在新資料裡不見了 → 用預設')
+    // 資料更新保留 gov.airDrive（資料卡的「驅動海況的資料」，只存在記憶體的 gov 物件上）：新抓的 ocean.json 一定沒有它，整份換掉會把導覽員的選擇悄悄洗回 auto
+    const fresh = () => ({ fetchedAt: '2026-09-21T03:00', defaultOption: 'feitsui', options: [{ id: 'feitsui' }, { id: 'zengwen' }] })
+    for (const keep of ['model', 'obs']) {
+      g.__fake.store.gov = { fetchedAt: 'old', airDrive: keep }
+      const nx = fresh(); Object.freeze(nx)                                    // 新資料可能是共用 / 凍結的（pendingData 會重試）：不可就地改
+      mod.applyGovData(nx)
+      const cur = g.__fake.sets.at(-1)
+      assert.equal(cur.gov.airDrive, keep, `沿用 ${keep}`)
+      assert.equal(cur.gov.fetchedAt, '2026-09-21T03:00'); assert.equal(cur.gov.options, nx.options, '其餘欄位照新資料')
+      assert.notEqual(cur.gov, nx); assert.equal('airDrive' in nx, false, '新資料本身沒被改到')
+    }
+    for (const bad of [undefined, null, 'auto', 'OBS', 1, {}]) {
+      g.__fake.store.gov = { fetchedAt: 'old', airDrive: bad }
+      const nx = fresh(); mod.applyGovData(nx)
+      assert.equal(g.__fake.sets.at(-1).gov, nx, `舊值 ${JSON.stringify(bad)} 不合法 → 不沿用，gov 就是新資料（同一個參考）`)
+    }
+    g.__fake.store.gov = null; { const nx = fresh(); mod.applyGovData(nx); assert.equal(g.__fake.sets.at(-1).gov, nx, '原本沒有 gov（還沒載入）→ 新資料照原樣') }
+    g.__fake.store.gov = { fetchedAt: 'old', airDrive: 'model' }
+    mod.applyGovData(null); assert.equal(g.__fake.sets.at(-1).gov, null, '新資料壞掉（null）不丟例外、不硬展開')
   } finally {
     if (hadDoc) Object.defineProperty(g, 'document', hadDoc); else delete g.document
     delete g.__fake
@@ -1882,6 +1901,17 @@ test('OpsLight 的接線與輕量：ResilienceService 以 portal 掛到 body（�
     const code = read(f)
     assert.doesNotMatch(code, /^import .*(OpsLight|OpsSection|remoteDispatch|ResilienceService)/m, f)
   }
+  // Esc 對三種展開方式（hover / 鍵盤聚焦 / 釘住）都有效：監聽依 open（三者任一），不能只在 pinned 時才登記（回歸：Tab 聚焦展開後按 Esc 沒有反應）
+  const code = light.replace(/\/\/.*$/gm, '')
+  assert.match(code, /const open = hover \|\| focus \|\| pinned/); assert.equal(code.match(/const open = /g).length, 1, 'open 只宣告一次（在 hooks 區，早於 !show 的 return）')
+  assert.ok(code.indexOf('const open = ') < code.indexOf('if (!show) return null'), 'open 在 !show 的 return 之前（hooks 順序不能因 show 而變）')
+  const escEffect = /useEffect\(\(\) => \{\s*if \(!open\) return undefined\s*const onKey = \(e\) => \{ if \(e\.key === 'Escape'\) \{([^}]*)\} \}\s*document\.addEventListener\('keydown', onKey\)\s*return \(\) => document\.removeEventListener\('keydown', onKey\)\s*\}, \[open\]\)/.exec(code)
+  assert.ok(escEffect, 'Esc 的 effect 依 [open]')
+  for (const f of ['setHover(false)', 'setFocus(false)', 'setPinned(false)', 'clearTimeout(hideTimer.current)']) assert.ok(escEffect[1].includes(f), f)
+  assert.doesNotMatch(escEffect[0], /stopPropagation|preventDefault/, '不攔截 Esc：導覽 / 彈窗自己的 Esc 處理照常')
+  const pinEffect = code.slice(code.indexOf('if (!pinned) return undefined'), code.indexOf('}, [pinned])'))
+  assert.doesNotMatch(pinEffect, /keydown|Escape/, '釘住的 effect 不再管 Esc（改由 open 的 effect）')
+  assert.match(light, /Esc 收起|Esc\b/)
   const css = read('../styles/resilience.css')
   assert.match(css, /\.res-light \{[^}]*position: fixed[^}]*z-index: 35[^}]*pointer-events: none/, '外框不收指標；z-index 低於彈窗（.modal-backdrop = 40）')
   assert.match(css, /\.res-light \.res-light-dot \{[^}]*pointer-events: auto/); assert.match(css, /clip-path: polygon/, '紅 = 三角形（形狀不只靠顏色）'); assert.match(css, /border: 1px dashed/, '灰 = 虛線圓')

@@ -27,6 +27,7 @@ export const OBS_STALE_HOURS = 48     // 抓不到新的時，舊觀測最多再
 export const OBS_PAGE_LIMIT = 1000    // API 預設 / 單次上限
 export const OBS_MAX_PAGES = 14       // 歷史分頁最多幾頁（1000 筆 ≈ 12 小時 × 全國 80+ 站：120 小時約 10–11 頁）
 export const OBS_MAX_AGE_HOURS = 240  // 歷史裡比這更舊的小時不收（例如 API 忽略 sort、回的是很久以前的資料）
+export const OBS_FRESH_HOURS = 12      // 抓到的觀測，最新的有效 PM2.5 小時必須在 12 小時內：測站停測多日（歷史還留著舊小時）時，不能把幾天前的觀測當「現在」用
 export const OBS_TIMEOUT_MS = 60000
 const HOUR = 3600 * 1000
 
@@ -122,11 +123,13 @@ export async function readMoenvResponse(res, url, key = '') {
 // ---- 測站選擇 ----
 /**
  * 目前值資料集的記錄 → 距離模型格點最近、且在 maxKm 內、狀態非空的測站；沒有 → null。不硬編碼任何測站 / siteid。
+ * 優先挑「目前 PM2.5 有效」的測站：最近的站掛著「設備維護」之類非空狀態、PM2.5 卻是空的（停測中）時，改用次近且有值的站；
+ * 範圍內沒有任何一站有有效的目前 PM2.5，才退回最近的有狀態測站（是否過期由 fetchAirObs 的新鮮度檢查決定）。
  * 回傳 { name, county, id, lat, lon, km }（id 為字串或 null；km 一位小數）。
  */
 export function pickStation(records, { lat, lon, maxKm = OBS_MAX_KM } = {}) {
   if (!Array.isArray(records) || !Number.isFinite(lat) || !Number.isFinite(lon)) return null
-  let best = null
+  let bestValid = null, bestAny = null   // bestValid：目前 PM2.5 有效的最近站；bestAny：不論有沒有值的最近站（退路）
   for (const rec of records) {
     const r = lower(rec)
     const name = text(first(r, 'sitename', 'site_name'))
@@ -134,10 +137,13 @@ export function pickStation(records, { lat, lon, maxKm = OBS_MAX_KM } = {}) {
     const la = toNum(first(r, 'latitude', 'lat')), lo = toNum(first(r, 'longitude', 'lon', 'lng'))
     if (!name || !status || la === null || lo === null || la < -90 || la > 90 || lo < -180 || lo > 180) continue   // 狀態空白 = 停測 / 維護中
     const km = haversineKm(lat, lon, la, lo)
-    if (km > maxKm || (best && km >= best.km)) continue
+    if (km > maxKm) continue
     const id = text(first(r, 'siteid', 'site_id'))
-    best = { name, county: text(r.county), id: id || null, lat: la, lon: lo, km }
+    const cand = { name, county: text(r.county), id: id || null, lat: la, lon: lo, km }
+    if (!bestAny || km < bestAny.km) bestAny = cand                                                      // 同距離取先出現的
+    if (pmValue(first(r, 'pm2.5', 'pm25', 'pm2_5')) !== null && (!bestValid || km < bestValid.km)) bestValid = cand
   }
+  const best = bestValid || bestAny
   return best && { ...best, km: round(best.km, 1) }
 }
 
@@ -205,8 +211,20 @@ export function mergeObsHistory(oldHistory, newHistory, opts = {}) {
   return buildObsHistory([...older, ...newer], opts)
 }
 
+// history（已整理過、遞增）裡最新一個有效 PM2.5 的小時（絕對毫秒）；沒有 → null
+function newestPmHourMs(history) {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const x = history[i]
+    if (x && typeof x.pm25 === 'number') { const ms = obsTimeMs(x.t); if (ms !== null) return ms }
+  }
+  return null
+}
+
 // ---- 舊 obs 的去留 ----
-/** 舊 obs 是否還能用：形狀對、fetchedAt 距今 ≤ 48 小時（時鐘稍微超前 5 分鐘內也算）。不能用 → null。回傳的是複本（歷史清掉壞列與未來小時）。 */
+/**
+ * 舊 obs 是否還能用：形狀對、fetchedAt 距今 ≤ 48 小時（時鐘稍微超前 5 分鐘內也算），而且「最新的有效 PM2.5 小時」距今也 ≤ 48 小時
+ * （fetchedAt 只代表「什麼時候抓的」，不代表資料有多新——測站停測時抓得再勤，資料還是幾天前的）。不能用 → null。回傳的是複本（歷史清掉壞列與未來小時）。
+ */
 export function retainObs(old, nowMs, maxHours = OBS_STALE_HOURS) {
   if (!old || typeof old !== 'object' || !Array.isArray(old.history) || !old.station || typeof old.station !== 'object') return null
   const at = obsTimeMs(old.fetchedAt)
@@ -214,7 +232,10 @@ export function retainObs(old, nowMs, maxHours = OBS_STALE_HOURS) {
   const age = nowMs - at
   if (age > maxHours * HOUR || age < -5 * 60000) return null
   const history = mergeObsHistory(old.history, [], { nowMs })
-  return history.length ? { ...old, history } : null
+  if (!history.length) return null
+  const newest = newestPmHourMs(history)
+  if (newest === null || nowMs - newest > maxHours * HOUR) return null
+  return { ...old, history }
 }
 
 // ---- 整條管線 ----
@@ -281,6 +302,10 @@ export async function fetchAirObs(opts = {}) {
   if (!rows.length) { usedFallback = true; if (!failedHistory) log('moenv history 中沒有這個測站的有效逐時資料，改只用目前值 1 筆') }
   let history = buildObsHistory([...rows, ...filterStationRecords(current, station)], { nowMs, maxAgeMs: OBS_MAX_AGE_HOURS * HOUR })
   if (!history.length) throw new Error(`no valid MOENV observation rows for ${station.name}`)
+  // 新鮮度：最新的「有效 PM2.5」小時要在 OBS_FRESH_HOURS 內。測站停測多日、但狀態欄仍非空（例如「設備維護」）時，歷史資料集裡還留著幾天前的小時，
+  // 歷史 / 舊 obs 合併之後看起來像有資料；不擋的話「自動」會拿幾天前的觀測驅動海況、當成現在。丟錯 → refreshAirObs 走「保留舊 obs（≤ 48h）/ 移除」的既有路徑。檢查放在與舊歷史合併之前：舊資料只會更舊，不能讓它「救」過期的新抓結果。
+  const newestPm = newestPmHourMs(history)
+  if (newestPm === null || nowMs - newestPm > OBS_FRESH_HOURS * HOUR) throw new Error(`MOENV observation for ${station.name} is stale (latest PM2.5 hour ${newestPm === null ? 'none' : toTaipeiIso(newestPm)})`)
 
   // 3) 同一測站 → 與舊歷史合併（一次抓不滿 120 小時時逐次累積）；換了測站就不併
   const old = opts.old && opts.old.station && (opts.old.station.id != null ? String(opts.old.station.id) === String(station.id) : opts.old.station.name === station.name) ? opts.old : null

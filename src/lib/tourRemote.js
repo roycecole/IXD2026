@@ -6,9 +6,9 @@
 //   遙控頁 → host   { t:'hello', guide: token }                      連線 open 後送一次（網址 #remote=<id>&guide=<token> 帶來的 token）
 //                   { t:'g', c:'next'|'prev'|'pause'|'resume'|'toggle'|'start'|'stop'|'goto'|'speak', i?, v? }
 //   host → 遙控頁   { t:'guide', ok:true|false }                     hello 的回覆；ok:false 時該連線仍是一般遙控
-//                   { t:'tour', running, paused, index, total, stops:[{ id, note? }], speak?, canSpeak?, ready? }
-//                                                                    導覽狀態（狀態變化即推、每 2 秒補一次）。speak / canSpeak / ready 是選用的附加欄位
-//                                                                    （旁白偏好 / 這台有沒有語音合成 / 主畫面海況資料是否已載入，遙控頁據此顯示「開始導覽」是否可按）。
+//                   { t:'tour', running, paused, index, total, stops:[{ id, note? }], speak?, canSpeak?, ready?, busy? }
+//                                                                    導覽狀態（狀態變化即推、每 2 秒補一次）。speak / canSpeak / ready / busy 是選用的附加欄位
+//                                                                    （旁白偏好 / 這台有沒有語音合成 / 主畫面海況資料是否已載入 / 主畫面正在錄製或播放，遙控頁據此顯示「開始導覽」是否可按）。
 //                                                                    另有選用欄位 remainMs（這一站還剩多少毫秒；暫停時凍結）與 stopMs（這一站的總長）：遙控頁據此顯示倒數與細進度條
 //                                                                    （收到後以本機時鐘內插，每次收到新推送就重新校準）。不必每次都推：換站 / 暫停 / 繼續時即時推，其餘靠每 2 秒的補推帶著。
 //                                                                    舊版主畫面沒有這兩個欄位 → 遙控頁整段倒數 / 下一站預告不顯示，其餘照舊；舊版遙控頁不認得就忽略（往前 / 往後相容）。
@@ -119,7 +119,7 @@ export function parseGuideCmd(m) {
 }
 
 // 狀態酬載：由 useTourStore 的狀態（running / paused / index / total / stopList）組出。
-// stops 只有站 id（白名單）與備註（stopList[i].caption.p.note；沒有 / 空白就省略，最多 120 字）。extra：{ speak, canSpeak, ready }（只收 boolean）
+// stops 只有站 id（白名單）與備註（stopList[i].caption.p.note；沒有 / 空白就省略，最多 120 字）。extra：{ speak, canSpeak, ready, busy }（只收 boolean；busy = 主畫面正在錄製 / 播放，導覽開不起來）
 //   與 { remainMs, stopMs }（只收有限的非負數、只在導覽進行中才帶；remainMs = 這一站還剩多少毫秒、暫停時是凍結的值；stopMs = 這一站的總長，> 0 才帶）。
 export function tourPayload(state, extra) {
   const s = isObj(state) ? state : {}
@@ -133,7 +133,7 @@ export function tourPayload(state, extra) {
   })
   const m = { t: 'tour', running: !!s.running, paused: !!s.paused, index: clampInt(s.index, GUIDE_MAX_STOPS), total: clampInt(s.total, GUIDE_MAX_STOPS), stops }
   const e = isObj(extra) ? extra : {}
-  for (const k of ['speak', 'canSpeak', 'ready']) if (typeof e[k] === 'boolean') m[k] = e[k]
+  for (const k of ['speak', 'canSpeak', 'ready', 'busy']) if (typeof e[k] === 'boolean') m[k] = e[k]
   if (m.running) {
     const rem = msField(e.remainMs), tot = msField(e.stopMs)
     if (rem !== null) m.remainMs = rem
@@ -172,7 +172,7 @@ export function parseTourPayload(m) {
     stops.push(stop)
   }
   const out = { running: m.running, paused: m.paused, index: m.index, total: m.total, stops }
-  for (const k of ['speak', 'canSpeak', 'ready']) if (typeof m[k] === 'boolean') out[k] = m[k]
+  for (const k of ['speak', 'canSpeak', 'ready', 'busy']) if (typeof m[k] === 'boolean') out[k] = m[k]
   if (out.running) {                                   // 倒數欄位是選用的：缺 / 格式不對就當沒有（不因此拒絕整則狀態）
     const rem = msField(m.remainMs), tot = msField(m.stopMs)
     if (rem !== null) out.remainMs = rem
@@ -219,6 +219,7 @@ export function guideView(tour, connected) {
   const index = tr ? tr.index : 0
   const cur = running ? stops[index] || null : null
   const noData = !!tr && !running && tr.ready === false        // 主畫面還沒載入海況資料（沒有東西可導覽）
+  const busy = !!tr && !running && tr.busy === true            // 主畫面正在錄製 / 播放（導覽開不起來：tour.js 的 start 會回 false）——按鈕停用並說明，不要讓手機上的按鈕看起來能按、按了卻沒有任何回應
   const timed = running && typeof tr.remainMs === 'number' && Number.isFinite(tr.remainMs)
   return {
     connected: on,
@@ -226,13 +227,14 @@ export function guideView(tour, connected) {
     running,
     paused: running && !!tr.paused,
     noData,
+    busy,
     index,
     total: tr ? tr.total : 0,
     stopId: cur ? cur.id : null,
     note: cur && cur.note ? cur.note : '',
     chips: running ? stops.map((s, i) => ({ i, id: s.id, current: i === index })) : [],
     canNav: on && running,                                      // 上一站 / 暫停 / 下一站
-    canStart: on && !!tr && !running && !noData,
+    canStart: on && !!tr && !running && !noData && !busy,
     canStop: on && running,
     showSpeak: !!tr && tr.canSpeak !== false,
     speak: !!(tr && tr.speak),
@@ -273,7 +275,7 @@ export function isGuideQrKey(e, { typing = noop, inModal = noop } = {}) {
 //   now           () => 毫秒時鐘（節流用；預設 Date.now）
 //   getToken      () => 目前 host session 的 guide token（multiplayer.js 的 multiState.guide）
 //   setSpeak      (bool) => 設定旁白偏好（tour.js 的 setSpeak）
-//   getExtra      () => { speak, canSpeak, ready }（狀態酬載的附加欄位）
+//   getExtra      () => { speak, canSpeak, ready, busy }（狀態酬載的附加欄位）
 //   log           (event, n) => 記錄：'join' / 'leave'（n = 目前導覽員連線數）
 // 連線物件（PeerJS DataConnection 或假的）需有 send(m)；open === false 視為已關閉。
 export function createGuideHost(deps = {}) {

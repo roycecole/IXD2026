@@ -281,7 +281,14 @@ export function createGestureTracker(opts = {}) {
 // 不算揮手：緩慢移動（位移只在 windowMs 內累計）、握拳 / 其他手形（張開比例不足）、只有手指在動（手掌中心不動）、來回抖動（路徑長 / 淨位移過大）、
 //   偵測跳號（單幀跳動過大 = 換手 / 誤偵測）、進出畫面（手掌貼到影像邊緣的幀不算；手出現後要先在畫面內穩定 entryMs；終點不能貼邊）。
 // 遲滯（一次揮動不會連發兩次、收手不會被當成反方向）：觸發後冷卻 cooldownMs，且冷卻後手掌還要「幾乎不動」settleMs 才重新就緒（就緒時視窗重新累計，不看收手的動作）。
+// 幀間隔自適應：hands.js 的偵測節流是「開始到開始 = 推論時間 d + min(100, 2d)」，老 iPad / 退回 CPU 的手機 d ≈ 50–100ms 時幀間隔 150–200ms（門檻是以 67ms 調的）——
+//   固定的 windowMs（4 幀要塞進 500ms）與 settleMs（冷卻後要有 ≥ 2 幀在 150ms 內）會讓揮手只能用一次就再也重新就緒不了，或根本觸發不了，畫面卻一直寫「已就緒」。
+//   所以量測有效幀的間隔（指數平均 frameDt），時間類的門檻取 max(固定值, 倍數 × frameDt)、單幀跳動上限依間隔放寬；間隔 ≤ 100ms（正常裝置）時全部維持原值、行為不變。
 const PALM_POINTS = [LM.WRIST, LM.INDEX_MCP, LM.MIDDLE_MCP, LM.RING_MCP, LM.PINKY_MCP]
+const DT_ALPHA = 0.3        // 幀間隔指數平均的新值權重
+const GAP_K = 2.2           // 漏偵測一兩幀（間隔 ≤ GAP_K × 平均幀間隔）不算「手消失過」
+const WIN_K = 3.2           // 統計視窗至少涵蓋這麼多個幀間隔（minSamples = 4 幀 = 3 個間隔，留 0.2 的餘裕）
+const SETTLE_K = 1.5        // 冷卻後的「幾乎不動」檢查窗至少涵蓋 1.5 個幀間隔（含 2 幀）
 
 // 手掌中心與外框（正規化影像座標；只用手腕與四指根，手指再怎麼動都不影響）
 export function palmBox(lm) {
@@ -293,15 +300,16 @@ export function palmBox(lm) {
 // update(landmarks|null, nowMs, { aspect（影像寬 / 高，預設 1）, mirror（預設 true：原始影像是面對鏡頭的人，見上方說明）}) → { event: null | 'left' | 'right' }
 export function createWaveDetector(opts = {}) {
   const C = { ...WAVE, ...opts }
-  let samples = []            // { t, x（使用者視角的 x：往右變大）, y, open }，只留最近 windowMs
+  let samples = []            // { t, x（使用者視角的 x：往右變大）, y, open }，只留最近 windowMs（幀間隔很長時放寬，見 winMs）
   let trackStart = null       // 這一段連續軌跡的起點時間
   let lastSeen = null
+  let frameDt = 0             // 有效幀間隔的指數平均（ms）；0 = 還沒量到。reset() 會歸零（換來源 / 重啟後重新量）
   let lastFire = null         // 冷卻跨越重置仍有效（不能靠遮住鏡頭再露出來繞過冷卻）
   let armed = true
   let prevGesture = GESTURE.OTHER
 
   function resetTrack() { samples = []; trackStart = null; prevGesture = GESTURE.OTHER }
-  function reset() { resetTrack(); lastSeen = null; armed = true }
+  function reset() { resetTrack(); lastSeen = null; armed = true; frameDt = 0 }
 
   function update(lm, now, ctx = {}) {
     const out = { event: null }
@@ -309,20 +317,26 @@ export function createWaveDetector(opts = {}) {
     const aspect = ctx.aspect > 0 ? ctx.aspect : 1
     const box = palmBox(lm)
     if (box.minX < C.edge || box.maxX > 1 - C.edge) { resetTrack(); return out }   // 進 / 出畫面中
-    if (lastSeen != null && now - lastSeen > C.gapMs) resetTrack()
+    if (lastSeen != null) {
+      const gap = now - lastSeen
+      if (gap > Math.max(C.gapMs, GAP_K * frameDt)) resetTrack()       // 手中間消失過（這一段不算幀間隔：不更新 frameDt）
+      else if (gap > 0) frameDt = frameDt ? frameDt * (1 - DT_ALPHA) + gap * DT_ALPHA : gap
+    }
     lastSeen = now
 
     const ux = ctx.mirror === false ? box.cx : 1 - box.cx
     const prev = samples.length ? samples[samples.length - 1] : null
-    if (prev && Math.abs(ux - prev.x) > C.maxStepDx) resetTrack()      // 偵測跳號
+    if (prev && Math.abs(ux - prev.x) > C.maxStepDx * Math.max(1, frameDt / 100)) resetTrack()      // 偵測跳號（幀間隔 > 100ms 時，正常的快速揮動單幀位移也會變大，上限跟著放寬）
     prevGesture = classifyHand(lm, { aspect, prev: prevGesture }).gesture
     if (trackStart == null) trackStart = now
     samples.push({ t: now, x: ux, y: box.cy, open: prevGesture === GESTURE.OPEN_PALM })
-    while (samples.length && now - samples[0].t > C.windowMs) samples.shift()
+    const winMs = Math.max(C.windowMs, WIN_K * frameDt)                // 4 幀要塞得進視窗：幀間隔 ≤ 156ms 時就是 windowMs（500）
+    while (samples.length && now - samples[0].t > winMs) samples.shift()
 
     if (lastFire != null && now - lastFire < C.cooldownMs) return out  // 冷卻中
     if (!armed) {                                                       // 冷卻過了：手要先幾乎不動一下才重新就緒（避開收手的動作）
-      const recent = samples.filter((s) => now - s.t <= C.settleMs)
+      const settleWin = Math.max(C.settleMs, SETTLE_K * frameDt)       // 冷卻後「幾乎不動」的檢查窗至少要含 2 幀（幀間隔 ≤ 100ms 時就是 settleMs）
+      const recent = samples.filter((s) => now - s.t <= settleWin)
       if (recent.length < 2) return out
       let lo = Infinity, hi = -Infinity
       for (const s of recent) { if (s.x < lo) lo = s.x; if (s.x > hi) hi = s.x }

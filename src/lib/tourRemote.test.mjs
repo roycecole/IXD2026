@@ -1107,12 +1107,13 @@ const importsOf = (code) => [...code.matchAll(/(?:^|\n)\s*import\s+(?:[^'"\n]*?f
 
 test('遙控頁保持輕量：RemoteApp 只 import react / ice / sensors / i18n / tourRemote / remoteReconnect / wakeLockLite / guide.css，不碰 three、store、tour.js、tourCore、multiplayer、主畫面的 wakeLock.js；tourRemote / remoteReconnect / wakeLockLite 本身沒有任何 import', () => {
   const app = src('../remote/RemoteApp.jsx')
-  assert.deepEqual(importsOf(app).sort(), ['../i18n/index.js', '../lib/ice.js', '../lib/remoteReconnect.js', '../lib/sensors.js', '../lib/tourRemote.js', '../lib/wakeLockLite.js', '../styles/guide.css', 'react'])
+  assert.deepEqual(importsOf(app).sort(), ['../i18n/LangNotice.jsx', '../i18n/index.js', '../lib/ice.js', '../lib/remoteReconnect.js', '../lib/sensors.js', '../lib/tourRemote.js', '../lib/wakeLockLite.js', '../styles/guide.css', 'react'])
+  assert.deepEqual(importsOf(src('../i18n/LangNotice.jsx')).sort(), ['../styles/langnotice.css', './index.js'], '語言鈕的載入 / 失敗提示（很小）：只 import i18n 與自己的 CSS，不會把別的東西拉進遙控頁')
   for (const bad of ['three', 'zustand', 'store', 'tour.js', 'tourCore', 'multiplayer', 'services', 'scene', 'App.jsx', 'lib/wakeLock.js']) assert.equal(importsOf(app).some((s) => s.includes(bad)), false, bad)
   for (const f of ['./tourRemote.js', './remoteReconnect.js', './wakeLockLite.js']) assert.equal(importsOf(src(f)).length, 0, f)
 })
 
-test('RemoteApp：連線 open 後送 hello（帶 token）、逾時不回應就退回一般遙控；導覽員區塊有大按鈕 / aria-pressed / 站 chips / 念出字幕；演奏控制收進預設收合的 details；震動走功能偵測', () => {
+test('RemoteApp：連線 open 後送 hello（帶 token）、逾時不回應就退回一般遙控；導覽員區塊有大按鈕 / 站 chips / 念出字幕（暫停鈕文字會換，不設 aria-pressed）；演奏控制收進預設收合的 details；震動走功能偵測', () => {
   const app = src('../remote/RemoteApp.jsx')
   assert.match(app, /conn\.send\(helloMsg\(guideToken\)\)/)
   assert.match(app, /GUIDE_HELLO_WAIT_MS/)
@@ -1120,7 +1121,8 @@ test('RemoteApp：連線 open 後送 hello（帶 token）、逾時不回應就�
   assert.match(app, /reduceGuideMsg/)
   assert.match(app, /<details className="remote-play">/)
   assert.doesNotMatch(app, /<details[^>]*\bopen\b/, '預設收合')
-  assert.match(app, /aria-pressed=\{v\.paused\}/)
+  assert.doesNotMatch(app, /aria-pressed=\{v\.paused\}/, '暫停 ⇄ 繼續 的可見文字會換：再設 aria-pressed 會讀成「繼續，已按下」（暫停中被讀反）；暫停狀態由 aria-live 區的「已暫停」念出')
+  assert.match(app, /aria-pressed=\{v\.speak\}/, '念出字幕的開關維持不變')
   assert.match(app, /cmd\('goto', c\.i\)/)
   assert.match(app, /cmd\('speak', !v\.speak\)/)
   assert.match(app, /typeof navigator\.vibrate === 'function'\) navigator\.vibrate\(ms\)/)
@@ -1251,14 +1253,14 @@ test('SSR·導覽員連結（有 token、還在驗證）：演奏控制收進預
   assert.equal(count(html, /<input type="range"/g), 6)
 })
 
-test('SSR·導覽員區塊（進行中 + 暫停 + 備註）：站名、第 n / N 站、已暫停、備註、三顆大按鈕（暫停鈕 aria-pressed=true 且顯示「繼續」）、站 chips（只有目前站 aria-current）、結束導覽', () => {
+test('SSR·導覽員區塊（進行中 + 暫停 + 備註）：站名、第 n / N 站、已暫停、備註、三顆大按鈕（暫停鈕顯示「繼續」、on 樣式、沒有 aria-pressed）、站 chips（只有目前站 aria-current）、結束導覽', () => {
   const html = panel({ ...T1, paused: true })
   assert.match(html, /<section class="guide" aria-label="導覽員">/)
   assert.match(html, /<div class="guide-stop">潮汐<\/div>/)
   assert.match(html, /第 2 \/ 3 站/)
   assert.match(html, /<span class="guide-paused">已暫停<\/span>/)
   assert.match(html, /<p class="guide-note">潮汐備註<\/p>/)
-  assert.match(html, /<button class="guide-btn on" aria-pressed="true">繼續<\/button>/)
+  assert.match(html, /<button class="guide-btn on">繼續<\/button>/)
   assert.match(html, />上一站<\/button>/)
   assert.match(html, />下一站<\/button>/)
   assert.match(html, /guide-run stop"[^>]*>結束導覽<\/button>/)
@@ -1270,11 +1272,19 @@ test('SSR·導覽員區塊（進行中 + 暫停 + 備註）：站名、第 n / N
   assert.equal(count(html, /disabled/g), 0, '連線正常、導覽進行中：沒有任何按鈕被停用')
 })
 
-test('SSR·導覽員區塊（進行中、沒暫停、沒備註）：暫停鈕 aria-pressed=false 且顯示「暫停」；沒有備註區塊、沒有「已暫停」', () => {
+test('SSR·導覽員區塊（進行中、沒暫停、沒備註）：暫停鈕顯示「暫停」（沒有 on 樣式、沒有 aria-pressed）；沒有備註區塊、沒有「已暫停」', () => {
   const html = panel({ ...T1, index: 2 })
-  assert.match(html, /<button class="guide-btn" aria-pressed="false">暫停<\/button>/)
+  assert.match(html, /<button class="guide-btn">暫停<\/button>/)
   assert.doesNotMatch(html, /guide-note|guide-paused/)
   assert.match(html, /<div class="guide-stop">月亮<\/div>/)
+})
+
+test('SSR·導覽員區塊：暫停 / 繼續鈕在任何狀態都沒有 aria-pressed（文字會換的動作鈕；念出字幕的開關才是 aria-pressed）', () => {
+  for (const tour of [T0, T1, { ...T1, paused: true }, { ...T0, ready: false }, { ...T0, busy: true }, null]) {
+    const html = panel(tour)
+    assert.doesNotMatch(html, /aria-pressed="(true|false)"[^>]*>(暫停|繼續)</, JSON.stringify(tour))
+  }
+  assert.match(panel(T1), /aria-pressed="true">念出字幕：開/); assert.match(panel({ ...T1, speak: false }), /aria-pressed="false">念出字幕：關/)
 })
 
 test('SSR·導覽員區塊（導覽沒在跑）：只有「開始導覽」可按；上一站 / 暫停 / 下一站停用；沒有 chips；仍可設定念出字幕', () => {
@@ -1283,7 +1293,7 @@ test('SSR·導覽員區塊（導覽沒在跑）：只有「開始導覽」可按
   assert.match(html, /guide-run start"[^>]*>開始導覽<\/button>/)
   assert.doesNotMatch(html, /guide-run start"[^>]*disabled/)
   assert.equal(count(html, /<button class="guide-btn"[^>]*disabled/g), 3, '上一站 / 暫停 / 下一站都停用')
-  assert.match(html, /aria-pressed="false" disabled="">暫停<\/button>/)
+  assert.match(html, /<button class="guide-btn" disabled="">暫停<\/button>/)
   assert.doesNotMatch(html, /guide-chip/)
   assert.match(html, /念出字幕：關/)
   assert.doesNotMatch(html, /念出字幕：關<\/button>[\s\S]*disabled/)
@@ -2040,7 +2050,8 @@ test('SSR·倒數（暫停）：凍結——本機時間再走剩餘時間也不
     assert.match(html, /<div class="guide-time is-paused">/)
     assert.match(html, /剩 7 秒/)
     assert.match(html, /<span class="guide-paused">已暫停<\/span>/)
-    assert.match(html, /aria-pressed="true">繼續<\/button>/)
+    assert.match(html, /<button class="guide-btn on">繼續<\/button>/)
+    assert.doesNotMatch(html, /aria-pressed="(true|false)"[^>]*>(繼續|暫停)</)
   }
 })
 
@@ -2355,4 +2366,50 @@ test('React 執行期：一般遙控（沒有 token）——連上後不送 hell
     delete globalThis.navigator.wakeLock
     try { ensurePeer('hostY', null, net.deps).destroy() } catch (e) { /* ignore */ }
   }
+})
+
+// ---- 主畫面正在錄製 / 播放（busy）：導覽開不起來，手機上的「開始導覽」要停用並說明（不能看起來能按、按了卻沒有任何回應）----
+test('tourPayload / parseTourPayload：busy 只收 boolean、往返一致；沒帶（舊版主畫面）就沒有這個欄位', () => {
+  const p = tourPayload({ running: false }, { ready: true, busy: true, evil: 1 })
+  assert.equal(p.busy, true); assert.equal('evil' in p, false)
+  assert.equal(tourPayload({ running: false }, { busy: false }).busy, false)
+  for (const bad of ['yes', 1, 0, null, undefined, {}, []]) assert.equal('busy' in tourPayload({ running: false }, { busy: bad }), false, JSON.stringify(bad))
+  const wire = JSON.parse(JSON.stringify(tourPayload({ running: false, paused: false, index: 0, total: 0, stopList: [] }, { speak: false, canSpeak: true, ready: true, busy: true })))
+  assert.equal(parseTourPayload(wire).busy, true)
+  assert.equal(parseTourPayload({ ...wire, busy: 'true' }).busy, undefined, '格式不對的 busy 被丟掉、不因此拒絕整則狀態')
+  assert.equal('busy' in parseTourPayload({ ...wire, busy: undefined }), false)
+  assert.equal(parseTourPayload({ ...wire, busy: false }).busy, false)
+})
+
+test('guideView：主畫面 busy（錄製 / 播放中）→ 沒在跑時「開始導覽」不能按、busy:true；沒帶 / false → 照舊可以；導覽進行中忽略 busy；noData 優先仍不可按', () => {
+  const b = guideView({ ...T0, busy: true }, true)
+  assert.deepEqual([b.busy, b.canStart, b.noData, b.running], [true, false, false, false])
+  assert.deepEqual([guideView({ ...T0, busy: false }, true).busy, guideView({ ...T0, busy: false }, true).canStart], [false, true])
+  assert.deepEqual([guideView(T0, true).busy, guideView(T0, true).canStart], [false, true], '舊版主畫面沒有 busy 欄位 → 當作沒有在忙')
+  const run = guideView({ ...T1, busy: true }, true)
+  assert.deepEqual([run.busy, run.running, run.canStart, run.canStop, run.canNav], [false, true, false, true, true], '導覽進行中：busy 不適用，停止 / 導覽鈕照舊')
+  const both = guideView({ ...T0, ready: false, busy: true }, true)
+  assert.deepEqual([both.noData, both.busy, both.canStart], [true, true, false])
+  assert.equal(guideView({ ...T0, busy: true }, false).canStart, false, '沒連線一樣不能按')
+  assert.equal(guideView(null, true).busy, false)
+})
+
+test('SSR·導覽員區塊：主畫面 busy → 顯示「等錄製 / 播放結束後才能導覽」、「開始導覽」停用；英文有對應字串；noData 的提示優先；導覽進行中不顯示', () => {
+  const html = panel({ ...T0, busy: true })
+  assert.match(html, /<p class="guide-msg">等錄製 \/ 播放結束後才能導覽<\/p>/)
+  assert.match(html, /guide-run start"[^>]*disabled/)
+  assert.doesNotMatch(html, /導覽還沒開始/)
+  assert.match(panel({ ...T0, busy: true }, { t: tEn }), /Available once recording \/ playback has finished/)
+  assert.doesNotMatch(panel({ ...T0, busy: true }, { t: tEn }), /[\u4e00-\u9fff]/, '英文版沒有中文')
+  assert.match(panel({ ...T0, ready: false, busy: true }), /主畫面還沒載入海況資料/); assert.doesNotMatch(panel({ ...T0, ready: false, busy: true }), /等錄製/)
+  assert.doesNotMatch(panel({ ...T1, busy: true }), /等錄製/); assert.match(panel({ ...T1, busy: true }), /結束導覽/)
+  assert.doesNotMatch(panel(T0), /等錄製/); assert.doesNotMatch(panel({ ...T0, busy: false }), /等錄製/)
+  assert.doesNotMatch(panel({ ...T0, busy: true }, { ok: false }), /等錄製/, '連線中斷的提示優先')
+})
+
+test('TourRemoteService：guideExtra 帶 busy（rec.mode !== idle；取不到就當沒有在忙）；每 2 秒的補推會把它送到手機', () => {
+  const s = src('../services/TourRemoteService.jsx')
+  assert.match(s, /try \{ busy = useStore\.getState\(\)\.rec\.mode !== 'idle' \} catch \(e\)/)
+  assert.match(s, /return \{ speak: [^}]*ready, busy, \.\.\.countdownExtra\(tourRunner\) \}/)
+  assert.match(src('../remote/RemoteApp.jsx'), /: v\.busy \? <p className="guide-msg">\{t\('等錄製 \/ 播放結束後才能導覽'\)\}<\/p>/)
 })

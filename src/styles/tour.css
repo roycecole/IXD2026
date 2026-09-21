@@ -32,6 +32,12 @@
 
 /* 演出模式（角落有 QR / 統計）：字幕收窄，避免蓋到兩側角落 */
 .app.stagemode .tour-caption { max-width: max(260px, min(780px, calc(100% - 340px))); }
+/* 導覽員 QR（按 G，60 秒）的盒子比一般 QR 大：畫布 156px、盒寬上限 174px（guide.css），右緣 = 14 + 174 = 188px。字幕左右各預留量必須 ≥ 188 + 12 留白 = 200px（總共 400px）；
+   一般 QR 只要 164px，上面那條的 340px 夠用。只在導覽員 QR 出現時才多收窄（它只出現 60 秒，一般 QR 的版面不動）。
+   排除矮的橫放螢幕（那邊由 tourpresenter.css 的橫放規則處理）；:has 不支援（Safari < 15.4）時退回上一條的行為。 */
+@media (min-width: 821px) and (min-height: 461px) {
+  .app.stagemode .canvas-wrap:has(.kiosk-qr.is-guide) .tour-caption { max-width: max(260px, min(780px, calc(100% - 400px))); }
+}
 
 @media (max-width: 820px) {
   .tour-caption { bottom: 40px; max-width: calc(100% - 20px); }
@@ -46,6 +52,8 @@
      半透明模糊層一蓋，QR 的模組糊掉就掃不到）。有 QR 時把字幕抬到 QR 上方：QR 盒高 ≈ 104px 畫布 + 說明字 + 邊距 ≈ 170px。
      :has 不支援（Safari < 15.4）時這條被忽略，維持原樣。 */
   .app.stagemode .canvas-wrap:has(.kiosk-qr) .tour-caption { bottom: 176px; }
+  /* 導覽員 QR（按 G）：畫布 124px + 換行後的英文說明 ≈ 190–205px 高 → 字幕再抬高到 216px（矮的橫放螢幕由 tourpresenter.css 覆蓋回去；同權重、tourpresenter.css 較後載入） */
+  .app.stagemode .canvas-wrap:has(.kiosk-qr.is-guide) .tour-caption { bottom: 216px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .tour-caption { transition: opacity .2s linear; }

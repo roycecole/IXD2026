@@ -41,6 +41,22 @@ export function clampNote(note) {
 
 export function noteIsEmpty(note) { return noteForReport(note) == null }
 
+// 「帶入偵測值」的合併（純函式）：偵測到的裝置型號 / 系統 / 瀏覽器 → 併進目前的備註（model / os / browser 三個欄位；tester / memo 一律不碰）。
+//   client-hints（瀏覽器主動提供、精確）：有偵測到的欄位就覆寫（讓過期的草稿——系統或瀏覽器更新過——能被刷新）。
+//   ua（由 UA 字串推測、粗略：型號常常只有「iPhone」）：只補「空白的欄位」，不覆蓋使用者已經填好的（否則精確的「iPhone 15 Pro」會被蓋成「iPhone」，而且沒有復原）。
+//   none / 沒有 info → 原樣（clampNote 過）。回傳一定是完整的五個欄位。
+export function mergeDetected(note, info) {
+  const cur = clampNote(note)
+  if (!isObj(info) || info.source === 'none') return cur
+  const keepTyped = info.source === 'ua'
+  const pick = (f) => {
+    const d = typeof info[f] === 'string' ? info[f] : ''
+    if (!d) return cur[f]
+    return keepTyped && cur[f].trim() ? cur[f] : d
+  }
+  return clampNote({ ...cur, model: pick('model'), os: pick('os'), browser: pick('browser') })
+}
+
 // 報告用：只留「有填」的欄位（trim 後非空）；全空 → null（報告不出現該段落）
 export function noteForReport(note) {
   const c = clampNote(note)

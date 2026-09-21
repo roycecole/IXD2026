@@ -1072,6 +1072,12 @@ test('報告的隱私範圍（README 與實作一致）：Web MIDI 埠名稱與�
   // 文件如實說明這個例外（以前寫「不含裝置名稱」）
   const read = (f) => readFileSync(new URL(f, import.meta.url), 'utf8')
   const zh = read('../../README.md'), en = read('../../README.en.md')
+  // 診斷頁頁首的隱私提示與報告內的聲明一致：不宣稱「不含個人資料」，如實說會列出 MIDI 埠名稱 / 手把字串 / 裝置備註（中英都有）
+  const app = read('../DiagnosticsApp.jsx'), enDict = read('../i18n/en/diagnostics.js')
+  const hdr = /<p className="diag-privacy">\{t\('([^']+)'\)\}<\/p>/.exec(app); assert.ok(hdr, '頁首隱私提示')
+  assert.ok(!hdr[1].includes('不含個人資料')); for (const need of ['Web MIDI 埠名稱', '手把型號字串', '裝置備註', '貼出前請先檢查', '不含 IP、影像或音訊']) assert.ok(hdr[1].includes(need), need)
+  assert.ok(enDict.includes(hdr[1]), '頁首提示有英文'); assert.ok(!/no personal data/i.test(enDict), '英文字典沒有留下「no personal data」的宣稱')
+  assert.doesNotMatch(read('./diagnostics.js').replace(/\/\/.*$/gm, ''), /不含個人資料/, '報告本文（程式碼，不含註解）沒有「不含個人資料」')
   assert.doesNotMatch(zh, /影像、音訊或裝置名稱/); assert.doesNotMatch(en, /audio or device names/)
   assert.match(zh, /Web MIDI 埠名稱與手把(的)?型號字串會照實列出/); assert.match(en, /Web MIDI port names and gamepad id strings/)
   assert.match(read('./diagnostics.js'), /Web MIDI 埠名稱與手把的 id 字串會照實列出/)
@@ -1707,14 +1713,14 @@ test('導引：iPhone Safari 這類裝置（沒有震動 / MIDI / 全螢幕 / �
 })
 
 // ───────────────────────────── 報告：裝置備註 ─────────────────────────────
-test('報告的裝置備註：沒填（或全是空白）→ 輸出與以前完全一樣（沒有段落、JSON 沒有 deviceNote、隱私聲明不變）', () => {
+test('報告的裝置備註：沒填（或全是空白）→ 沒有段落、JSON 沒有 deviceNote、隱私聲明與有備註時是同一句', () => {
   const results = { ls: D.makeResult(D.getCheck('ls'), { status: 'pass', msg: { key: '寫入、讀回、刪除都成功' } }, 4) }
   const base = D.buildReport({ results, meta: {} })
   for (const note of [undefined, null, {}, { model: '', os: '', browser: '', tester: '', memo: '' }, { model: '  ', memo: '\n \n' }, 'x', 5, []]) {
     const r = D.buildReport({ results, meta: {}, note })
     assert.equal(r.markdown, base.markdown, JSON.stringify(note)); assert.equal(r.text, base.text); assert.deepEqual(r.json, base.json); assert.ok(!('deviceNote' in r.json))
   }
-  assert.ok(!base.text.includes('裝置備註')); assert.match(base.markdown, /^- 本報告不含個人資料、IP、影像或音訊。$/m); assert.ok(!base.markdown.includes('除外'))
+  assert.ok(!base.text.includes('## 裝置備註') && !base.text.includes('deviceNote'), '沒有備註段落（聲明那一句只提到「裝置備註」這個詞）'); assert.match(base.markdown, /^- 本報告不含 IP、影像或音訊；Web MIDI 埠名稱、手把型號字串與裝置備註會照實列出，貼出前請先檢查。$/m); assert.ok(!base.markdown.includes('個人資料'), '不宣稱「不含個人資料」（埠名稱 / 手把字串 / 備註都會照實列出）'); assert.ok(!base.markdown.includes('除外'))
 })
 
 test('報告的裝置備註：只有填了的欄位出現（Markdown 段落 + JSON deviceNote）；多行備註的續行縮排；段落在摘要與表格之間；表格列數不變', () => {
@@ -1728,7 +1734,7 @@ test('報告的裝置備註：只有填了的欄位出現（Markdown 段落 + JS
   assert.ok(!rep.markdown.includes('作業系統與版本：') && !rep.markdown.includes('測試人：'), '沒填的欄位不出現')
   assert.ok(lines.findIndex((l) => l.startsWith('- 摘要：')) < h && h < lines.findIndex((l) => l.startsWith('| 群組')), '在摘要之後、表格之前')
   assert.equal(lines.filter((l) => l.startsWith('| ')).length, 40 + 2, '表格不受影響')
-  assert.match(rep.markdown, /^- 本報告不含個人資料、IP、影像或音訊（你自己填寫的裝置備註除外）。$/m, '有備註時隱私聲明如實改成「除了你自己填寫的裝置備註」')
+  assert.match(rep.markdown, /^- 本報告不含 IP、影像或音訊；Web MIDI 埠名稱、手把型號字串與裝置備註會照實列出，貼出前請先檢查。$/m, '有沒有備註都是同一句隱私聲明（備註與 MIDI / 手把字串都會照實列出）'); assert.equal(rep.markdown.split('\n').filter((l) => l.includes('本報告不含')).length, 1, '隱私聲明只有一行')
   const m = rep.text.match(/```json\n([\s\S]*)\n```\n$/); assert.deepEqual(JSON.parse(m[1]).deviceNote, rep.json.deviceNote, '複製的文字尾端 JSON 也有 deviceNote')
   const all = D.buildReport({ results: x, meta: {}, note: { model: 'A', os: 'B', browser: 'C', tester: 'D', memo: 'E' } })
   const al = all.markdown.split('\n'); const ai = al.indexOf('## 裝置備註')
@@ -1751,7 +1757,7 @@ test('報告的裝置備註：切成英文後段落標題 / 欄位標籤 / 隱�
   registerEn(en); registerEn(en2); setLocale('en')
   try {
     const rep = D.buildReport({ results: {}, meta: {}, note, locale: 'en' })
-    for (const line of ['## Device notes', '- Device model: iPhone 15', '- Tester: 小明', '- Notes: 第 2 台', '- This report contains no personal data, IP address, images or audio (except the device notes you filled in yourself).']) assert.ok(rep.markdown.split('\n').includes(line), line)
+    for (const line of ['## Device notes', '- Device model: iPhone 15', '- Tester: 小明', '- Notes: 第 2 台', '- This report contains no IP address, images or audio. Web MIDI port names, gamepad ID strings and device notes are listed exactly as they are, so check it before you post it anywhere.']) assert.ok(rep.markdown.split('\n').includes(line), line)
     assert.ok(!/OS and version|Browser and version/.test(rep.markdown), '沒填的欄位不出現')
     const noChinese = rep.markdown.split('\n').filter((l) => !/小明|第 2 台/.test(l)).join('\n'); assert.ok(!/[㐀-鿿]/.test(noChinese), '除了使用者自己填的內容，沒有中文殘留：' + (noChinese.match(/.*[㐀-鿿].*/) || [''])[0])
   } finally { setLocale('zh') }
@@ -1768,7 +1774,7 @@ test('隱私：草稿在儲存裡、或有別人的名字，只要畫面沒明�
   assert.ok(!without.text.includes('Alice') && !without.text.includes('0912345678'), '草稿不會自動進報告：只有按複製 / 下載時、由畫面明確傳入 note 才會')
   const withNote = D.buildReport({ results: {}, meta, note: loadNote(storage) })
   assert.ok(withNote.text.includes('Alice Chen') && withNote.text.includes('0912345678'), '使用者自己填的備註原樣進報告（畫面上已說明會原樣寫進報告）')
-  const strip = (t) => t.split('\n').filter((l) => !l.includes('Alice') && !l.includes('0912345678') && !l.startsWith('## ') && !l.startsWith('  ') && !l.includes('除外') && !l.includes('不含個人資料')).join('\n').replace(/\n{3,}/g, '\n\n')
+  const strip = (t) => t.split('\n').filter((l) => !l.includes('Alice') && !l.includes('0912345678') && !l.startsWith('## ') && !l.startsWith('  ') && !l.includes('本報告不含')).join('\n').replace(/\n{3,}/g, '\n\n')
   assert.equal(strip(withNote.markdown), strip(without.markdown), '備註以外的內容一字不差')
   for (const secret of ['192.168', 'remote=', 'abc123']) assert.ok(!withNote.text.includes(secret), '仍然沒有 IP / 連線碼：' + secret)
 })

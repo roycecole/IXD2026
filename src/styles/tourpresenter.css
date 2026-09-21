@@ -74,4 +74,6 @@
   .tour-paused { right: 10px; font-size: 10px; }
   /* 展場：左下角有掃碼 QR（≤132px 寬）→ 字幕往右讓開，不蓋住它 */
   .app.stagemode .canvas-wrap:has(.kiosk-qr) .tour-caption { left: 172px; bottom: 8px; max-width: min(44vw, calc(100% - 184px)); }
+  /* 導覽員 QR（按 G）的盒子右緣在 188px：字幕再往右讓開，並蓋掉 tour.css ≤820px 那條把字幕抬到 216px 的規則（同權重、本檔較後載入） */
+  .app.stagemode .canvas-wrap:has(.kiosk-qr.is-guide) .tour-caption { left: 196px; bottom: 8px; max-width: min(44vw, calc(100% - 208px)); }
 }

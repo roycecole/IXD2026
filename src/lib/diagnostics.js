@@ -10,7 +10,7 @@
 //     另外附 msg（{ key, params } 訊息描述，畫面用目前語系重新翻譯，所以切換語言不必重跑）與 data（結構化量測值，供 JSON 報告）。
 //   · 自動檢查（runAutoChecks）不需要使用者手勢；互動檢查（createProbe）在使用者按下按鈕後才啟動，
 //     任何結束路徑（完成 / 錯誤 / 逾時 / stop() / 卸載）都會停掉所有 track / 辨識 / 計時器 / 監聽（測試逐一驗證）。
-//   · 隱私：報告不含個資 / IP / 影像 / 音訊——相機 / 麥克風 / 螢幕的 label 不收，語音辨識的文字只報字數，網址去掉 #hash。
+//   · 隱私：報告不含 IP / 影像 / 音訊，也不主動收個資（不宣稱「不含個人資料」——見下面的例外與使用者自己填的備註）——相機 / 麥克風 / 螢幕的 label 不收，語音辨識的文字只報字數，網址去掉 #hash。
 //     例外（刻意保留，README 與診斷頁都要如實說明）：Web MIDI 埠名稱與手把的 id 字串會照實列出——「有沒有偵測到 KORG 控制器」就靠它判讀；
 //     藍牙 / 網路 MIDI 埠與手把有時以擁有者命名，所以貼出報告前請看一眼（測試釘住：diagnostics.test.mjs「報告的隱私範圍」）。
 //
@@ -1694,9 +1694,9 @@ function noteLines(fields, tr) {
   return lines
 }
 
-// 報告：Markdown 表格 + JSON。results：id → 結果（含使用者判斷）。不含任何個資 / IP / 影像 / 音訊；
-// 唯一的例外是使用者自己填的 note（裝置備註）：只有「填了的欄位」才會出現（Markdown 的「裝置備註」段落 + JSON 的 deviceNote），全空 = 完全沒有這一段，
-// 有備註時隱私聲明改成「除了你自己填寫的裝置備註」，不會說謊。
+// 報告：Markdown 表格 + JSON。results：id → 結果（含使用者判斷）。不含 IP / 影像 / 音訊；
+// 會照實列出的：Web MIDI 埠名稱 / 手把 id 字串（見檔頭的例外），以及使用者自己填的 note（裝置備註）——只有「填了的欄位」才會出現（Markdown 的「裝置備註」段落 + JSON 的 deviceNote），全空 = 完全沒有這一段。
+// 隱私聲明因此只有一句、不分有無備註（不宣稱「不含個人資料」：埠名稱 / 手把字串可能是擁有者命名的），提醒貼出前先檢查。
 export function buildReport({ checks = getChecks(), results = {}, meta = {}, tr = t, locale = 'zh', note = null } = {}) {
   const deviceNote = noteForReport(note)
   const groups = new Map(getGroups().map((g) => [g.id, g]))
@@ -1729,7 +1729,7 @@ export function buildReport({ checks = getChecks(), results = {}, meta = {}, tr 
     '- ' + tr(T('瀏覽器 UA：{v}'), { v: json.userAgent || '—' }),
     '- ' + tr(T('螢幕與視窗：{v}'), { v: meta.screen ? screenLine(meta.screen) : '—' }),
     '- ' + tr(T('摘要：通過 {pass}、失敗 {fail}、不支援 {unsupported}、尚未測 {pending}（共 {total} 項）'), summary),
-    '- ' + tr(deviceNote ? T('本報告不含個人資料、IP、影像或音訊（你自己填寫的裝置備註除外）。') : T('本報告不含個人資料、IP、影像或音訊。')),
+    '- ' + tr(T('本報告不含 IP、影像或音訊；Web MIDI 埠名稱、手把型號字串與裝置備註會照實列出，貼出前請先檢查。')),   // 一句、不分有無備註：MIDI 埠名稱 / 手把 id 字串（使用者可能自己命名，例如「XXX 的 MacBook」）與裝置備註都會照實列出，所以不宣稱「不含個人資料」
     '',
     ...(deviceNote ? noteLines(deviceNote, tr) : []),
     tr(T('| 群組 | 項目 | 狀態 | 詳情 | 耗時 (ms) |')),

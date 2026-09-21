@@ -1,6 +1,6 @@
 import React, { Suspense, lazy } from 'react'
 import { createRoot } from 'react-dom/client'
-import { t, bootLocale } from './i18n/index.js'
+import { t, bootLocale, prefetchEnglish } from './i18n/index.js'
 import { flagOn } from './lib/urlFlags.js'
 import ErrorBoundary from './ErrorBoundary.jsx'
 import './styles.css'
@@ -68,5 +68,9 @@ const mount = () => createRoot(document.getElementById('root')).render(
     </ErrorBoundary>
   </React.StrictMode>,
 )
+
+// 畫面出來之後、閒置時把英文字典預抓進來（記憶體 + Service Worker 快取）：中文使用者按 EN 時不再依賴當下的網路（展場 Wi-Fi 閃斷 / 離線的 PWA 也切得過去；
+// 以前沒有預先快取，離線第一次按 EN 一定失敗）。手機遙控頁與診斷頁不預抓（維持輕量；遙控頁本來就得連著主畫面才有用，診斷頁的效能檢查不該有背景下載）；省流量模式 / 離線 / 已經載入時 prefetchEnglish 自己略過；失敗靜默。
+if (!remoteMatch && !diagnosticsMode) localeReady.then(() => { prefetchEnglish() }, () => {})
 
 localeReady.then(mount, mount)

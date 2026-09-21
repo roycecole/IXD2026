@@ -2,7 +2,7 @@
 // 全部用假的載入函式與「會檢查 this 的假計時器」——瀏覽器的原生 setTimeout 被掛到別的物件上呼叫會丟 Illegal invocation，Node 不會；假計時器要抓的就是這種寫法。
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { LOAD_STATE, createLoader, raceTimeout, createLocaleSwitcher, defaultTimers } from './loader.js'
+import { LOAD_STATE, LOAD_TIMEOUT_MESSAGE, createLoader, raceTimeout, createLocaleSwitcher, defaultTimers, prefetchWhenIdle } from './loader.js'
 
 const tick = () => new Promise((r) => setImmediate(r))          // 讓所有已排的 microtask / promise 回呼跑完
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b }); return { promise, resolve, reject } }
@@ -304,4 +304,54 @@ test('boot：等字典期間使用者選了 zh → 字典到了不切 en（想�
 test('boot：字典已就緒（例如同一頁重複啟動、或已預載）→ 同步套用 en、status = ready', async () => {
   const e = env({ ready: true, initialDesired: 'en' })
   assert.deepEqual(await e.sw.boot({ timeoutMs: 8000, timers: fakeTimers() }), { status: 'ready', locale: 'en' })
+})
+
+// ---------------------------------------------------------------------------------------------
+// LOAD_TIMEOUT_MESSAGE / prefetchWhenIdle
+// ---------------------------------------------------------------------------------------------
+test('看門狗逾時 reject 的錯誤訊息是 LOAD_TIMEOUT_MESSAGE（呼叫端據此分辨「逾時：再試就好」與「硬失敗：要整頁重新載入」）；硬失敗保留原本的錯誤', async () => {
+  const tm = fakeTimers(); const d = deferred()
+  const l = createLoader({ load: () => d.promise, attemptTimeoutMs: 1000, timers: tm })
+  const p = l.load(); const caught = p.catch((e) => e)
+  tm.advance(1000)
+  const err = await caught
+  assert.equal(err.message, LOAD_TIMEOUT_MESSAGE); assert.equal(LOAD_TIMEOUT_MESSAGE, 'load timeout')
+  const hard = createLoader({ load: () => Promise.reject(new TypeError('Failed to fetch dynamically imported module')), attemptTimeoutMs: 1000, timers: fakeTimers() })
+  const e2 = await hard.load().catch((e) => e); assert.notEqual(e2.message, LOAD_TIMEOUT_MESSAGE); assert.match(e2.message, /dynamically imported/)
+})
+
+test('prefetchWhenIdle：字典未就緒 + 有 idle 排程 → 排一個閒置回呼、回傳 true；回呼執行時才載入（不是排程當下）；載入失敗靜默（不 reject、不外洩）', async () => {
+  let loads = 0, idles = []
+  const english = { isReady: () => false, load: () => { loads += 1; return Promise.reject(new Error('offline')) } }
+  const r = prefetchWhenIdle({ english, idle: (fn) => idles.push(fn) })
+  assert.equal(r, true); assert.equal(loads, 0, '排程當下不載入'); assert.equal(idles.length, 1)
+  assert.doesNotThrow(() => idles[0]()); await tick()
+  assert.equal(loads, 1, '閒置時才載入'); // 失敗被吞掉：沒有 unhandled rejection（node 會讓測試程序失敗）
+  // 成功
+  let ready = false
+  const ok = { isReady: () => ready, load: () => { loads += 1; ready = true; return Promise.resolve() } }
+  const idle2 = []; prefetchWhenIdle({ english: ok, idle: (fn) => idle2.push(fn) }); idle2[0](); await tick()
+  assert.equal(loads, 2); assert.equal(ready, true)
+})
+
+test('prefetchWhenIdle：已就緒 / 省流量（saveData）/ 沒有 idle / 缺 english → 不排程（false）；回呼執行時已經就緒 / 已離線 → 不載入；環境函式丟例外不外洩', async () => {
+  let loads = 0; const idles = []
+  const mk = (ready = false) => ({ isReady: () => ready, load: () => { loads += 1; return Promise.resolve() } })
+  assert.equal(prefetchWhenIdle({ english: mk(true), idle: (f) => idles.push(f) }), false)
+  assert.equal(prefetchWhenIdle({ english: mk(), idle: (f) => idles.push(f), saveData: () => true }), false, '省流量模式：不預抓')
+  assert.equal(prefetchWhenIdle({ english: mk() }), false, '沒有 idle')
+  assert.equal(prefetchWhenIdle({ english: mk(), idle: 'x' }), false)
+  for (const bad of [undefined, null, {}, { isReady: () => false }, { load() {} }]) assert.equal(prefetchWhenIdle({ english: bad, idle: (f) => idles.push(f) }), false)
+  assert.equal(prefetchWhenIdle(), false); assert.equal(prefetchWhenIdle(null), false)
+  assert.equal(idles.length, 0, '上面都沒排程')
+  // saveData 丟例外 → 當作不是省流量（照抓）；online 丟例外 → 當作不知道（照抓）
+  const a = []; assert.equal(prefetchWhenIdle({ english: mk(), idle: (f) => a.push(f), saveData: () => { throw new Error('x') }, online: () => { throw new Error('y') } }), true); a[0](); await tick(); assert.equal(loads, 1)
+  // 執行時：離線 → 不載入；online 回 undefined（不知道）→ 載入
+  loads = 0; const b = []; let on = true
+  prefetchWhenIdle({ english: mk(), idle: (f) => b.push(f), online: () => on }); on = false; b[0](); await tick(); assert.equal(loads, 0, '排程後才離線：不載入')
+  const c = []; prefetchWhenIdle({ english: mk(), idle: (f) => c.push(f), online: () => undefined }); c[0](); await tick(); assert.equal(loads, 1)
+  // 回呼執行時已就緒（例如使用者先按了 EN）：不重複載入
+  loads = 0; let ready = false; const d2 = []; prefetchWhenIdle({ english: { isReady: () => ready, load: () => { loads += 1; return Promise.resolve() } }, idle: (f) => d2.push(f) }); ready = true; d2[0](); await tick(); assert.equal(loads, 0)
+  // idle 排程本身丟例外 → 不外洩、回傳 false
+  assert.equal(prefetchWhenIdle({ english: mk(), idle: () => { throw new Error('no idle') } }), false)
 })

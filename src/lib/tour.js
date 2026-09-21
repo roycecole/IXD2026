@@ -17,7 +17,7 @@ import { registerMirror } from './mirror.js'
 import { LS, loadLS, saveLS } from './persist.js'
 import { t, getLocale, useLocaleStore } from '../i18n/index.js'
 import { nameText, lunarLabelText, tideRangeText } from '../i18n/data.js'
-import { narrator as sharedNarrator, speechText as sharedSpeechText } from './narration.js'
+import { narrator as sharedNarrator, speechText as sharedSpeechText, MS_PER_CHAR } from './narration.js'
 import { airCompare as sharedAirCompare, airCompareVerdict } from './airCompare.js'
 import { normalizePlan, isDefaultPlan, cleanText, PLAN_LIMITS, resolveInitialPlan, loadPlanStore, savePlanStore, findPlan, savePlanAs, updatePlan, removePlan, setActive } from './tourPlan.js'
 
@@ -34,6 +34,7 @@ export const AUTO_IDLE_DEFAULT = true            // 非 kiosk 時「閒置自動
 export const SPEAK_DEFAULT = false               // 字幕旁白預設不出聲（展場也一樣：要導覽員自己打開，或網址 ?speak=1）
 export const PAUSE_SPEED = 1e-6                  // 暫停「序列播放」用的倍速：tickPlayback 用 speed || 1，設 0 會被當成 1；極小值 = 實質凍結，繼續時還原該站的倍速
 export const NARRATION_MAX_WAIT_MS = 6000        // 該站時間到、旁白還沒念完時，最多再等這麼久（等的期間不算暫停，只是延後換站）
+export const NARRATION_NOTE_EXTRA_MAX_MS = 25000  // 該站有備註（導覽腳本，接在說明後面一起念）時，旁白的等待再加「備註的預估朗讀時間」，最多加這麼多（站的停留時間不看備註，念不完會被下一站切斷）
 export const AUTO_PAUSE_MAX_MS = 3 * 60 * 1000   // 自動（閒置 / 展場）導覽被暫停後，超過這麼久沒有任何導覽員操作（暫停 / 換站 / 跳站）就自動繼續；手動與導覽員模式（?tourhold=1）的導覽不逾時
 
 // ---------------------------------------------------------------------------------------------
@@ -322,6 +323,17 @@ export function captionSpeech(caption, locale = getLocale()) {
   const body = c.body.trim()
   if (!body) return { title: c.title, body: note }
   return { title: c.title, body: body + (SENTENCE_END.test(body) ? (en ? ' ' : '') : (en ? '. ' : '。')) + note }
+}
+
+// 旁白念不完時，該站時間到之後最多再等多久（ms）。沒有備註 = NARRATION_MAX_WAIT_MS（與過去相同）；
+// 有備註：備註是接在說明後面一起念的，但站的停留時間（durationMs）只看說明——60 字的備註約 15–30 秒，在多數站（11–20 秒 + 6 秒）都會被下一站切斷。
+// 所以再加上備註的預估朗讀時間（字數 × narration.js 的每字毫秒），上限 NARRATION_NOTE_EXTRA_MAX_MS。等待只在旁白還在念（speaking）時才繼續，念完就換，
+// 而 narrator 本身另有「預估 + 4 秒」的安全逾時，所以引擎卡住也不會無限等。
+export function narrationWaitMs(stop, locale = getLocale()) {
+  const note = stop && stop.caption ? captionNote(stop.caption) : ''
+  if (!note) return NARRATION_MAX_WAIT_MS
+  const per = /^en(?:$|[-_])/i.test(String(locale)) ? MS_PER_CHAR.en : MS_PER_CHAR.zh
+  return NARRATION_MAX_WAIT_MS + Math.min(NARRATION_NOTE_EXTRA_MAX_MS, Math.round(note.length * per))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -749,10 +761,10 @@ export function createTourRunner(deps) {
       return
     }
     if (t0 - run.at >= run.stops[run.i].durationMs) {
-      // 旁白還在念：最多再等 NARRATION_MAX_WAIT_MS 讓句子念完（只是延後換站，不算暫停；暫停 / 中止 / 跳站都會結束這段等待）
+      // 旁白還在念：最多再等 narrationWaitMs（沒有備註 = NARRATION_MAX_WAIT_MS）讓句子念完（只是延後換站，不算暫停；暫停 / 中止 / 跳站都會結束這段等待）
       if (narrationBusy()) {
         if (run.waitFrom === null) run.waitFrom = t0
-        if (t0 - run.waitFrom < NARRATION_MAX_WAIT_MS) return
+        if (t0 - run.waitFrom < narrationWaitMs(run.stops[run.i], localeNow())) return   // 有備註的站：等到備註念完（預估）為止，見 narrationWaitMs
       }
       next()
     }

@@ -19,8 +19,8 @@ export default {
   // ---- 頁面 ----
   'MidiSea 裝置診斷': 'MidiSea device diagnostics',
   '裝置診斷': 'Device diagnostics',
-  '這個頁面不會上傳任何東西：所有檢查都在這台裝置的瀏覽器裡執行；相機、麥克風與語音只在你按下按鈕後才啟動，離開頁面就會全部關閉。報告只在你按「複製」或「下載」時產生，且不含個人資料、IP、影像或音訊。':
-    'This page uploads nothing: every check runs in this device\'s browser. The camera, microphone and speech recognition start only after you press a button, and all of them shut down when you leave the page. A report is produced only when you press Copy or Download, and it contains no personal data, IP address, images or audio.',
+  '這個頁面不會上傳任何東西：所有檢查都在這台裝置的瀏覽器裡執行；相機、麥克風與語音只在你按下按鈕後才啟動，離開頁面就會全部關閉。報告只在你按「複製」或「下載」時產生，且不含 IP、影像或音訊；但 Web MIDI 埠名稱、手把型號字串與你填的裝置備註會照實列出，貼出前請先檢查。':
+    'This page uploads nothing: every check runs in this device\'s browser. The camera, microphone and speech recognition start only after you press a button, and all of them shut down when you leave the page. A report is produced only when you press Copy or Download, and it contains no IP address, images or audio. It does list Web MIDI port names, gamepad ID strings and the device notes you fill in exactly as they are, so check it before you post it anywhere.',
   '檢查中… {done}/{total}': 'Checking… {done}/{total}',
   '執行所有快速檢查': 'Run all quick checks',
   '複製報告': 'Copy report',
@@ -377,6 +377,5 @@ export default {
   '瀏覽器 UA：{v}': 'Browser UA: {v}',
   '螢幕與視窗：{v}': 'Screen and window: {v}',
   '摘要：通過 {pass}、失敗 {fail}、不支援 {unsupported}、尚未測 {pending}（共 {total} 項）': 'Summary: {pass} passed, {fail} failed, {unsupported} not supported, {pending} not tested ({total} checks)',
-  '本報告不含個人資料、IP、影像或音訊。': 'This report contains no personal data, IP address, images or audio.',
   '| 群組 | 項目 | 狀態 | 詳情 | 耗時 (ms) |': '| Group | Check | Status | Details | Time (ms) |',
 }

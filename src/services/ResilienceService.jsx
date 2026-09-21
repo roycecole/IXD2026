@@ -4,7 +4,7 @@
 //     + 導覽狀態（lib/tour.js 的 useTourStore / 執行器的 current().auto）+ 彈窗（.modal-backdrop，與 tourCore 同一個判斷）+ WebXR 工作階段（手機的 AR 桌面：重載會直接結束它）
 //     + 手機遙控器「最近 3 分鐘有操作訊息」（lib/remoteDispatch.js 的 remoteActivity.at；不看連線數——桌上一支沒關頁面的手機會讓連線數永遠大於 0）。
 //     原始訊號的組裝在 lib/resilience.js 的 composeIdleState（純函式）；這裡只負責「讀」，每個來源各自 try/catch。
-//   · 資料更新：換掉 store.gov「只換資料」，保留使用者目前選的海況選項、不呼叫 applyGov（不動海況與參數）；成功時寫一行 OUT 日誌。
+//   · 資料更新：換掉 store.gov「只換資料」，保留使用者目前選的海況選項與空氣品質驅動來源（gov.airDrive：資料卡的「驅動海況的資料」，只存在記憶體的 gov 物件上）、不呼叫 applyGov（不動海況與參數）；成功時寫一行 OUT 日誌。
 //   · WebGL context 遺失復原（.canvas-wrap canvas）/ 渲染看門狗（?kiosk 或 ?watchdog=1）/ 版本檢查 / ?reload=HH 每日重載 —— 由 startGuards 依網址旗標啟動。
 // 觀眾視窗（?audience=1）不渲染 Services，它的防呆由 ErrorBoundary 啟動（資料更新由 AudienceApp 註冊 lib/resilience.js 的 dataHooks，全螢幕中不因新版而重載）。
 // StrictMode 雙掛載：effect 可重複執行，cleanup 會停掉所有計時器 / 監聽 / 排定的重載。
@@ -38,10 +38,13 @@ export function readIdleState() {
   return composeIdleState({ now, lastInputAt, guideAt, remoteAt, recMode, tourRunning, tourAuto, modalOpen, xrActive })
 }
 
-// 只換資料：保留目前的海況選項（新資料裡還在才算），參數一個都不碰（不呼叫 applyGov / applySurveyLinked）
+// 只換資料：保留目前的海況選項（新資料裡還在才算）與 gov.airDrive（'model' | 'obs'；新抓的 ocean.json 一定沒有它，整份換掉會把導覽員的選擇悄悄洗回 auto），參數一個都不碰（不呼叫 applyGov / applySurveyLinked）
+// airDrive 只沿用合法值；新資料沒有可用的觀測時不必判斷——resolveAirSource 遇到 'obs' 但觀測不可用本來就退回模型。
+// 不就地改 d（它同時是 pendingData、也會傳給 onDataApplied）：要保留才用展開建新物件，沒有要保留就照原樣傳 d（同一個參考）。
 export function applyGovData(d) {
   const st = useStore.getState()
-  useStore.setState({ gov: d, govOptionId: pickOptionId(d, st.govOptionId) })
+  const ad = st.gov && (st.gov.airDrive === 'model' || st.gov.airDrive === 'obs') ? st.gov.airDrive : null
+  useStore.setState({ gov: ad && d && typeof d === 'object' ? { ...d, airDrive: ad } : d, govOptionId: pickOptionId(d, st.govOptionId) })
 }
 
 export default function ResilienceService() {

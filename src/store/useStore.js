@@ -7,7 +7,7 @@ import { setHud } from './hud.js'
 import { touch, touchGlow } from './activity.js'
 import { bumpStat } from './stats.js'
 import { SCENES } from '../timeline/scenes.js'
-import { seriesFromOption, seriesFromSurvey, seriesFromDust, seriesFromMoon, seriesFromAir, automationFor, fishParam } from '../lib/series.js'
+import { seriesFromOption, seriesFromSurvey, seriesFromDust, seriesFromMoon, seriesFromAir, resolveAirSource, airMapping, automationFor, fishParam } from '../lib/series.js'
 import { birdSeasonal, flockCount } from '../lib/birds.js'
 import { surveyMonthText } from '../lib/describe.js'
 import { t, T } from '../i18n/index.js'
@@ -324,6 +324,15 @@ export const useStore = create((set, get) => ({
     const o = get().govOption()
     if (o && o.params) {
       get().applyParams(o.params)
+      // 空氣品質：驅動海況的是環境部觀測時，靜態海況也用觀測的最新 PM2.5（選項本身的 params 是資料端用模型最新值算的）——放在這裡，
+      // 所有進入路徑（網址 ?o= / 首次到訪 / 分享連結 / 導覽還原 / 資料卡選單與「套用此海況」）才一致；否則資料看板的「映射」列（依觀測算）會與實際畫面（模型值）對不上。
+      if (o.kind === 'air') {
+        const g = get().gov
+        if (g && g.air && resolveAirSource(g.air, g.airDrive || 'auto') === 'obs') {
+          const sp = seriesFromAir(g.air, undefined, { source: 'obs' }), last = sp && sp.points[sp.points.length - 1]
+          if (last) get().applyParams(airMapping(last.v))
+        }
+      }
       get().pushLog('out', t('套用海況：{name}', { name: o.name ? nameText(o.name) : t('真實資料') }))
       get().applySurveyLinked()   // 鳥 / 魚數量：連動中的才由調查資料決定；已脫鉤（獨立控制）的保持使用者的值
     }

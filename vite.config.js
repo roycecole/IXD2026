@@ -21,7 +21,7 @@ export function manualChunk(id) {
 // build id = 「程式碼內容」的 sha1 前 12 碼（不含時間戳 / 隨機鹽）：src/、index.html、package.json / package-lock.json、vite.config.js、public/（不含 public/data/）。
 //   為什麼只看程式碼：CI 每 3 小時會重新整理 public/data/ocean.json 並重新部署（.github/workflows/refresh-data.yml）。id 若每次建置都不同，
 //   每一次「只換資料」的部署都會讓所有視窗整頁重載（投影機的觀眾視窗退出全螢幕、MIDI 要重連、手機遙控斷線）；資料的更新由頁面自己就地換
-//   （lib/resilience.js 的 createDataRefresher；觀眾視窗也是），只有程式真的變了才需要重載。測試檔（*.test.*）與文件（*.md）不算。
+//   （lib/resilience.js 的 createDataRefresher；觀眾視窗也是），只有程式真的變了才需要重載。測試檔（*.test.*）、測試專用的輔助檔（tourTestEnv.mjs）與文件（*.md）不算。
 //   · 同一份程式碼（不論建置幾次、何時建置）id 相同；任何程式檔改一個字 id 就不同
 //   · 外掛在建置時輸出 dist/version.json：{ id, builtAt }（builtAt 只給人看，比對只看 id）
 //   · define 把同一個 id 注入程式（__BUILD_ID__；dev 模式為 'dev'，程式據此不做版本檢查）
@@ -29,7 +29,7 @@ const ROOT = dirname(fileURLToPath(import.meta.url))
 const CODE_DIRS = ['src', 'public']
 const CODE_FILES = ['index.html', 'package.json', 'package-lock.json', 'vite.config.js']
 const SKIP_DIRS = new Set(['public/data'])                        // 相對於專案根目錄（POSIX 路徑）：資料快照不算程式碼
-const SKIP_FILE = /(\.test\.[cm]?js$|\.md$|(^|\/)\.DS_Store$)/
+const SKIP_FILE = /(\.test\.[cm]?js$|(^|\/)tourTestEnv\.mjs$|\.md$|(^|\/)\.DS_Store$)/   // tourTestEnv.mjs：測試專用的輔助檔（9 個 *.test.mjs 匯入、不會被打包進任何 chunk），檔名沒有 .test. 所以要另外列出——只改它、程式行為完全沒變時，id 不該變（否則所有展場視窗都在閒置時白白重載）
 
 // 會影響執行結果的檔案（相對路徑、POSIX 分隔、排序）。讀不到的目錄 / 檔案略過（不讓建置因此失敗）。
 export function listCodeFiles(root = ROOT) {

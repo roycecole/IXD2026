@@ -18,7 +18,7 @@ import {
   PLAN_STOP_IDS, PLAN_LIMITS, MAX_SAVED, cleanText, sanitizeTyping, countChars, normalizePlan, planToOptions, isDefaultPlan, planEquals,
   b64urlEncode, b64urlDecode, parseIdList, encodePlan, decodePlan, encode, decode, parsePlanFromSearch, buildPlanLink,
   emptyStore, normalizeStore, defaultIO, loadPlanStore, savePlanStore, findPlan, savePlanAs, updatePlan, removePlan, setActive, resolveInitialPlan,
-  draftFromPlan, draftToPlan, moveRow, toggleRow, setRowNote, setDraftName, draftOnCount,
+  draftFromPlan, draftToPlan, moveRow, toggleRow, setRowNote, setDraftName, draftOnCount, defaultPlanName,
 } from './tourPlan.js'
 import {
   useTourStore, resolveAutoIdle, applyTourPlan, saveTourPlanAs, activateTourPlan, clearTourPlan, deleteTourPlan, AUTO_IDLE_DEFAULT,
@@ -386,6 +386,34 @@ test('腳本庫操作（不可變）：savePlanAs 依序給 p1、p2…（刪掉�
   assert.equal(removePlan(s, 'zzz'), s, '刪不存在的：原封不動')
   const again = savePlanAs(rm, { name: '新', stops: ['moon'] })
   assert.equal(again.id, 'p3', '刪掉的編號被重用')
+})
+
+test('defaultPlanName：最小的還沒被用掉的號碼——刪掉較早的一份後不會與既有的同名（回歸：「份數 + 1」會產生兩個「腳本 2」）；依語系的格式；壞輸入不炸', () => {
+  const zh = (n) => '腳本 ' + n, en = (n) => 'Plan ' + n
+  const lib = (...names) => ({ active: null, plans: names.map((name, i) => ({ id: 'p' + (i + 1), name, stops: [{ id: 'air' }] })) })
+  assert.equal(defaultPlanName(emptyStore(), zh), '腳本 1')
+  assert.equal(defaultPlanName(lib('腳本 1'), zh), '腳本 2')
+  assert.equal(defaultPlanName(lib('腳本 1', '腳本 2'), zh), '腳本 3')
+  // 回歸：存了「腳本 1」「腳本 2」、刪掉「腳本 1」（剩 1 份）→ 舊做法 1 + 1 = 2 與既有的「腳本 2」同名
+  assert.equal(defaultPlanName(lib('腳本 2'), zh), '腳本 1')
+  assert.equal(defaultPlanName(lib('腳本 1', '腳本 3'), zh), '腳本 2', '中間的空缺先補')
+  assert.equal(defaultPlanName(lib('自己取的名字', '腳本 1'), zh), '腳本 2', '使用者自己取的名字不影響號碼')
+  assert.equal(defaultPlanName(lib('腳本 1', '腳本 2', '腳本 3', '腳本 4'), zh), '腳本 5')
+  // 名稱依「當下語系」的格式比較：中文存的「腳本 1」不會擋掉英文的 Plan 1（不同字串），同語系才去重
+  assert.equal(defaultPlanName(lib('腳本 1'), en), 'Plan 1'); assert.equal(defaultPlanName(lib('Plan 1', 'Plan 2'), en), 'Plan 3'); assert.equal(defaultPlanName(lib('Plan 2'), en), 'Plan 1')
+  // 走完整個「存 → 存 → 刪 → 存」流程：選單裡不會有兩個同名的預設腳本
+  let s = emptyStore()
+  for (let i = 0; i < 2; i++) { const r = savePlanAs(s, { name: defaultPlanName(s, zh), stops: ['air'] }); assert.equal(r.ok, true); s = r.store }
+  assert.deepEqual(s.plans.map((p) => p.name), ['腳本 1', '腳本 2'])
+  s = removePlan(s, 'p1')
+  const r3 = savePlanAs(s, { name: defaultPlanName(s, zh), stops: ['tide'] }); s = r3.store
+  const names = s.plans.map((p) => p.name); assert.equal(new Set(names).size, names.length, names.join(' / ')); assert.deepEqual(names, ['腳本 2', '腳本 1'])
+  // 壞輸入
+  for (const bad of [null, undefined, {}, { plans: 'x' }, { plans: [null, 5, {}] }]) assert.equal(defaultPlanName(bad, zh), '腳本 1', JSON.stringify(bad))
+  assert.equal(defaultPlanName(emptyStore()), '1', '沒給格式函式：只回號碼字串')
+  // 接線：編輯器另存新腳本用它、不再用「份數 + 1」
+  const ed = readFileSync(new URL('../ui/TourPlanEditor.jsx', import.meta.url), 'utf8')
+  assert.match(ed, /defaultPlanName\(planLib, \(n\) => t\('腳本 \{n\}', \{ n \}\)\)/); assert.doesNotMatch(ed, /planLib\.plans\.length \+ 1/)
 })
 
 test('resolveInitialPlan：網址腳本（本次有效）> 上次啟用的已存腳本 > 沒有；已存腳本的 active 指向不存在 → 沒有', () => {

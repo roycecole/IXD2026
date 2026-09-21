@@ -905,7 +905,8 @@ const handAt = (mk, tx, ty, o = {}) => place(mk(), { scale: 0.2, tx, ty, ...o })
 // 把一段「位置隨時間」餵給偵測器；回傳 [{ t, event }]（只含有事件的幀）。pos(t) → tx（原始影像 x）或 null（這一幀沒有手）；也可回傳 { tx, ty, mk }。
 function drive(det, from, to, pos, o = {}) {
   const ev = []
-  for (let t = from; t <= to + 1e-6; t += WSTEP) {
+  const step = o.step || WSTEP                                     // 幀間隔（預設 67ms = 15 fps；慢裝置的測試傳 133 / 167 / 200）
+  for (let t = from; t <= to + 1e-6; t += step) {
     const p = pos(t)
     const lm = p == null ? null : (typeof p === 'number' ? handAt(o.mk || POSES.openPalm, p, o.ty ?? 0.6, o.place) : handAt(p.mk || o.mk || POSES.openPalm, p.tx, p.ty ?? o.ty ?? 0.6, o.place))
     const r = det.update(lm, t, { aspect: o.aspect ?? ASPECT, mirror: o.mirror })
@@ -1164,4 +1165,85 @@ test('接線守則：GestureService 只在導覽進行中處理揮手、走 rout
   assert.match(src, /suppressCalm: waveOn/)
   assert.doesNotMatch(src.replace(/\/\/.*$/gm, ''), /\btouch\(\)/, '手勢服務不能呼叫 touch()（會中止導覽）')
   assert.match(src, /pushLog\('out', t\('揮手：\{action\}'/)
+})
+
+// ---- 幀間隔自適應（回歸）：hands.js 的偵測節流是「開始到開始 = d + min(100, 2d)」，推論 d ≈ 55–100ms 的舊 iPad / 退回 CPU 的手機幀間隔 165–200ms。
+//      固定的 windowMs（4 幀要塞進 500ms）與 settleMs（冷卻後 ≥ 2 幀在 150ms 內）會讓揮手只能用一次就再也重新就緒不了、或根本觸發不了，畫面卻一直寫「已就緒」。----
+const threeSweeps = (t) => (t < 4000 ? sweep(0.3, 0.7, 1000, 400)(t) : t < 7000 ? sweep(0.7, 0.3, 4000, 400)(t) : sweep(0.3, 0.7, 7000, 400)(t))   // 左、右、左，各相隔 3 秒
+
+test('幀間隔自適應：67 / 100 / 133 / 167 / 200ms 的幀間隔，連續三次揮手（左、右、左）都觸發（不會只能用一次）', () => {
+  for (const step of [67, 100, 133, 167, 200]) {
+    const det = createWaveDetector()
+    const ev = drive(det, 0, 10000, threeSweeps, { step })
+    assert.deepEqual(events(ev), ['left', 'right', 'left'], `step=${step}：${JSON.stringify(ev)}`)
+  }
+  // 幀間隔有抖動（150–200ms 隨機）：第一次揮動就要偵測到，而且後面還能再用
+  let hitFirst = 0, hitAll = 0
+  for (let seed = 1; seed <= 30; seed++) {
+    let r = seed * 2654435761 % 4294967296; const rnd = () => ((r = (r * 1664525 + 1013904223) % 4294967296) / 4294967296)
+    const det = createWaveDetector(); const ev = []
+    for (let t = 0; t <= 10000; t += 150 + Math.floor(rnd() * 50)) {
+      const lm = handAt(POSES.openPalm, threeSweeps(t), 0.6)
+      const o = det.update(lm, t, { aspect: ASPECT }); if (o.event) ev.push(o.event)
+    }
+    if (ev[0] === 'left') hitFirst++
+    if (ev.length === 3 && ev.join() === 'left,right,left') hitAll++
+  }
+  assert.ok(hitFirst >= 29, `抖動的幀間隔：第一次揮動偵測率 ${hitFirst}/30`); assert.ok(hitAll >= 27, `三次都偵測到 ${hitAll}/30`)
+})
+
+test('幀間隔自適應：正常裝置（幀間隔 ≤ 100ms）的行為與原本完全相同——判定時間點一樣（不因為自適應而變遲鈍或變敏感）', () => {
+  const ref = (step) => events(drive(createWaveDetector(), 0, 4000, sweep(0.3, 0.7, 1000, 400), { step }))
+  for (const step of [33, 50, 67, 100]) assert.deepEqual(ref(step), ['left'], `step=${step}`)
+  const at67 = drive(createWaveDetector(), 0, 2500, sweep(0.3, 0.7, 1000, 400))
+  assert.ok(at67[0].t >= 1000 + WSTEP * 2 && at67[0].t <= 1400 + WSTEP, `低延遲：${at67[0].t}`)
+  // 偶爾一個長幀（200ms）不會讓門檻明顯變化：原本的負面案例仍然不觸發
+  const det = createWaveDetector()
+  const spiky = []
+  for (let t = 0, i = 0; t <= 8000; t += i++ % 20 === 19 ? 200 : 67) { const o = det.update(handAt(POSES.openPalm, sweep(0.3, 0.7, 1000, 2000)(t), 0.6), t, { aspect: ASPECT }); if (o.event) spiky.push(o.event) }
+  assert.deepEqual(spiky, [], '緩慢移動（2 秒）仍不算')
+})
+
+test('幀間隔自適應：慢裝置（幀間隔 200ms）上不誤觸發——靜止 / 緩慢漂移 / 握拳橫掃 / 邊緣進入 / 來回揮 / 垂直揮 / 偵測跳號 / 手消失', () => {
+  const step = 200
+  const none = (label, ev) => assert.deepEqual(ev, [], `${label}：${JSON.stringify(ev)}`)
+  none('靜止', drive(createWaveDetector(), 0, 10000, () => 0.5, { step, place: { noise: 0.01, seed: 2 } }))
+  none('緩慢移動 1.5 秒', drive(createWaveDetector(), 0, 8000, sweep(0.3, 0.7, 1000, 1500), { step }))
+  none('緩慢移動 2.5 秒', drive(createWaveDetector(), 0, 8000, sweep(0.3, 0.7, 1000, 2500), { step }))
+  none('10 秒漂移', drive(createWaveDetector(), 0, 10000, (t) => 0.3 + 0.4 * (t / 10000), { step }))
+  for (const name of ['fist', 'thumbsUp', 'point', 'peace', 'claw', 'flatTogether']) none(name, drive(createWaveDetector(), 0, 5000, sweep(0.3, 0.7, 1000, 400), { step, mk: POSES[name] }))
+  none('從右邊緣進來', drive(createWaveDetector(), 0, 4000, (t) => 1.05 - 0.45 * smooth(Math.min(1, t / 600)), { step }))
+  none('緩慢離開', drive(createWaveDetector(), 0, 6000, (t) => (t < 1000 ? 0.5 : 0.5 + 0.6 * ((t - 1000) / 2000)), { step }))
+  none('來回揮（3 Hz）', drive(createWaveDetector(), 0, 5000, (t) => (t < 800 ? 0.5 : 0.5 + 0.15 * Math.sin(2 * Math.PI * 3 * (t - 800) / 1000)), { step }))
+  none('垂直揮', drive(createWaveDetector(), 0, 4000, (t) => ({ tx: 0.5 + 0.1 * smooth(Math.min(1, Math.max(0, (t - 1000) / 400))), ty: 0.3 + 0.4 * smooth(Math.min(1, Math.max(0, (t - 1000) / 400))) }), { step }))
+  none('偵測跳號（單幀跳 0.6）', drive(createWaveDetector(), 0, 4000, (t) => (t < 1600 ? 0.2 : 0.8), { step }))
+  none('手消失', drive(createWaveDetector(), 0, 4000, (t) => (t < 1500 ? 0.5 : null), { step }))
+  none('剛出現就掃', drive(createWaveDetector(), 0, 4000, (t) => (t < 1000 ? null : sweep(0.3, 0.7, 1000, 400)(t)), { step }))
+  none('消失後接續的位移不合併', drive(createWaveDetector(), 0, 4000, (t) => (t < 1000 ? 0.3 : t < 1800 ? null : 0.7), { step }))
+})
+
+test('幀間隔自適應：reset()（換相機來源）之後重新量幀間隔；跨過「手消失」的長間隔不算幀間隔（不會把門檻撐大）', () => {
+  // 慢裝置量到 200ms → reset → 換成快的來源（67ms）：不能沿用舊的幀間隔而讓緩慢移動變得容易觸發
+  const det = createWaveDetector()
+  drive(det, 0, 3000, () => 0.5, { step: 200 })
+  det.reset()
+  const slow = drive(det, 3100, 12000, sweep(0.3, 0.7, 4000, 1200))
+  assert.deepEqual(slow, [], '快的來源：1.2 秒的慢動作仍不算')
+  // 手中間消失 10 秒（不是幀間隔）：之後 67ms 的正常幀，緩慢移動仍不算
+  const d2 = createWaveDetector()
+  const ev = drive(d2, 0, 30000, (t) => (t < 2000 ? 0.5 : t < 12000 ? null : sweep(0.3, 0.7, 14000, 1200)(t)))
+  assert.deepEqual(ev, [], '消失 10 秒不會讓視窗撐到很大而放過慢動作')
+  // 而且消失之後的正常快速揮動仍然能觸發
+  const d3 = createWaveDetector()
+  assert.deepEqual(events(drive(d3, 0, 30000, (t) => (t < 2000 ? 0.5 : t < 12000 ? null : sweep(0.3, 0.7, 14000, 400)(t)))), ['left'])
+})
+
+test('幀間隔自適應：實作只在 createWaveDetector 內、時間類門檻取 max(固定值, 倍數 × 量測的幀間隔)；WAVE 的名目門檻不變', () => {
+  const src = readFileSync(new URL('./gestures.js', import.meta.url), 'utf8')
+  for (const re of [/Math\.max\(C\.gapMs, GAP_K \* frameDt\)/, /Math\.max\(C\.windowMs, WIN_K \* frameDt\)/, /Math\.max\(C\.settleMs, SETTLE_K \* frameDt\)/, /C\.maxStepDx \* Math\.max\(1, frameDt \/ 100\)/, /frameDt = 0\s*\}/]) assert.match(src, re)
+  assert.deepEqual([WAVE.windowMs, WAVE.settleMs, WAVE.gapMs, WAVE.maxStepDx, WAVE.minSamples], [500, 150, 300, 0.25, 4], '名目值不變（自適應只放寬、不改預設）')
+  // 名目門檻對 ≤ 100ms 的幀間隔不變：倍數 × 100ms 不超過固定值
+  const K = { GAP_K: 2.2, WIN_K: 3.2, SETTLE_K: 1.5 }
+  for (const [name, k] of Object.entries(K)) assert.match(src, new RegExp('const ' + name + ' = ' + String(k).replace('.', '\\.')))
+  assert.ok(2.2 * 100 <= WAVE.gapMs && 3.2 * 100 <= WAVE.windowMs && 1.5 * 100 <= WAVE.settleMs)
 })

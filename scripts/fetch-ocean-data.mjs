@@ -210,8 +210,8 @@ export async function refreshAirWind(history, deps = {}) {
 }
 
 // 環境部測站觀測 → air.obs（見 gov/moenv.mjs）。金鑰只讀環境變數 MOENV_KEY（deps.key 可注入測試）：
-//   · 沒有金鑰（未設 / 空字串 / 只有空白）→ 略過並印一行說明，不算失敗；仍套用「舊 obs 最多撐 48 小時」的規則（過期的觀測不能當現在的）
-//   · 有金鑰但請求失敗 / 逾時 / 回應格式不對 / 金鑰錯誤 → 保留舊 obs（fetchedAt 距今 ≤ 48 小時），更舊的移除；各請求依序、有重試，整段 try/catch，不影響其他資料集
+//   · 沒有金鑰（未設 / 空字串 / 只有空白）→ 略過並印一行說明，不算失敗；仍套用「舊 obs 最多撐 48 小時、且最新一筆有效 PM2.5 的小時本身也不能過期」的規則（過期的觀測不能當現在的；見 moenv.mjs 的 retainObs）
+//   · 有金鑰但請求失敗 / 逾時 / 回應格式不對 / 金鑰錯誤 → 保留舊 obs（fetchedAt 距今 ≤ 48 小時且最新有效 PM2.5 小時未過期），否則移除；各請求依序、有重試，整段 try/catch，不影響其他資料集
 // 日誌與錯誤訊息一律不含金鑰（maskKey）。deps 供測試注入：{ key, fetch, retryOpts, log, error }。
 //   回傳 { obs（要寫進 air.obs 的物件，或 null）, status: 'skipped' | 'fresh' | 'kept' | 'dropped' | 'none', error?, stats? }
 export async function refreshAirObs(cur, nowMs, deps = {}) {

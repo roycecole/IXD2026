@@ -60,7 +60,7 @@ export default {
   '瀏覽器與版本：{v}': 'Browser and version: {v}',
   '測試人：{v}': 'Tester: {v}',
   '備註：{v}': 'Notes: {v}',
-  '本報告不含個人資料、IP、影像或音訊（你自己填寫的裝置備註除外）。': 'This report contains no personal data, IP address, images or audio (except the device notes you filled in yourself).',
+  '本報告不含 IP、影像或音訊；Web MIDI 埠名稱、手把型號字串與裝置備註會照實列出，貼出前請先檢查。': 'This report contains no IP address, images or audio. Web MIDI port names, gamepad ID strings and device notes are listed exactly as they are, so check it before you post it anywhere.',
 
   // ---- 群組與新檢查 ----
   '展場防呆（互動）': 'Kiosk safeguards (interactive)',

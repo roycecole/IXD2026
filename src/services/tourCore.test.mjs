@@ -23,7 +23,7 @@ import { runCommand, CALM_TARGETS, CALM_STEP } from '../lib/voiceCommands.js'
 import { dispatch } from '../lib/remoteDispatch.js'
 import { attachHapticsSource } from '../lib/haptics.js'
 import { inspectStore } from '../lib/inspect.js'
-import { attachTourGuards, attachRunningGuards, tourIdleTick, tourRunner, KEEP_SELECTOR, KEEP_KEYS, navKeyAction, isTypingTarget, createLinkStarter, copyTourLink, armNarrationUnlock, LINK_START_DELAY_MS } from './tourCore.js'
+import { attachTourGuards, attachRunningGuards, tourIdleTick, typingInEditor, TYPING_GRACE_MS, tourRunner, KEEP_SELECTOR, KEEP_KEYS, navKeyAction, isTypingTarget, createLinkStarter, copyTourLink, armNarrationUnlock, LINK_START_DELAY_MS } from './tourCore.js'
 
 const { dict: EN_DICT } = await loadEnDict()
 registerEn(EN_DICT)
@@ -213,8 +213,24 @@ test('活動掛鉤：touch 重入安全；detach 後不再中止導覽', () => {
 
 test('接線：VoiceService 先 touch() 再 runCommand（順序決定輸入是否落在還原後的海）', () => {
   const src = readFileSync(new URL('./VoiceService.jsx', import.meta.url), 'utf8')
-  const a = src.indexOf('touch()'), b = src.indexOf('runCommand(f.id')
-  assert.ok(a > 0 && b > a)
+  // 只看 runSea 的本體、且先去掉 // 註解（檔頭註解裡也有「touch()」字樣：以前用整個檔案的 indexOf，先撞到第 6 行的註解，順序寫反了測試照樣過）
+  const i = src.indexOf('runSea:'), j = src.indexOf('show,', i)
+  assert.ok(i > 0 && j > i, '找得到 runSea 的本體')
+  const body = src.slice(i, j).split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n')
+  const a = body.indexOf('touch()'), b = body.indexOf('runCommand(f.id')
+  assert.ok(a >= 0, 'runSea 內有 touch()'); assert.ok(b >= 0, 'runSea 內有 runCommand(f.id')
+  assert.ok(a < b, 'runSea 內要先 touch()（導覽先中止並還原）再 runCommand（動作才落在還原後的海上）')
+  // 導覽員指令走 touchGuide（只記在場、不中止導覽）；清理時 router / echo 都要 dispose
+  const create = src.slice(src.indexOf('createVoiceRouter({'), i)
+  assert.match(create, /runner: tourRunner,\s*touchGuide,/)
+  assert.match(src, /return \(\) => \{ off\(\); echo\.dispose\(\); router\.dispose\(\);/)
+  // 自我檢查：把順序寫反的來源（touch() 在 runCommand 之後）會被這個判斷抓到（只有註解裡有 touch() 也一樣）
+  const wrong = 'runSea: (f) => {\n  // 不是 touch()\n  try { runCommand(f.id, useStore) } catch (e) {}\n  touch()\n},\nshow,'
+  const wb = wrong.slice(0, wrong.indexOf('show,')).split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n')
+  assert.ok(!(wb.indexOf('touch()') >= 0 && wb.indexOf('touch()') < wb.indexOf('runCommand(f.id')))
+  const noTouch = 'runSea: (f) => {\n  // touch() 在註解裡\n  try { runCommand(f.id, useStore) } catch (e) {}\n},\nshow,'
+  const nb = noTouch.slice(0, noTouch.indexOf('show,')).split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n')
+  assert.equal(nb.indexOf('touch()'), -1)
 })
 
 // ================= 隱藏 / 閒置計時 =================
@@ -293,6 +309,67 @@ test('自動導覽啟動時收掉資料卡（游標停在卡片上時卡片不�
   assert.equal(tourIdleTick(1e9), 'started')
   assert.equal(inspectStore.get().open, false)
   tourRunner.stop('user')
+})
+
+// ---- 腳本編輯器打字中不自動導覽（回歸：編輯器在面板卡裡不是彈窗，anyModalOpen 看不到它；停頓 30 秒想備註，導覽就把介面搶走、字寫到一半被打斷）----
+function withFocus(el, fn) {
+  const hadDoc = Object.getOwnPropertyDescriptor(globalThis, 'document'), lastBefore = activity.last
+  Object.defineProperty(globalThis, 'document', { value: { querySelector: () => null, activeElement: el }, configurable: true, writable: true })
+  try { return fn() } finally {
+    if (hadDoc) Object.defineProperty(globalThis, 'document', hadDoc); else delete globalThis.document
+    activity.last = lastBefore
+    try { tourRunner.stop('user') } catch (e) { /* ignore */ }
+  }
+}
+const editorEl = (o = {}) => { const el = { tagName: 'INPUT', type: 'text', readOnly: false, disabled: false, closest: (sel) => (sel === '[data-tour-ui]' ? el : null), ...o }; return el }
+const idleGov = () => { S().setGov(JSON.parse(JSON.stringify(gov))); useTourStore.setState({ remote: false, autoIdle: true }) }   // tourIdleTick 會記住「建不出站的那份資料」：用複本
+
+test('tourIdleTick：焦點在腳本編輯器的文字欄位（備註 / 名稱）且離最後一次輸入 < 2 分鐘 → 不自動開始（wait）；沒有其他條件變化時，一離開欄位就照常開始', () => {
+  idleGov()
+  const t0 = 3e9
+  withFocus(editorEl(), () => {
+    activity.last = t0 - 31000                               // 停頓 31 秒（閒置 30 秒的門檻已過）
+    assert.equal(tourIdleTick(t0), 'wait'); assert.equal(tourRunner.isRunning(), false)
+    activity.last = t0 - (TYPING_GRACE_MS - 1000)
+    assert.equal(tourIdleTick(t0), 'wait', '2 分鐘內都還在等')
+    activity.last = t0 - (TYPING_GRACE_MS + 1000)
+    assert.equal(tourIdleTick(t0), 'started', '焦點忘在欄位上（人走開了）超過 2 分鐘 → 不再擋，展場 / 吸引模式不能被永遠擋住')
+  })
+  idleGov()
+  withFocus(editorEl({ tagName: 'TEXTAREA', type: 'textarea' }), () => { activity.last = t0 - 31000; assert.equal(tourIdleTick(t0), 'wait', 'TEXTAREA 也算') })
+  idleGov()
+  withFocus(null, () => { activity.last = t0 - 31000; assert.equal(tourIdleTick(t0), 'started', '沒有焦點元素') })
+})
+
+test('tourIdleTick：只認「可輸入文字、非唯讀、非停用、在 [data-tour-ui] 內」的欄位——唯讀欄位（複製連結備援）、停用（導覽進行中）、勾選框 / 滑桿 / 按鈕 / 下拉、編輯器外的輸入框都不擋', () => {
+  const t0 = 3.1e9
+  const cases = [
+    ['readOnly', editorEl({ readOnly: true })], ['disabled', editorEl({ disabled: true })],
+    ['checkbox', editorEl({ type: 'checkbox' })], ['range', editorEl({ type: 'range' })], ['button', editorEl({ tagName: 'BUTTON', type: 'button' })], ['select', editorEl({ tagName: 'SELECT', type: 'select-one' })],
+    ['number', editorEl({ type: 'number' })], ['編輯器外的輸入框', editorEl({ closest: () => null })],
+  ]
+  for (const [name, el] of cases) { idleGov(); withFocus(el, () => { activity.last = t0 - 31000; assert.equal(tourIdleTick(t0), 'started', name) }) }
+  for (const type of ['text', 'search', 'url', 'tel', 'email']) { idleGov(); withFocus(editorEl({ type }), () => { activity.last = t0 - 31000; assert.equal(tourIdleTick(t0), 'wait', type) }) }
+  idleGov(); withFocus(editorEl({ type: undefined }), () => { activity.last = t0 - 31000; assert.equal(tourIdleTick(t0), 'wait', '沒有 type 屬性的 INPUT 視為 text') })
+  // typingInEditor 本身：document 不存在 / 存取丟例外 → false，不炸
+  assert.equal(typingInEditor(), false)
+  const hadDoc = Object.getOwnPropertyDescriptor(globalThis, 'document')
+  Object.defineProperty(globalThis, 'document', { get() { throw new Error('boom') }, configurable: true })
+  try { assert.equal(typingInEditor(), false) } finally { if (hadDoc) Object.defineProperty(globalThis, 'document', hadDoc); else delete globalThis.document }
+  assert.equal(TYPING_GRACE_MS, 120000)
+})
+
+test('tourIdleTick：打字延後只影響「自動開始」——彈窗開著仍優先 wait、觀眾視窗 / 關閉自動導覽仍是 off、導覽已在進行就是 running', () => {
+  const t0 = 3.2e9
+  idleGov()
+  withFocus(editorEl(), () => {
+    activity.last = t0 - 31000
+    useTourStore.setState({ autoIdle: false }); assert.equal(tourIdleTick(t0), 'off')
+    useTourStore.setState({ autoIdle: true, remote: true }); assert.equal(tourIdleTick(t0), 'off')
+    useTourStore.setState({ remote: false })
+    assert.equal(tourRunner.start({ auto: true }), true); assert.equal(tourIdleTick(t0), 'running', '已在跑：照常 running（不因打字而改變）')
+  })
+  idleGov()
 })
 
 // ================= 導覽進行中的 capture 守衛（原 TourService 內的邏輯；現在抽出來可測）=================

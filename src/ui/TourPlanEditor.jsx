@@ -3,7 +3,7 @@ import { useStore } from '../store/useStore.js'
 import { useTourStore, buildTour, applyTourPlan, saveTourPlanAs, activateTourPlan, clearTourPlan, deleteTourPlan } from '../lib/tour.js'
 import { copyText } from '../lib/tourLink.js'
 import {
-  PLAN_LIMITS, MAX_SAVED, draftFromPlan, draftToPlan, draftOnCount, moveRow, toggleRow, setRowNote, setDraftName, countChars, planEquals, isDefaultPlan, buildPlanLink,
+  PLAN_LIMITS, MAX_SAVED, draftFromPlan, draftToPlan, draftOnCount, moveRow, toggleRow, setRowNote, setDraftName, countChars, planEquals, isDefaultPlan, buildPlanLink, defaultPlanName,
 } from '../lib/tourPlan.js'
 import { useT, T, getLocale } from '../i18n/index.js'
 import '../styles/tour.css'
@@ -122,7 +122,7 @@ export default function TourPlanEditor({ defaultOpen = false }) {
   const onSaveNew = () => {
     const p = draftToPlan(draft)
     if (!p) return say('none', null, 'err')
-    const name = p.name || t('腳本 {n}', { n: planLib.plans.length + 1 })
+    const name = p.name || defaultPlanName(planLib, (n) => t('腳本 {n}', { n }))   // 最小的還沒被用掉的號碼（刪掉較早的一份後不會與既有的同名）
     const r = saveTourPlanAs({ ...p, name })
     if (!r.ok) return fail(r)
     setDraft((d) => setDraftName(d, name))

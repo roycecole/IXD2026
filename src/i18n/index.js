@@ -12,16 +12,19 @@
 //   · 不要在「模組頂層」呼叫 t() / translate()（import 當下執行）：英文字典是動態載入的，路由 chunk 可能比字典先執行完（會固定成中文）。靜態表用 T() 標記，顯示時再 t()。
 //     （src/i18n/i18n.test.mjs 會掃描整個 src 守住這一條。）
 //
-// 英文字典是「動態載入」的（瀏覽器）：中文使用者（多數人）與手機遙控頁的中文模式完全不下載它。
+// 英文字典是「動態載入」的（瀏覽器）：手機遙控頁的中文模式完全不下載它；主畫面 / 觀眾視窗的中文使用者在畫面出來之後、閒置時才預抓（診斷頁與手機遙控頁不預抓；prefetchEnglish：
+// 按 EN 不依賴當下的網路，chunk 也經 Service Worker 進快取——離線的 PWA 才切得過去；省流量模式 / 離線 / 手機遙控頁不預抓）。
 //   · 啟動：偵測到英文（?lang=en、存過偏好 en、瀏覽器語言為英文）→ main.jsx 在第一次 render 前 await bootLocale()（最多等 BOOT_TIMEOUT_MS；逾時 / 失敗先以中文 render，字典之後到了自動切換並重繪）。
 //     字典就緒之前，store 的 locale 一律是 'zh'（不變式：瀏覽器裡 locale === 'en' 代表字典已載入）→ 不會出現「locale 是 en、內容卻是中文」的中間狀態。
-//   · 切換：setLocale('en') 字典未載入 → 先 loadEnglish()，載完才真的切（期間 locale 維持原樣、useLocaleLoading() 為 true）；失敗 → 維持原語系、console 記一行、不丟例外，再按一次會重試。切回 zh 不需要載入。
+//   · 切換：setLocale('en') 字典未載入 → 先 loadEnglish()，載完才真的切（期間 locale 維持原樣、useLocaleLoading() 為 true——語言鈕據此顯示忙碌）；
+//     失敗 → 維持原語系、不丟例外，useLocaleFailed() 變成 'retry'（逾時：還在跑、只是太慢）或 'reload'（硬失敗），約 FAIL_NOTICE_MS 後自己消失（i18n/LangNotice.jsx 顯示雙語提示，不能只有 console）。
+//     再按一次：'retry' → 重新載入；'reload' → 存好偏好後整頁重新載入（瀏覽器可能把失敗的 import() 記在模組表裡，同一個網址再 import 一次不會重新請求）。切回 zh 不需要載入。
 //   · 安全網：有人直接把 store 設成 en（例如觀眾視窗跟隨主視窗的語系，它不走 setLocale）而字典還沒載入 → 自動補載，載完重繪（useT 訂閱 rev）。
 // Node（測試）沒有 window：預設 zh，沒有載入器（視為「字典已就緒」），字典用 registerEn() 手動註冊；setLocale('en') 同步生效。
 import { useCallback } from 'react'
 import { create } from 'zustand'
 import { LS, loadLS, saveLS } from '../lib/persist.js'
-import { createLoader, createLocaleSwitcher } from './loader.js'
+import { createLoader, createLocaleSwitcher, prefetchWhenIdle, LOAD_TIMEOUT_MESSAGE } from './loader.js'
 
 export const LOCALES = ['zh', 'en']
 const HAS_WINDOW = typeof window !== 'undefined' && typeof document !== 'undefined'
@@ -41,10 +44,11 @@ export function getEnDict() { return EN }
 const loadEnglishDict = () => import('./en-all.js').then((m) => { registerEn(m.default) })
 
 function logLoadError(err) {
-  try { console.warn('[i18n] 英文字典載入失敗，維持中文（再按一次 EN 會重試）：', err && err.message ? err.message : err) } catch (e) { /* ignore */ }
+  try { console.warn('[i18n] 英文字典載入失敗，維持中文（畫面上有提示；再按一次 EN 會重試 / 重新載入頁面）：', err && err.message ? err.message : err) } catch (e) { /* ignore */ }
 }
 
 function onEnglishReady() {
+  hardFailed = false; setFailed(false)
   // 字典到了：若 store 已經是 en（安全網路徑：有人直接改 store）→ rev + 1 讓元件重繪；標題 / description / <html lang> 再套一次
   try { if (useLocaleStore.getState().locale === 'en') useLocaleStore.setState((s) => ({ rev: (s.rev || 0) + 1 })) } catch (e) { /* ignore */ }
   applyDocumentLocale()
@@ -75,10 +79,34 @@ if (HAS_WINDOW && import.meta.env && import.meta.env.DEV) window.__i18nMissing =
 // 想要英文、但字典還沒載入 → 先以中文生效（不變式見上），由 bootLocale() 等字典到了再切
 const detected = detect()
 export const useLocaleStore = create(() => ({ locale: detected === 'en' && !english.isReady() ? 'zh' : detected, rev: 0 }))
-// 有切換在等字典（給語言鈕顯示忙碌用；不放進 useLocaleStore，免得所有 useLocaleStore(...) 的呼叫端多一個會變的欄位）
-const useLocaleBusyStore = create(() => ({ loading: false }))
+// 有切換在等字典（給語言鈕顯示忙碌用；不放進 useLocaleStore，免得所有 useLocaleStore(...) 的呼叫端多一個會變的欄位）。
+// failed：最近一次「使用者要求的」英文載入失敗（false | 'retry' | 'reload'）；約 FAIL_NOTICE_MS 後自己歸零，新的嘗試開始 / 載入成功也會歸零。
+export const useLocaleBusyStore = create(() => ({ loading: false, failed: false }))   // 匯出給測試（SSR 渲染 LangNotice 時要設定它）；元件請用 useLocaleLoading / useLocaleFailed
 export function useLocaleLoading() { return useLocaleBusyStore((s) => s.loading) }
 export function isLocaleLoading() { return useLocaleBusyStore.getState().loading }
+export function useLocaleFailed() { return useLocaleBusyStore((s) => s.failed) }
+export function getLocaleFailed() { return useLocaleBusyStore.getState().failed }
+
+export const FAIL_NOTICE_MS = 6000              // 「英文載入失敗」的提示顯示多久
+let failTimer = null
+let hardFailed = false                          // 最近一次失敗是「硬失敗」（不是逾時）：下一次按 EN 改成整頁重新載入
+function setFailed(v) {
+  useLocaleBusyStore.setState({ failed: v || false })
+  try { if (failTimer !== null) clearTimeout(failTimer) } catch (e) { /* ignore */ }
+  failTimer = null
+  if (v) {
+    try {
+      failTimer = setTimeout(() => { failTimer = null; useLocaleBusyStore.setState({ failed: false }) }, FAIL_NOTICE_MS)
+      if (failTimer && typeof failTimer.unref === 'function') failTimer.unref()   // Node：不要為了一個提示的計時器讓程序多活 6 秒
+    } catch (e) { failTimer = null }
+  }
+}
+// 使用者要求的英文載入失敗（協調器的 onError）：記一行 log、留下畫面提示
+function onEnglishFailed(err) {
+  logLoadError(err)
+  hardFailed = !(err && err.message === LOAD_TIMEOUT_MESSAGE)
+  setFailed(hardFailed ? 'reload' : 'retry')
+}
 
 // 把語系寫到 <html lang>、標題與 description（分享 / 無障礙 / 瀏覽器翻譯提示都會用到）
 export function applyDocumentLocale(loc = useLocaleStore.getState().locale) {
@@ -112,8 +140,8 @@ const makeSwitcher = (initialDesired) => createLocaleSwitcher({
   applyLocale,
   english: { isReady: () => english.isReady(), load: () => english.load() },   // 每次呼叫當下才讀目前的載入器（測試可換）
   initialDesired,
-  onBusy: (b) => useLocaleBusyStore.setState({ loading: !!b }),
-  onError: logLoadError,
+  onBusy: (b) => { useLocaleBusyStore.setState({ loading: !!b }); if (b) setFailed(false) },   // 新的嘗試開始：舊的失敗提示先收掉
+  onError: onEnglishFailed,
 })
 let switcher = makeSwitcher(detected)
 
@@ -122,7 +150,27 @@ export function setLocale(loc) { switcher.request(loc) }
 // 需要知道「切完了沒」的呼叫端（測試、語音指令）：回傳 Promise<切換後生效的語系>，永遠 resolve（失敗 = 維持原語系）
 export function setLocaleAsync(loc) { return switcher.request(loc) }
 // 回傳值語意 = 「目前」語系：en 的字典還在載入時仍是 'zh'
-export function toggleLocale() { setLocale(getLocale() === 'zh' ? 'en' : 'zh'); return getLocale() }
+// 上一次英文載入是「硬失敗」（不是逾時）而字典仍未載入：再按 EN = 整頁重新載入（見檔頭；先存好偏好 / 更新網址的 ?lang=，重載後開機就會載入英文）——
+// 同一個 import() 網址在有些瀏覽器會直接回傳被記住的失敗，光「再試一次」沒有用。載入中（useLocaleLoading）不重複觸發。
+export function toggleLocale() {
+  const want = getLocale() === 'zh' ? 'en' : 'zh'
+  if (want === 'en' && hardFailed && !english.isReady() && !isLocaleLoading() && reloadForEnglish()) return getLocale()
+  setLocale(want)
+  return getLocale()
+}
+
+// 整頁重新載入並以英文開機。回傳是否真的觸發（沒有載入器的環境 = Node，reloader 是 null → 不重新載入；測試用 __setReloader 換成假的）。
+let reloader = CAN_LOAD_EN ? () => { location.reload() } : null
+function reloadForEnglish() {
+  if (!reloader) return false
+  try { saveLS(LS.lang, 'en') } catch (e) { /* 偏好存不了（隱私模式）就靠網址 */ }
+  try {
+    const u = new URL(location.href)
+    u.searchParams.set('lang', 'en')                      // ?lang= 優先於偏好：網址若已帶 ?lang=zh（展場網址），不改的話重載又被蓋回中文；沒帶也補上，隱私模式存不了偏好時才有效
+    history.replaceState(history.state, '', u)
+  } catch (e) { /* ignore */ }
+  try { reloader(); return true } catch (e) { return false }
+}
 
 // 啟動：偵測到英文而字典未就緒 → 載入並等它（最多 timeoutMs）。永遠 resolve { status: 'skip' | 'ready' | 'timeout' | 'failed', locale }。
 // main.jsx 在第一次 render 前呼叫並等待；逾時後字典之後才到 → 自動切換並重繪。
@@ -138,8 +186,30 @@ export function __setEnglishLoader(load, { desired, ...opts } = {}) {
   english = makeEnglishLoader(typeof load === 'function' ? load : null, opts)
   switcher = makeSwitcher(desired)
   useLocaleBusyStore.setState({ loading: false })
+  hardFailed = false; setFailed(false)
   return english
 }
+
+// 畫面出來之後預抓英文字典（見 loader.js 的 prefetchWhenIdle）：閒置時（requestIdleCallback；沒有就 4 秒後的計時器）載入，失敗靜默。
+// 呼叫端：main.jsx（手機遙控頁不呼叫）。Node / 沒有載入器 → 什麼都不做。回傳有沒有排程。
+export const PREFETCH_FALLBACK_MS = 4000
+export function prefetchEnglish() {
+  if (!CAN_LOAD_EN) return false
+  return prefetchWhenIdle({
+    english,
+    idle: (fn) => {
+      try { if (typeof window.requestIdleCallback === 'function') { window.requestIdleCallback(fn, { timeout: 10000 }); return } } catch (e) { /* 走計時器 */ }
+      setTimeout(fn, PREFETCH_FALLBACK_MS)
+    },
+    saveData: () => { const c = typeof navigator !== 'undefined' ? navigator.connection : null; return !!(c && c.saveData) },
+    online: () => (typeof navigator !== 'undefined' && typeof navigator.onLine === 'boolean' ? navigator.onLine : undefined),
+  })
+}
+
+// 測試用：換掉「整頁重新載入」的動作（預設瀏覽器 = location.reload、Node = 沒有），回傳還原函式
+export function __setReloader(fn) { const prev = reloader; reloader = typeof fn === 'function' ? fn : null; return () => { reloader = prev } }
+// 測試用：把失敗狀態歸零
+export function __resetLocaleFailure() { hardFailed = false; setFailed(false) }
 
 // 語音辨識 / Intl 等 API 要的語言標籤
 export function localeTag(loc = getLocale()) { return loc === 'zh' ? 'zh-TW' : 'en-US' }

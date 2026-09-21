@@ -1,7 +1,7 @@
 // 資料導覽的「接線」（非 React，Node 可測）：把 lib/tour.js 的執行器接上真實的 store / 時鐘 / 活動時間戳 / DOM 事件。
 // TourService.jsx 只是把這裡的函式放進 useEffect。
 //   · tourRunner：唯一的執行器（用 useStore、activity.last、performance.now）
-//   · tourIdleTick()：App 主迴圈在「閒置 30 秒且沒有錄製 / 播放」時每幀呼叫，決定要不要自動開始
+//   · tourIdleTick()：App 主迴圈在「閒置 30 秒且沒有錄製 / 播放」時每幀呼叫，決定要不要自動開始（彈窗開著、或正在腳本編輯器的文字欄位打字 → 'wait'）
 //   · toggleTour() / startTour() / stopTour()：鍵盤 T、面板按鈕用
 //   · attachTourGuards()：長駐掛鉤（見該函式）；attachRunningGuards()：導覽進行中的 capture 監聽（含導覽員快速鍵 ← → P）
 //   · linkStarter（createLinkStarter）：網址帶 ?tourstop= 時，資料載入後只啟動一次導覽（見該函式）
@@ -57,12 +57,29 @@ function anyModalOpen(now) {
   return modalOpen
 }
 
+// 導覽腳本編輯器（TourPlanEditor：在面板的導覽卡裡、不是彈窗，所以 anyModalOpen 看不到它）的備註 / 名稱欄位有焦點、而且還沒閒置太久 → 暫不自動開始：
+// 導覽一開始編輯器就唯讀（fieldset disabled），寫到一半被打斷；動筆寫備註的人停下來想 30 秒很正常，不該在這時把整個介面搶走。
+// 只認「可輸入文字、非唯讀、非停用」的欄位，且在 [data-tour-ui] 內（編輯器的欄位都在裡面；滑桿 / 勾選框 / 下拉、「複製連結」備援的唯讀欄位都不算——
+// 調過滑桿後焦點會留在上面，那不是在打字，不能因此擋住自動導覽）。焦點可能忘在欄位上（人走開了）：所以只延後 TYPING_GRACE_MS（從最後一次輸入起算），
+// 超過就照常自動導覽——展場 / 吸引模式不能被一個忘記的焦點永遠擋住。
+export const TYPING_GRACE_MS = 2 * 60 * 1000
+const TEXT_INPUT_TYPE = /^(text|search|url|tel|email)$/
+export function typingInEditor() {
+  try {
+    const el = typeof document !== 'undefined' ? document.activeElement : null
+    if (!el || el.readOnly || el.disabled) return false
+    const tag = el.tagName || ''
+    if (!(tag === 'TEXTAREA' || (tag === 'INPUT' && TEXT_INPUT_TYPE.test(String(el.type || 'text').toLowerCase())))) return false
+    return !!(typeof el.closest === 'function' && el.closest('[data-tour-ui]'))
+  } catch (e) { return false }
+}
+
 // 上次建不出任何一站的「資料快照 + 導覽腳本 + AR 狀態」（同一組條件不必每幀重試）：站表取決於這三樣——腳本改了（編輯器套用）或 AR 開關變了，就要重新嘗試，不能一直回 nodata
 let emptyGov = null, emptyPlan
 let emptyAr = false
 
 // 回傳給 App 主迴圈：
-//   'started' / 'running'：導覽進行中（App 不要再做別的）· 'wait'：暫不啟動（彈窗開著等）· 'off'：使用者關閉了閒置自動導覽 / 這是觀眾視窗
+//   'started' / 'running'：導覽進行中（App 不要再做別的）· 'wait'：暫不啟動（彈窗開著、或正在腳本編輯器打字，等）· 'off'：使用者關閉了閒置自動導覽 / 這是觀眾視窗
 //   'nodata'：沒有可導覽的資料 → App 退回舊的「輪播色相場景」吸引模式
 export function tourIdleTick(now = performance.now()) {
   const ts = useTourStore.getState()
@@ -73,6 +90,7 @@ export function tourIdleTick(now = performance.now()) {
   if (!gov || !Array.isArray(gov.options) || !gov.options.length) return 'nodata'
   if (emptyGov === gov && emptyPlan === activePlan() && emptyAr === arState.on) return 'nodata'
   if (anyModalOpen(now)) return 'wait'
+  if (typingInEditor() && now - activity.last < TYPING_GRACE_MS) return 'wait'   // 正在腳本編輯器打字（停頓一下想想不算閒置）；久沒動就不擋（見 TYPING_GRACE_MS）
   if (tourRunner.start({ auto: true })) {
     try { inspectStore.close() } catch (e) { /* 資料卡開著（游標停在卡上不會自動關）就開始換海況、換字幕，兩者會打架：導覽接手前先收掉 */ }
     return 'started'

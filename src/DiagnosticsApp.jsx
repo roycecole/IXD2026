@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { useT, useLocale, toggleLocale, translate, localeTag, T } from './i18n/index.js'
+import { useT, useLocale, useLocaleLoading, toggleLocale, translate, localeTag, T } from './i18n/index.js'
+import LangNotice from './i18n/LangNotice.jsx'
 import {
   HAND_BONES, NARRATION_LINE, applyVerdict, browserEnv, buildReport, collectMeta, copyText, createCancel, createPointerTracker, createProbe, downloadText,
   fmtMsg, getAutoChecks, getCheck, getChecks, getGroups, getInteractiveChecks, guideSupport, makeResult, pointerOutcome, renderDetail, reportFileName, runAutoChecks,
@@ -344,6 +345,7 @@ function PointerPad({ onOutcome, onReset }) {
 export default function DiagnosticsApp() {
   const t = useT()
   const locale = useLocale()
+  const langBusy = useLocaleLoading()   // 等英文字典時語言鈕顯示忙碌；失敗提示在 <LangNotice />
   const env = useMemo(() => browserEnv(), [])
   const checks = useMemo(() => getChecks(), [])
   const groups = useMemo(() => getGroups(), [])
@@ -610,12 +612,13 @@ export default function DiagnosticsApp() {
       <header className="diag-head">
         <div className="diag-head-row">
           <h1>{t('裝置診斷')}</h1>
-          <button type="button" className="diag-lang" onClick={toggleLocale} lang={locale === 'zh' ? 'en' : 'zh-Hant'}
+          <button type="button" className="diag-lang" onClick={toggleLocale} lang={locale === 'zh' ? 'en' : 'zh-Hant'} aria-busy={langBusy || undefined}
             title={'Switch language / ' + translate('zh', '切換語言')} aria-label={locale === 'zh' ? 'Switch to English' : translate('zh', '切換為中文')}>
             {locale === 'zh' ? 'EN' : translate('zh', '中文')}
           </button>
+          <LangNotice />
         </div>
-        <p className="diag-privacy">{t('這個頁面不會上傳任何東西：所有檢查都在這台裝置的瀏覽器裡執行；相機、麥克風與語音只在你按下按鈕後才啟動，離開頁面就會全部關閉。報告只在你按「複製」或「下載」時產生，且不含個人資料、IP、影像或音訊。')}</p>
+        <p className="diag-privacy">{t('這個頁面不會上傳任何東西：所有檢查都在這台裝置的瀏覽器裡執行；相機、麥克風與語音只在你按下按鈕後才啟動，離開頁面就會全部關閉。報告只在你按「複製」或「下載」時產生，且不含 IP、影像或音訊；但 Web MIDI 埠名稱、手把型號字串與你填的裝置備註會照實列出，貼出前請先檢查。')}</p>
 
         <div className="diag-guided-cta">
           <button type="button" className="diag-btn primary big" onClick={() => startGuided()} disabled={quick.running || starting}>

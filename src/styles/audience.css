@@ -30,6 +30,10 @@ html[lang='en'] .audience-app .data-board-row { grid-template-columns: 7.4em 1fr
 .audience-app .tour-cap { padding: 0.55em 1.1em 0.5em; gap: 0.3em; border-radius: 0.8em; }
 .audience-app .tour-cap-title { font-size: 1.5em; }
 .audience-app .tour-cap-body { font-size: 1.05em; -webkit-line-clamp: 3; line-clamp: 3; }
+/* 導覽員的備註與出處 / 授權行（tourplan.css 是固定 px：13.5 / 11.5px，投影上反而是整個字幕裡最小的字）：同樣用 em 跟著容器放大。
+   備註 0.9em ≈ 說明的 86%（1080p 約 18px、4K 封頂約 27px）、出處 0.8em；備註保留 tourplan.css 的 2 行上限。 */
+.audience-app .tour-cap-note { font-size: 0.9em; line-height: 1.5; margin-top: 0.15em; padding-top: 0.35em; }
+.audience-app .tour-cap-src { font-size: 0.8em; line-height: 1.4; }
 .audience-app .tour-dots { gap: 0.4em; margin-top: 0.2em; }
 .audience-app .tour-dot { width: 0.5em; height: 0.5em; }
 .audience-app .tour-dot.cur { width: 1.8em; }
