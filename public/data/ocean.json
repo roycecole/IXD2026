@@ -1,13 +1,13 @@
 {
   "source": "Open-Meteo 即時氣象 + 水利署水庫水情 + CWA 潮汐預報 + 水利署河川水位 + 水利署鳥類調查 + 水利署 IoW 揚塵 + 水利署河川流量測站 + 水利署魚類調查 + CWA 月出月沒（政府資料 OGDL v1；氣象備援 Open-Meteo CC BY 4.0）；另含 Open-Meteo 空氣品質（CAMS 全球大氣模型資料，非政府觀測值；CC BY 4.0；Weather data by Open-Meteo.com）",
   "sourceShort": "水利署 · CWA潮汐 · Open-Meteo",
-  "fetchedAt": "2026-09-27T20:00",
+  "fetchedAt": "2026-09-27T23:00",
   "station": "花蓮外海",
   "weather": {
-    "airTemp": 29.3,
-    "humidity": 80,
-    "windSpeed": 0.17,
-    "windDir": 288,
+    "airTemp": 26.5,
+    "humidity": 76,
+    "windSpeed": 0.89,
+    "windDir": 289,
     "precip": 0,
     "weather": "晴"
   },
@@ -20,16 +20,16 @@
       "level": 77.3,
       "params": {
         "seaLevel": 0.77,
-        "current": 0.01,
+        "current": 0.06,
         "flowX": 0.12,
-        "flowY": 0.62,
+        "flowY": 0.63,
         "clarity": 0.8,
         "glow": 0.6,
         "hue": 0.5,
-        "jellyCount": 0.72,
+        "jellyCount": 0.65,
         "fishCount": 0.67,
         "trashCount": 0.13,
-        "swimSpeed": 0.4,
+        "swimSpeed": 0.43,
         "spin": 0.28,
         "zoom": 0.5
       },
@@ -79,16 +79,16 @@
       "level": 100,
       "params": {
         "seaLevel": 1,
-        "current": 0.01,
+        "current": 0.06,
         "flowX": 0.12,
-        "flowY": 0.62,
+        "flowY": 0.63,
         "clarity": 0.8,
         "glow": 0.6,
         "hue": 0.5,
-        "jellyCount": 0.72,
+        "jellyCount": 0.65,
         "fishCount": 0.75,
         "trashCount": 0.13,
-        "swimSpeed": 0.4,
+        "swimSpeed": 0.43,
         "spin": 0.28,
         "zoom": 0.5
       },
@@ -221,16 +221,16 @@
       "level": 98.5,
       "params": {
         "seaLevel": 0.99,
-        "current": 0.01,
+        "current": 0.06,
         "flowX": 0.12,
-        "flowY": 0.62,
+        "flowY": 0.63,
         "clarity": 0.8,
         "glow": 0.6,
         "hue": 0.5,
-        "jellyCount": 0.72,
+        "jellyCount": 0.65,
         "fishCount": 0.74,
         "trashCount": 0.13,
-        "swimSpeed": 0.4,
+        "swimSpeed": 0.43,
         "spin": 0.28,
         "zoom": 0.5
       },
@@ -379,16 +379,16 @@
       "level": 100,
       "params": {
         "seaLevel": 1,
-        "current": 0.01,
+        "current": 0.06,
         "flowX": 0.12,
-        "flowY": 0.62,
+        "flowY": 0.63,
         "clarity": 0.8,
         "glow": 0.6,
         "hue": 0.5,
-        "jellyCount": 0.72,
+        "jellyCount": 0.65,
         "fishCount": 0.75,
         "trashCount": 0.13,
-        "swimSpeed": 0.4,
+        "swimSpeed": 0.43,
         "spin": 0.28,
         "zoom": 0.5
       },
@@ -542,16 +542,16 @@
       "level": 99.4,
       "params": {
         "seaLevel": 0.99,
-        "current": 0.01,
+        "current": 0.06,
         "flowX": 0.12,
-        "flowY": 0.62,
+        "flowY": 0.63,
         "clarity": 0.8,
         "glow": 0.6,
         "hue": 0.5,
-        "jellyCount": 0.72,
+        "jellyCount": 0.65,
         "fishCount": 0.75,
         "trashCount": 0.13,
-        "swimSpeed": 0.4,
+        "swimSpeed": 0.43,
         "spin": 0.28,
         "zoom": 0.5
       },
@@ -601,17 +601,17 @@
       "region": "東",
       "level": 68,
       "params": {
-        "seaLevel": 0.91,
-        "current": 0.01,
+        "seaLevel": 0.51,
+        "current": 0.06,
         "flowX": 0.12,
-        "flowY": 0.62,
+        "flowY": 0.63,
         "clarity": 0.8,
         "glow": 0.6,
         "hue": 0.5,
-        "jellyCount": 0.72,
+        "jellyCount": 0.65,
         "fishCount": 0.64,
         "trashCount": 0.13,
-        "swimSpeed": 0.4,
+        "swimSpeed": 0.43,
         "spin": 0.28,
         "zoom": 0.5
       },
@@ -1083,9 +1083,9 @@
     "county": "雲林縣",
     "note": "水利署 IoW 揚塵監控站最新值（data.gov.tw 143273 最新值 + 143272 基本資料；雲林縣濁水溪沿岸 3 站，PM10／風速／氣溫／相對濕度，約每小時更新）。API 只提供最新一筆，history 由 CI 每 3 小時累積（保留最近 120 筆，約 15 天）。感測器故障時會回傳哨兵值或離譜值（PM10 常為 4999.4、氣溫曾見 1957℃）：PM10 有效範圍 0–3000μg/m³（排除 4999.4）、風速 0–60m/s、氣溫 −20–50℃、相對濕度 0–100%，超出者一律為 null；PM10 全數無效時，dust-yunlin 選項以預設 PM10=40μg/m³ 計算海況參數（level=0）。來源也可能長時間回傳相同數值、只有時戳照常前進（凍結），請以 history 是否有變動判讀。",
     "stations": [
-      {"id":"A130614WT0001","name":"許厝寮(10號越堤路)堤防揚塵監控站","town":"麥寮鄉","lon":120.2573,"lat":23.8184,"pm10":null,"wind":6.66,"temp":null,"rh":71.89,"t":"2026-09-27T19:50:00+08:00"},
-      {"id":"A130614WT0002","name":"中興村揚塵監控站","town":"麥寮鄉","lon":120.2423,"lat":23.7967,"pm10":null,"wind":5.49,"temp":null,"rh":71.29,"t":"2026-09-27T19:50:00+08:00"},
-      {"id":"A130614WT0003","name":"大庄堤防揚塵監控站","town":"崙背鄉","lon":120.3067,"lat":23.8105,"pm10":null,"wind":3.88,"temp":30,"rh":71.43,"t":"2026-09-27T19:50:00+08:00"}
+      {"id":"A130614WT0001","name":"許厝寮(10號越堤路)堤防揚塵監控站","town":"麥寮鄉","lon":120.2573,"lat":23.8184,"pm10":null,"wind":6.66,"temp":null,"rh":71.89,"t":"2026-09-27T22:50:00+08:00"},
+      {"id":"A130614WT0002","name":"中興村揚塵監控站","town":"麥寮鄉","lon":120.2423,"lat":23.7967,"pm10":null,"wind":5.49,"temp":null,"rh":71.29,"t":"2026-09-27T22:50:00+08:00"},
+      {"id":"A130614WT0003","name":"大庄堤防揚塵監控站","town":"崙背鄉","lon":120.3067,"lat":23.8105,"pm10":null,"wind":3.88,"temp":30,"rh":71.43,"t":"2026-09-27T22:50:00+08:00"}
     ],
     "history": [
       {"t":"2026-09-20T15:50:00+08:00","pm10":null,"wind":5.34,"temp":30,"rh":71.54},
@@ -1147,7 +1147,8 @@
       {"t":"2026-09-27T10:50:00+08:00","pm10":null,"wind":5.34,"temp":30,"rh":71.54},
       {"t":"2026-09-27T13:50:00+08:00","pm10":null,"wind":5.34,"temp":30,"rh":71.54},
       {"t":"2026-09-27T16:50:00+08:00","pm10":null,"wind":5.34,"temp":30,"rh":71.54},
-      {"t":"2026-09-27T19:50:00+08:00","pm10":null,"wind":5.34,"temp":30,"rh":71.54}
+      {"t":"2026-09-27T19:50:00+08:00","pm10":null,"wind":5.34,"temp":30,"rh":71.54},
+      {"t":"2026-09-27T22:50:00+08:00","pm10":null,"wind":5.34,"temp":30,"rh":71.54}
     ]
   },
   "stations": {
@@ -1656,13 +1657,13 @@
       {"t":"2026-09-27T11:00:00+08:00","pm10":22,"pm25":17.9,"dust":0,"aqi":77,"wind":3.2,"windDir":226},
       {"t":"2026-09-27T12:00:00+08:00","pm10":21.1,"pm25":17.6,"dust":0,"aqi":77,"wind":3.6,"windDir":235},
       {"t":"2026-09-27T13:00:00+08:00","pm10":20.6,"pm25":17.1,"dust":0,"aqi":77,"wind":3.4,"windDir":239},
-      {"t":"2026-09-27T14:00:00+08:00","pm10":19.2,"pm25":15.9,"dust":0,"aqi":76,"wind":3.5,"windDir":236},
-      {"t":"2026-09-27T15:00:00+08:00","pm10":17.8,"pm25":14.8,"dust":0,"aqi":76,"wind":3.5,"windDir":232},
-      {"t":"2026-09-27T16:00:00+08:00","pm10":16.6,"pm25":13.9,"dust":0,"aqi":97,"wind":3.5,"windDir":224},
-      {"t":"2026-09-27T17:00:00+08:00","pm10":16.3,"pm25":13.5,"dust":0,"aqi":115,"wind":3.4,"windDir":217},
-      {"t":"2026-09-27T18:00:00+08:00","pm10":16.4,"pm25":13.2,"dust":0,"aqi":126,"wind":3.1,"windDir":219},
-      {"t":"2026-09-27T19:00:00+08:00","pm10":16.1,"pm25":13,"dust":0,"aqi":124,"wind":2.9,"windDir":208},
-      {"t":"2026-09-27T20:00:00+08:00","pm10":15.5,"pm25":12.6,"dust":0,"aqi":112,"wind":2.5,"windDir":187}
+      {"t":"2026-09-27T14:00:00+08:00","pm10":19.2,"pm25":15.9,"dust":0,"aqi":76,"wind":3.6,"windDir":238},
+      {"t":"2026-09-27T15:00:00+08:00","pm10":17.8,"pm25":14.8,"dust":0,"aqi":76,"wind":3.6,"windDir":234},
+      {"t":"2026-09-27T16:00:00+08:00","pm10":16.6,"pm25":13.9,"dust":0,"aqi":97,"wind":3.2,"windDir":230},
+      {"t":"2026-09-27T17:00:00+08:00","pm10":16.3,"pm25":13.5,"dust":0,"aqi":115,"wind":3.1,"windDir":220},
+      {"t":"2026-09-27T18:00:00+08:00","pm10":16.4,"pm25":13.2,"dust":0,"aqi":126,"wind":2.9,"windDir":225},
+      {"t":"2026-09-27T19:00:00+08:00","pm10":16.1,"pm25":13,"dust":0,"aqi":124,"wind":2.8,"windDir":212},
+      {"t":"2026-09-27T20:00:00+08:00","pm10":15.5,"pm25":12.6,"dust":0,"aqi":112,"wind":2.9,"windDir":181}
     ]
   }
 }
