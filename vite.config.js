@@ -19,7 +19,7 @@ export function manualChunk(id) {
 
 // ---- 版本檔（展場防呆：頁面定期比對 /version.json，有新版就在閒置時自動重新載入；見 src/lib/resilience.js）----
 // build id = 「程式碼內容」的 sha1 前 12 碼（不含時間戳 / 隨機鹽）：src/、index.html、package.json / package-lock.json、vite.config.js、public/（不含 public/data/）。
-//   為什麼只看程式碼：CI 每 3 小時會重新整理 public/data/ocean.json 並重新部署（.github/workflows/refresh-data.yml）。id 若每次建置都不同，
+//   為什麼只看程式碼：資料（public/data/ocean.json）會被更新並重新部署（以前由排程 CI 每 3 小時一次，現已改手動）。id 若每次建置都不同，
 //   每一次「只換資料」的部署都會讓所有視窗整頁重載（投影機的觀眾視窗退出全螢幕、MIDI 要重連、手機遙控斷線）；資料的更新由頁面自己就地換
 //   （lib/resilience.js 的 createDataRefresher；觀眾視窗也是），只有程式真的變了才需要重載。測試檔（*.test.*）、測試專用的輔助檔（tourTestEnv.mjs）與文件（*.md）不算。
 //   · 同一份程式碼（不論建置幾次、何時建置）id 相同；任何程式檔改一個字 id 就不同

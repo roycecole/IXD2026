@@ -1,6 +1,6 @@
 // 刷新 public/data/ocean.json：保留水庫選項與時間序列（政府開放資料快照），
 // 以即時氣象重算每個水庫選項的海洋參數，並刷新「花蓮外海」的 24h 潮汐 series。
-// 於 GitHub Actions 排程執行（refresh-data.yml）。Node 18+ 內建 fetch。
+// 已不再排程自動執行（原本的 refresh-data.yml 每 3 小時一個 commit，已移除）：要更新資料請在本機執行本腳本，再 commit public/data/ocean.json。Node 18+ 內建 fetch。
 //   氣象：有 CWA_KEY（repo secret）→ 中央氣象署 opendata 觀測站；否則 / 失敗 → Open-Meteo。
 //   潮汐：有 CWA_KEY → datastore API；否則 / 失敗 → CWA 公開檔（免金鑰）；再失敗 → 保留舊 series。
 //   揚塵：水利署 IoW 最新值 + 基本資料（免金鑰）→ dust.stations、滾動累積 dust.history、dust-yunlin 的 level / params。

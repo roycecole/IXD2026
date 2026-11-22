@@ -60,7 +60,7 @@ test('makeBuildId：12 位小寫 hex；同一份程式碼（不論建置幾次�
     const id = makeBuildId(f.root)
     assert.match(id, /^[0-9a-f]{12}$/)
     assert.equal(makeBuildId(f.root), id, '同一份內容 → 同一個 id')
-    f.put('public/data/ocean.json', '{"fetchedAt":"2026-09-20T12:00","x":"資料變了"}\n')   // CI 的 refresh-data：只換資料
+    f.put('public/data/ocean.json', '{"fetchedAt":"2026-09-20T12:00","x":"資料變了"}\n')   // 資料更新：只換資料
     f.put('public/data/extra.json', '{}\n')
     assert.equal(makeBuildId(f.root), id, '只換 public/data/ 下的資料 → id 不變（不重載）')
     f.put('src/lib/notes.md', '# 文件\n'); f.put('src/lib/a.test.mjs', 'test\n'); f.put('README.md', 'x\n')
@@ -159,12 +159,10 @@ test('vite 設定：build 時 define 的 __BUILD_ID__ 與 version.json 的 id �
   assert.equal(a.base, '/'); assert.equal(a.build.rollupOptions.output.manualChunks, manualChunk)
 })
 
-test('CI 資料刷新（refresh-data.yml）只 commit public/data/ocean.json：這個檔案在 id 的計算範圍之外（原始碼層級守住，避免有人把資料目錄加回去）', () => {
+test('public/data 在 build id 的計算範圍之外（原始碼層級守住，避免有人把資料目錄加回去：資料更新不該讓所有視窗重載）', () => {
   const cfg = readFileSync(new URL('../vite.config.js', import.meta.url), 'utf8')
   assert.match(cfg, /SKIP_DIRS = new Set\(\['public\/data'\]\)/)
   assert.doesNotMatch(cfg, /randomBytes|Math\.random/, 'id 不能再混入隨機鹽')
-  const wf = readFileSync(new URL('../.github/workflows/refresh-data.yml', import.meta.url), 'utf8')
-  assert.match(wf, /git add public\/data\/ocean\.json/)
 })
 
 test('resilience.js 以 typeof 讀 __BUILD_ID__（Node / dev 沒有定義時不會 ReferenceError，退回 "dev"）', () => {
